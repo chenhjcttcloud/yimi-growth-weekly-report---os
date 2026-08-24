@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import {
   isScoring360ConfigManager,
+  isScoring360CycleForDate,
   parseScoring360LaunchDays,
   scoring360CycleForLaunchDate,
 } from "../server/scoring360-policy.mjs";
@@ -17,6 +18,9 @@ assert.equal(monthlyCycle.label, "2026年8月协同360评分");
 assert.equal(monthlyCycle.startDate, "2026-08-01");
 assert.equal(monthlyCycle.endDate, "2026-08-31");
 assert.equal(monthlyCycle.round, 1);
+assert.equal(isScoring360CycleForDate(monthlyCycle, new Date("2026-08-31T23:59:00+08:00")), true);
+assert.equal(isScoring360CycleForDate(monthlyCycle, new Date("2026-09-01T00:01:00+08:00")), false);
+assert.equal(isScoring360CycleForDate({ id: "2026-07-round2-360" }, new Date("2026-08-24T20:00:00+08:00")), false);
 
 assert.equal(isScoring360ConfigManager({ openId: "mock_manager", name: "Demo Manager" }), true);
 assert.equal(isScoring360ConfigManager({ openId: "", name: "Demo Manager" }), true);

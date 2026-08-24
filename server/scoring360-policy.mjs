@@ -34,6 +34,11 @@ export function scoring360CycleForLaunchDate(dateLike) {
   };
 }
 
+export function isScoring360CycleForDate(cycle, dateLike) {
+  if (!cycle?.id) return false;
+  return cycle.id === scoring360CycleForLaunchDate(dateLike).id;
+}
+
 export function isScoring360ConfigManager(user, managers = defaultScoring360ConfigManagers) {
   const openId = String(user?.openId || user?.open_id || "").trim();
   const name = String(user?.name || user?.姓名 || "").trim();

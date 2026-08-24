@@ -8,6 +8,7 @@ import { fileURLToPath } from "node:url";
 import {
   defaultScoring360ConfigManagers,
   isScoring360ConfigManager,
+  isScoring360CycleForDate,
   parseScoring360LaunchDays,
   scoring360CycleForLaunchDate,
 } from "./scoring360-policy.mjs";
@@ -2726,13 +2727,14 @@ function scheduleScoring360Reminder() {
     `).catch(() => []);
     if (Number(launchRows[0]?.count || 0) === 0) return;
     const cycle = await loadScoring360Cycle(cycleId);
+    if (!isScoring360CycleForDate(cycle, shanghai)) return;
     if (!cycle?.followupAfterAt) return;
     const followupTime = new Date(String(cycle.followupAfterAt).replace(" ", "T")).getTime();
     if (Number.isFinite(followupTime) && Date.now() >= followupTime) {
       const pending = await loadScoring360PendingRecipients(cycleId);
       if (pending.length > 0) {
-        lastFollowupKey = dateKey;
-        await runScoring360Reminder({ cycleId, dryRun: false, force: false, source: "auto_scoring360_followup", kind: "followup" });
+        const followup = await runScoring360Reminder({ cycleId, dryRun: false, force: false, source: "auto_scoring360_followup", kind: "followup" });
+        if (followup.ok && followup.failed === 0) lastFollowupKey = dateKey;
       }
     }
   };
