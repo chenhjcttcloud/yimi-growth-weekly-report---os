@@ -133,8 +133,12 @@ export function ScoresPage({ visibleEmployees = [], access }: ScoresPageProps) {
   }, [activeEvaluator, canSwitchEvaluator, currentCycle?.id, tasksReloadKey]);
 
   function taskScore(assignmentId: string, fallback: number | null) {
-    return draftScores[assignmentId] ?? fallback ?? 90;
+    return draftScores[assignmentId] ?? fallback ?? 0;
   }
+
+  const draftScoreCount = myAssignments.filter(
+    (assignment) => draftScores[assignment.id] !== undefined && !isLocked(assignment.submittedAt),
+  ).length;
 
   async function submitScores() {
     const scores = myAssignments
@@ -255,9 +259,17 @@ export function ScoresPage({ visibleEmployees = [], access }: ScoresPageProps) {
                       max="100"
                       value={taskScore(assignment.id, assignment.score)}
                       disabled={isLocked(assignment.submittedAt)}
+                      onPointerDown={() => {
+                        if (!assignment.submitted && draftScores[assignment.id] === undefined) {
+                          setDraftScores((current) => ({ ...current, [assignment.id]: 0 }));
+                        }
+                      }}
                       onChange={(event) => setDraftScores((current) => ({ ...current, [assignment.id]: Number(event.target.value) }))}
                     />
-                    <b>{taskScore(assignment.id, assignment.score)}</b>
+                    <b>
+                      {taskScore(assignment.id, assignment.score)}
+                      {!assignment.submitted && draftScores[assignment.id] === undefined ? <small> 未选择</small> : null}
+                    </b>
                   </label>
                 </article>
               ))}
@@ -266,9 +278,9 @@ export function ScoresPage({ visibleEmployees = [], access }: ScoresPageProps) {
               <p>
                 评分提交后 4 小时内可修改；后续周维度会从这里延展，不再需要 HRBP 单独维护一个孤立系统。
               </p>
-              <button className="primary-button" type="button" onClick={submitScores} disabled={submitState === "saving"}>
+              <button className="primary-button" type="button" onClick={submitScores} disabled={submitState === "saving" || draftScoreCount === 0}>
                 {submitState === "saved" ? <CheckCircle2 size={16} /> : <Send size={16} />}
-                <span>{submitState === "saving" ? "提交中" : submitState === "saved" ? "已提交" : "提交评分"}</span>
+                <span>{submitState === "saving" ? "提交中" : submitState === "saved" ? "已提交" : draftScoreCount === 0 ? "请先选择分数" : `提交评分（${draftScoreCount}项）`}</span>
               </button>
             </div>
             {submitState === "error" ? <p className="form-error">提交失败，请确认已通过飞书 SSO 登录且当前账号有评分任务。</p> : null}
