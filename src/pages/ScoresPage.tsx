@@ -4,8 +4,6 @@ import { ScoreBadge } from "../components/ScoreBadge";
 import {
   appData,
   currentScoring360Cycle,
-  scoring360,
-  scoring360AssignmentsForEvaluator,
   scoring360VisibleResults,
 } from "../lib/data";
 import type { Scoring360Result, UserAccess, VisibleEmployee } from "../lib/types";
@@ -51,38 +49,36 @@ function isLocked(submittedAt?: string) {
 }
 
 export function ScoresPage({ visibleEmployees = [], access }: ScoresPageProps) {
-  const viewerName = access?.currentEmployee?.name || visibleEmployees[0]?.name || "";
+  const viewerName = access?.currentEmployee?.name || "";
   const canSwitchEvaluator = Boolean(access?.bossView || access?.canManageScoring360);
   const [activeTab, setActiveTab] = useState<ScoreTab>(() => {
     const tab = new URLSearchParams(window.location.search).get("tab");
     return tab === "my360" || tab === "collaboration" || tab === "weekly" ? tab : "weekly";
   });
-  const [selectedEvaluator, setSelectedEvaluator] = useState(() => {
-    if (viewerName) return viewerName;
-    const withTasks = scoring360.employees.find((name) => scoring360AssignmentsForEvaluator(name).length > 0);
-    return withTasks || scoring360.employees[0] || "";
-  });
+  const [selectedEvaluator, setSelectedEvaluator] = useState("");
   const [draftScores, setDraftScores] = useState<Record<string, number>>({});
   const [apiCycle, setApiCycle] = useState<typeof currentScoring360Cycle | null>(null);
   const [apiResults, setApiResults] = useState<Scoring360Result[] | null>(null);
+  const [apiLoaded, setApiLoaded] = useState(false);
   const [apiTasks, setApiTasks] = useState<Scoring360Task[] | null>(null);
+  const [apiEvaluatorOptions, setApiEvaluatorOptions] = useState<string[]>([]);
+  const [tasksLoading, setTasksLoading] = useState(false);
   const [tasksReloadKey, setTasksReloadKey] = useState(0);
   const [submitState, setSubmitState] = useState<"idle" | "saving" | "saved" | "error">("idle");
   const visibleNames = useMemo(() => new Set(visibleEmployees.map((employee) => employee.name).filter(Boolean)), [visibleEmployees]);
-  const currentCycle = apiCycle || currentScoring360Cycle;
+  const currentCycle = apiLoaded ? apiCycle : currentScoring360Cycle;
   const weeklyEmployees = visibleNames.size > 0
     ? appData.employeeSummary.filter((employee) => visibleNames.has(employee.name))
     : appData.employeeSummary;
   const staticResults = scoring360VisibleResults(visibleNames);
   const collaborationResults = (apiResults || staticResults).filter((result) => visibleNames.size === 0 || visibleNames.has(result.name));
   const activeEvaluator = canSwitchEvaluator ? selectedEvaluator : viewerName;
-  const myAssignments = apiTasks || scoring360AssignmentsForEvaluator(activeEvaluator);
+  const viewingAnotherEvaluator = canSwitchEvaluator && Boolean(activeEvaluator) && activeEvaluator !== viewerName;
+  const myAssignments = apiTasks ?? [];
   const top360 = collaborationResults.slice(0, 5);
-  const evaluatorOptions = canSwitchEvaluator ? Array.from(new Set([
-    ...scoring360.employees,
-    ...appData.employeeSummary.map((employee) => employee.name),
-    ...collaborationResults.map((result) => result.name),
-  ])).filter(Boolean) : [viewerName].filter(Boolean);
+  const evaluatorOptions = canSwitchEvaluator
+    ? Array.from(new Set([viewerName, ...apiEvaluatorOptions])).filter(Boolean)
+    : [viewerName].filter(Boolean);
   const weeklyAverage = weeklyEmployees.length
     ? weeklyEmployees.reduce((sum, employee) => sum + employee.averageScore, 0) / weeklyEmployees.length
     : 0;
@@ -97,6 +93,10 @@ export function ScoresPage({ visibleEmployees = [], access }: ScoresPageProps) {
     : 0;
 
   useEffect(() => {
+    if (viewerName && !selectedEvaluator) setSelectedEvaluator(viewerName);
+  }, [selectedEvaluator, viewerName]);
+
+  useEffect(() => {
     let cancelled = false;
     fetch("/api/scoring360")
       .then((response) => response.ok ? response.json() : null)
@@ -104,21 +104,31 @@ export function ScoresPage({ visibleEmployees = [], access }: ScoresPageProps) {
         if (cancelled || !payload?.ok) return;
         setApiCycle(payload.cycle || null);
         setApiResults(Array.isArray(payload.results) ? payload.results : null);
+        setApiEvaluatorOptions(Array.isArray(payload.evaluatorOptions) ? payload.evaluatorOptions.filter(Boolean) : []);
+        setApiLoaded(true);
       })
       .catch(() => {
         if (!cancelled) {
           setApiCycle(null);
           setApiResults(null);
+          setApiLoaded(true);
         }
       });
     return () => { cancelled = true; };
   }, []);
 
   useEffect(() => {
+    if (!canSwitchEvaluator || !selectedEvaluator || evaluatorOptions.includes(selectedEvaluator)) return;
+    setSelectedEvaluator(viewerName);
+  }, [canSwitchEvaluator, evaluatorOptions, selectedEvaluator, viewerName]);
+
+  useEffect(() => {
     if (!activeEvaluator) return;
     let cancelled = false;
+    setApiTasks(null);
+    setTasksLoading(true);
     const params = new URLSearchParams();
-    if (canSwitchEvaluator) params.set("evaluator", activeEvaluator);
+    if (canSwitchEvaluator && activeEvaluator !== viewerName) params.set("evaluator", activeEvaluator);
     if (currentCycle?.id) params.set("cycleId", currentCycle.id);
     fetch(`/api/scoring360/my-tasks?${params.toString()}`)
       .then((response) => response.ok ? response.json() : null)
@@ -128,16 +138,19 @@ export function ScoresPage({ visibleEmployees = [], access }: ScoresPageProps) {
       })
       .catch(() => {
         if (!cancelled) setApiTasks(null);
+      })
+      .finally(() => {
+        if (!cancelled) setTasksLoading(false);
       });
     return () => { cancelled = true; };
-  }, [activeEvaluator, canSwitchEvaluator, currentCycle?.id, tasksReloadKey]);
+  }, [activeEvaluator, canSwitchEvaluator, currentCycle?.id, tasksReloadKey, viewerName]);
 
   function taskScore(assignmentId: string, fallback: number | null) {
     return draftScores[assignmentId] ?? fallback ?? 0;
   }
 
   const draftScoreCount = myAssignments.filter(
-    (assignment) => draftScores[assignment.id] !== undefined && !isLocked(assignment.submittedAt),
+    (assignment) => draftScores[assignment.id] !== undefined && !assignment.locked && !isLocked(assignment.submittedAt),
   ).length;
 
   async function submitScores() {
@@ -233,8 +246,8 @@ export function ScoresPage({ visibleEmployees = [], access }: ScoresPageProps) {
               </div>
               <div>
                 <span>完成窗口</span>
-                <strong>启动后 24 小时内完成</strong>
-                <p>48 小时仍未完成会收到一次飞书提醒；后续可改为两周一评。</p>
+                <strong>每月下旬启动一次</strong>
+                <p>启动后 24 小时内完成；48 小时仍未完成会收到一次飞书提醒。</p>
               </div>
               <div>
                 <span>滚动计算</span>
@@ -243,13 +256,15 @@ export function ScoresPage({ visibleEmployees = [], access }: ScoresPageProps) {
               </div>
             </div>
             <div className="scoring-task-list">
-              {myAssignments.length === 0 ? (
+              {tasksLoading ? (
+                <p className="empty-state">正在加载评分任务...</p>
+              ) : myAssignments.length === 0 ? (
                 <p className="empty-state">当前人员暂无评分任务。</p>
               ) : myAssignments.map((assignment) => (
                 <article className="scoring-task-row" key={assignment.id}>
                   <div>
                     <strong>{assignment.evaluee}</strong>
-                    <span>{assignment.submitted ? `已提交 ${assignment.score} 分` : "待评分"}{isLocked(assignment.submittedAt) ? " · 已锁定" : ""}</span>
+                    <span>{assignment.submitted ? `已提交 ${assignment.score} 分` : "待评分"}{assignment.locked || isLocked(assignment.submittedAt) ? " · 已锁定" : ""}</span>
                   </div>
                   <label>
                     <SlidersHorizontal size={15} />
@@ -258,7 +273,7 @@ export function ScoresPage({ visibleEmployees = [], access }: ScoresPageProps) {
                       min="0"
                       max="100"
                       value={taskScore(assignment.id, assignment.score)}
-                      disabled={isLocked(assignment.submittedAt)}
+                      disabled={viewingAnotherEvaluator || assignment.locked || isLocked(assignment.submittedAt)}
                       onPointerDown={() => {
                         if (!assignment.submitted && draftScores[assignment.id] === undefined) {
                           setDraftScores((current) => ({ ...current, [assignment.id]: 0 }));
@@ -276,9 +291,11 @@ export function ScoresPage({ visibleEmployees = [], access }: ScoresPageProps) {
             </div>
             <div className="score-submit-bar">
               <p>
-                评分提交后 4 小时内可修改；后续周维度会从这里延展，不再需要 HRBP 单独维护一个孤立系统。
+                {viewingAnotherEvaluator
+                  ? `正在只读查看 ${activeEvaluator} 的评分任务；评分必须由本人账号提交。`
+                  : "评分提交后 4 小时内可修改；后续周维度会从这里延展，不再需要 HRBP 单独维护一个孤立系统。"}
               </p>
-              <button className="primary-button" type="button" onClick={submitScores} disabled={submitState === "saving" || draftScoreCount === 0}>
+              <button className="primary-button" type="button" onClick={submitScores} disabled={viewingAnotherEvaluator || submitState === "saving" || draftScoreCount === 0}>
                 {submitState === "saved" ? <CheckCircle2 size={16} /> : <Send size={16} />}
                 <span>{submitState === "saving" ? "提交中" : submitState === "saved" ? "已提交" : draftScoreCount === 0 ? "请先选择分数" : `提交评分（${draftScoreCount}项）`}</span>
               </button>

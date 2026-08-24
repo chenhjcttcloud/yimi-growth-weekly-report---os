@@ -54,10 +54,10 @@ const config = {
   weeklyUpdateReminderHour: Number(process.env.WEEKLY_UPDATE_REMINDER_HOUR || 10),
   weeklyUpdateReminderMinute: Number(process.env.WEEKLY_UPDATE_REMINDER_MINUTE || 30),
   scoring360ReminderEnabled: process.env.SCORING360_REMINDER_ENABLED === "true",
-  scoring360ReminderDayOfMonth: Number(process.env.SCORING360_REMINDER_DAY_OF_MONTH || 15),
+  scoring360ReminderDayOfMonth: Number(process.env.SCORING360_REMINDER_DAY_OF_MONTH || 25),
   scoring360ReminderDaysOfMonth: parseScoring360LaunchDays(
     process.env.SCORING360_REMINDER_DAYS_OF_MONTH,
-    Number(process.env.SCORING360_REMINDER_DAY_OF_MONTH || 15),
+    Number(process.env.SCORING360_REMINDER_DAY_OF_MONTH || 25),
   ),
   scoring360ReminderHour: Number(process.env.SCORING360_REMINDER_HOUR || 10),
   scoring360ReminderMinute: Number(process.env.SCORING360_REMINDER_MINUTE || 0),
@@ -1129,9 +1129,12 @@ async function getScoring360(req, res, url) {
   }
   const user = session?.user || mockUser();
   const access = buildAccessProfile(session, user);
+  const evaluatorOptions = access.bossView || access.canManageScoring360
+    ? (await loadManagedEmployees()).map((employee) => employee.name).filter(Boolean)
+    : [normalizeUserName(user.name)].filter(Boolean);
   const cycleId = await resolveScoring360CycleId(url.searchParams.get("cycleId"), { ensureCurrentRound: true });
   if (!cycleId) {
-    sendJson(res, 200, { ok: true, cycles: [], results: [], stats: null });
+    sendJson(res, 200, { ok: true, cycles: [], results: [], stats: null, evaluatorOptions });
     return;
   }
 
@@ -1194,6 +1197,7 @@ async function getScoring360(req, res, url) {
     cycle,
     results,
     stats: responseStats,
+    evaluatorOptions,
   });
 }
 
@@ -1214,6 +1218,12 @@ async function getMyScoring360Tasks(req, res, url) {
     : normalizeUserName(user.name);
   const cycleId = await resolveScoring360CycleId(url.searchParams.get("cycleId"), { ensureCurrentRound: true });
   if (!cycleId || !evaluator) {
+    sendJson(res, 200, { ok: true, cycleId, evaluator, tasks: [] });
+    return;
+  }
+  const cycle = await loadScoring360Cycle(cycleId);
+  const cycleOpen = Boolean(cycle?.launchAt && ["open", "active"].includes(cycle.status));
+  if (!cycleOpen && !canSelectEvaluator) {
     sendJson(res, 200, { ok: true, cycleId, evaluator, tasks: [] });
     return;
   }
@@ -1242,7 +1252,7 @@ async function getMyScoring360Tasks(req, res, url) {
       comment: row.comment || "",
       submitted: Boolean(row.response_id),
       submittedAt: row.submitted_at || "",
-      locked: isScoring360Locked(row.submitted_at),
+      locked: !cycleOpen || isScoring360Locked(row.submitted_at),
     })),
   });
 }
@@ -1264,6 +1274,11 @@ async function submitScoring360(req, res) {
   const scores = Array.isArray(body.scores) ? body.scores : [];
   if (!cycleId || !evaluator || scores.length === 0) {
     sendJson(res, 400, { ok: false, error: "invalid_scoring_payload" });
+    return;
+  }
+  const cycle = await loadScoring360Cycle(cycleId);
+  if (!cycle?.launchAt || !["open", "active"].includes(cycle.status)) {
+    sendJson(res, 409, { ok: false, error: "scoring_cycle_not_open" });
     return;
   }
 
@@ -1434,9 +1449,16 @@ async function sendScoring360Reminder(req, res) {
     return;
   }
   const body = await readJsonBody(req, { limitBytes: 30_000 });
+  const kind = body.kind === "followup" ? "followup" : "launch";
+  const requestedCycleId = String(body.cycleId || "").trim();
+  const cycleId = requestedCycleId
+    ? await resolveScoring360CycleId(requestedCycleId)
+    : kind === "launch"
+      ? await ensureScoring360CycleForLaunchDate(scoring360ActiveDate())
+      : await resolveScoring360CycleId("");
   const result = await runScoring360Reminder({
-    cycleId: await resolveScoring360CycleId(body.cycleId, { ensureCurrentRound: true }),
-    kind: body.kind === "followup" ? "followup" : "launch",
+    cycleId,
+    kind,
     dryRun: body.dryRun !== false,
     force: Boolean(body.force),
     source: "manual",
@@ -1573,10 +1595,12 @@ async function loadScoring360PendingRecipients(cycleId) {
 }
 
 async function runScoring360Reminder({ cycleId, kind = "launch", dryRun = true, force = false, source = "manual", actor = null } = {}) {
-  cycleId = cycleId || await resolveScoring360CycleId("", { ensureCurrentRound: true });
+  cycleId = cycleId || (kind === "launch"
+    ? await ensureScoring360CycleForLaunchDate(scoring360ActiveDate())
+    : await resolveScoring360CycleId(""));
   if (!cycleId) return { ok: false, error: "missing_cycle" };
-  await ensureScoring360CycleSchedule(cycleId);
-  const cycle = await loadScoring360Cycle(cycleId);
+  if (kind === "launch" && !dryRun) await ensureScoring360CycleSchedule(cycleId);
+  let cycle = await loadScoring360Cycle(cycleId);
   if (!cycle) return { ok: false, error: "cycle_not_found" };
   const pending = await loadScoring360PendingRecipients(cycleId);
   const results = [];
@@ -1643,6 +1667,22 @@ async function runScoring360Reminder({ cycleId, kind = "launch", dryRun = true, 
       error: sendResult.ok ? "" : payload.error,
     });
   }
+  if (kind === "launch" && !dryRun) {
+    const sentRows = await querySqlRows(`
+      SELECT COUNT(*) AS count
+      FROM scoring360_reminder_sends
+      WHERE cycle_id = ${sqlValue(cycleId)} AND kind = 'launch' AND status = 'sent';
+    `).catch(() => []);
+    if (Number(sentRows[0]?.count || 0) === 0) {
+      await execSql(`
+        UPDATE scoring360_cycles
+        SET launch_at = NULL, due_at = NULL, followup_after_at = NULL,
+            status = 'draft', updated_at = datetime('now')
+        WHERE id = ${sqlValue(cycleId)};
+      `);
+      cycle = await loadScoring360Cycle(cycleId);
+    }
+  }
   return {
     ok: true,
     dryRun,
@@ -1666,15 +1706,20 @@ async function ensureScoring360CycleSchedule(cycleId) {
     LIMIT 1;
   `).catch(() => []);
   const row = rows[0] || {};
-  if (row.launch_at && row.due_at && row.followup_after_at) return;
+  const sentRows = await querySqlRows(`
+    SELECT COUNT(*) AS count
+    FROM scoring360_reminder_sends
+    WHERE cycle_id = ${sqlValue(cycleId)} AND kind = 'launch' AND status = 'sent';
+  `).catch(() => []);
+  if (Number(sentRows[0]?.count || 0) > 0 && row.launch_at && row.due_at && row.followup_after_at) return;
   const now = new Date();
   const dueAt = new Date(now.getTime() + config.scoring360ReminderDueHours * 60 * 60 * 1000).toISOString();
   const followupAt = new Date(now.getTime() + config.scoring360ReminderFollowupHours * 60 * 60 * 1000).toISOString();
   await execSql(`
     UPDATE scoring360_cycles
-    SET launch_at = COALESCE(NULLIF(launch_at, ''), ${sqlValue(now.toISOString())}),
-        due_at = COALESCE(NULLIF(due_at, ''), ${sqlValue(dueAt)}),
-        followup_after_at = COALESCE(NULLIF(followup_after_at, ''), ${sqlValue(followupAt)}),
+    SET launch_at = ${sqlValue(now.toISOString())},
+        due_at = ${sqlValue(dueAt)},
+        followup_after_at = ${sqlValue(followupAt)},
         historical_weight = COALESCE(historical_weight, ${sqlValue(normalizeScoring360Weights().historicalWeight)}),
         current_weight = COALESCE(current_weight, ${sqlValue(normalizeScoring360Weights().currentWeight)}),
         status = CASE WHEN status = 'draft' THEN 'open' ELSE status END,
@@ -2656,18 +2701,30 @@ function scheduleScoring360Reminder() {
     if (!workday.isWorkday) return;
 
     if (
-      config.scoring360ReminderDaysOfMonth.includes(shanghai.getDate())
-      && hour === config.scoring360ReminderHour
-      && minute >= config.scoring360ReminderMinute
+      shanghai.getDate() >= Math.min(...config.scoring360ReminderDaysOfMonth)
+      && isAtOrAfterScheduledTime(
+        hour,
+        minute,
+        config.scoring360ReminderHour,
+        config.scoring360ReminderMinute,
+      )
       && lastLaunchKey !== `${dateKey}:${shanghai.getDate()}`
     ) {
-      lastLaunchKey = `${dateKey}:${shanghai.getDate()}`;
       const cycleId = await ensureScoring360CycleForLaunchDate(shanghai);
-      await runScoring360Reminder({ cycleId, dryRun: false, force: false, source: "auto_scoring360_launch", kind: "launch" });
+      const launch = await runScoring360Reminder({ cycleId, dryRun: false, force: false, source: "auto_scoring360_launch", kind: "launch" });
+      if (launch.ok && launch.failed === 0 && launch.sent + launch.skipped > 0) {
+        lastLaunchKey = `${dateKey}:${shanghai.getDate()}`;
+      }
     }
 
     const cycleId = await resolveScoring360CycleId("");
     if (!cycleId || lastFollowupKey === dateKey) return;
+    const launchRows = await querySqlRows(`
+      SELECT COUNT(*) AS count
+      FROM scoring360_reminder_sends
+      WHERE cycle_id = ${sqlValue(cycleId)} AND kind = 'launch' AND status = 'sent';
+    `).catch(() => []);
+    if (Number(launchRows[0]?.count || 0) === 0) return;
     const cycle = await loadScoring360Cycle(cycleId);
     if (!cycle?.followupAfterAt) return;
     const followupTime = new Date(String(cycle.followupAfterAt).replace(" ", "T")).getTime();
@@ -3742,10 +3799,12 @@ async function seedScoring360FromJson(data) {
   for (const cycle of cycles) {
     statements.push(`
       INSERT OR IGNORE INTO scoring360_cycles (
-        id, label, mode, start_date, end_date, status, total_employees, total_evaluees, created_at, updated_at
+        id, label, mode, start_date, end_date, launch_at, status, total_employees, total_evaluees, created_at, updated_at
       ) VALUES (
         ${sqlValue(cycle.id)}, ${sqlValue(cycle.label)}, ${sqlValue(cycle.mode || "monthly")},
-        ${sqlValue(cycle.startDate)}, ${sqlValue(cycle.endDate)}, ${sqlValue(cycle.status || "open")},
+        ${sqlValue(cycle.startDate)}, ${sqlValue(cycle.endDate)},
+        ${sqlValue(cycle.launchAt || (["open", "active"].includes(cycle.status || "open") ? new Date().toISOString() : ""))},
+        ${sqlValue(cycle.status || "open")},
         ${sqlValue(Number(cycle.totalEmployees || 0))}, ${sqlValue(Number(cycle.totalEvaluees || 0))},
         datetime('now'), datetime('now')
       );
@@ -3778,21 +3837,26 @@ async function seedScoring360FromJson(data) {
   await execSql(statements.join("\n"));
 }
 
-async function resolveScoring360CycleId(input, options = {}) {
+async function resolveScoring360CycleId(input) {
   const requested = String(input || "").trim();
   if (requested) {
     const rows = await querySqlRows(`SELECT id FROM scoring360_cycles WHERE id = ${sqlValue(requested)} LIMIT 1;`);
     if (rows[0]?.id) return rows[0].id;
   }
-  if (options.ensureCurrentRound) {
-    return ensureScoring360CycleForLaunchDate(scoring360ActiveDate());
-  }
   const rows = await querySqlRows(`
     SELECT id FROM scoring360_cycles
+    WHERE status IN ('open', 'active') AND NULLIF(launch_at, '') IS NOT NULL
+    ORDER BY datetime(launch_at) DESC, datetime(created_at) DESC
+    LIMIT 1;
+  `);
+  if (rows[0]?.id) return rows[0].id;
+  const fallbackRows = await querySqlRows(`
+    SELECT id FROM scoring360_cycles
+    WHERE status <> 'draft'
     ORDER BY date(end_date) DESC, datetime(created_at) DESC
     LIMIT 1;
   `);
-  return rows[0]?.id || "";
+  return fallbackRows[0]?.id || "";
 }
 
 function scoring360ActiveDate() {
@@ -3809,9 +3873,6 @@ async function ensureScoring360CycleForLaunchDate(dateLike) {
   const existingRows = await querySqlRows(`SELECT id FROM scoring360_cycles WHERE id = ${sqlValue(cycle.id)} LIMIT 1;`);
   if (existingRows[0]?.id) return existingRows[0].id;
 
-  const now = new Date();
-  const dueAt = new Date(now.getTime() + config.scoring360ReminderDueHours * 60 * 60 * 1000).toISOString();
-  const followupAt = new Date(now.getTime() + config.scoring360ReminderFollowupHours * 60 * 60 * 1000).toISOString();
   const weights = normalizeScoring360Weights();
   await execSql(`
     INSERT INTO scoring360_cycles (
@@ -3819,9 +3880,9 @@ async function ensureScoring360CycleForLaunchDate(dateLike) {
       historical_weight, current_weight, status, created_at, updated_at
     ) VALUES (
       ${sqlValue(cycle.id)}, ${sqlValue(cycle.label)}, ${sqlValue(cycle.mode)},
-      ${sqlValue(cycle.startDate)}, ${sqlValue(cycle.endDate)}, ${sqlValue(now.toISOString())},
-      ${sqlValue(dueAt)}, ${sqlValue(followupAt)}, ${sqlValue(weights.historicalWeight)},
-      ${sqlValue(weights.currentWeight)}, 'open', datetime('now'), datetime('now')
+      ${sqlValue(cycle.startDate)}, ${sqlValue(cycle.endDate)}, NULL,
+      NULL, NULL, ${sqlValue(weights.historicalWeight)},
+      ${sqlValue(weights.currentWeight)}, 'draft', datetime('now'), datetime('now')
     );
   `);
   await copyScoring360AssignmentsFromTemplate(cycle.id);
@@ -3962,15 +4023,21 @@ async function loadPreviousScoring360Scores(cycleRow) {
         AND (${anchor ? `date(COALESCE(c.end_date, c.start_date)) < date(${sqlValue(anchor)})` : "1 = 1"})
       GROUP BY a.evaluee_name, c.id
     ),
-    latest AS (
-      SELECT evaluee_name, MAX(date(COALESCE(end_date, start_date))) AS latest_date
+    ranked AS (
+      SELECT
+        evaluee_name,
+        average_score,
+        ROW_NUMBER() OVER (
+          PARTITION BY evaluee_name
+          ORDER BY date(COALESCE(end_date, start_date)) DESC,
+            CASE WHEN cycle_id LIKE '%round2%' THEN 0 ELSE 1 END,
+            cycle_id DESC
+        ) AS rank
       FROM cycle_scores
-      GROUP BY evaluee_name
     )
-    SELECT s.evaluee_name, s.average_score
-    FROM cycle_scores s
-    JOIN latest l ON l.evaluee_name = s.evaluee_name
-      AND l.latest_date = date(COALESCE(s.end_date, s.start_date));
+    SELECT evaluee_name, average_score
+    FROM ranked
+    WHERE rank = 1;
   `).catch(() => []);
   return new Map(rows.map((row) => [row.evaluee_name, Number(row.average_score)]));
 }
@@ -4167,7 +4234,12 @@ function buildAccessProfile(session, user) {
   const canManageScoring360 = isScoring360ConfigManagerSession(session);
   const canManagePersonnel = canManageScoring360;
   const fullVisibility = bossView || externalView;
-  const currentEmployee = findDirectoryEmployee(user);
+  const currentEmployee = findDirectoryEmployee(user) || {
+    openId: String(user?.openId || "").trim(),
+    name: normalizeUserName(user?.name),
+    department: "",
+    email: String(user?.email || "").trim(),
+  };
   const visibleEmployees = fullVisibility
     ? employeeDirectory
     : visibleEmployeesForUser(user, currentEmployee);

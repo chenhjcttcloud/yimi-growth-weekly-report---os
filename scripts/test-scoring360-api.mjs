@@ -20,7 +20,7 @@ const child = spawn(process.execPath, ["server/index.mjs"], {
     SERVER_PORT: String(port),
     BASE_URL: baseUrl,
     WEEKLY_REPORT_DB_PATH: dbPath,
-    SCORING360_ACTIVE_DATE: "2026-06-24T10:00:00+08:00",
+    SCORING360_ACTIVE_DATE: "2026-08-25T10:00:00+08:00",
     MOCK_USER_OPEN_ID: "mock_manager",
     MOCK_USER_NAME: managerName,
     MOCK_USER_EMAIL: "manager@example.invalid",
@@ -43,22 +43,50 @@ try {
   assert(me.access?.canManageScoring360 === true, "configured manager should manage scoring360");
   assert(me.access?.canManagePersonnel === true, "configured manager should manage active personnel");
   assert(me.access?.canViewSettings === true, "configured manager should access relevant settings");
+  assert(me.access?.currentEmployee?.name === managerName, "SSO identity should remain available outside static report data");
 
   await postJson(`${baseUrl}/api/employees/manage`, {
     openId: "mock_manager",
     name: managerName,
     department: "Management",
   });
+  await postJson(`${baseUrl}/api/employees/manage`, {
+    openId: "departed_test",
+    name: "Departed Test",
+    department: "Management",
+  });
+  await postJson(`${baseUrl}/api/employees/manage/status`, {
+    openId: "departed_test",
+    active: false,
+  });
 
   const overview = await fetchJson(`${baseUrl}/api/scoring360`);
-  assert(overview.cycle?.id === "2026-05-round2-360", `expected current round cycle, got ${overview.cycle?.id}`);
-  assert(overview.cycle?.status === "open", `expected open cycle, got ${overview.cycle?.status}`);
+  assert(overview.cycle?.id === fixture.cycles[0]?.id, `reading should keep the launched cycle, got ${overview.cycle?.id}`);
+  assert(overview.evaluatorOptions.includes(managerName), "active manager should be available in evaluator options");
+  assert(!overview.evaluatorOptions.includes("Departed Test"), "inactive employees must be excluded from evaluator options");
 
-  const tasks = await fetchJson(`${baseUrl}/api/scoring360/my-tasks?evaluator=${encodeURIComponent(managerName)}`);
-  assert(tasks.cycleId === "2026-05-round2-360", `expected current tasks cycle, got ${tasks.cycleId}`);
+  const preview = await postJson(`${baseUrl}/api/scoring360/reminders/send`, {
+    kind: "launch",
+    dryRun: true,
+  });
+  assert(preview.cycle?.id === "2026-08-360", `expected monthly preview cycle, got ${preview.cycle?.id}`);
+  assert(preview.cycle?.status === "draft", `dry run must not activate cycle, got ${preview.cycle?.status}`);
+
+  const overviewAfterPreview = await fetchJson(`${baseUrl}/api/scoring360`);
+  assert(overviewAfterPreview.cycle?.id === fixture.cycles[0]?.id, "dry run must not switch the current cycle");
+
+  const tasks = await fetchJson(`${baseUrl}/api/scoring360/my-tasks?cycleId=2026-08-360&evaluator=${encodeURIComponent(managerName)}`);
+  assert(tasks.cycleId === "2026-08-360", `expected current tasks cycle, got ${tasks.cycleId}`);
   assert(tasks.tasks.length > 0, "expected manager scoring tasks copied from template");
   assert(tasks.tasks.every((task) => task.submitted === false), "new cycle tasks should not be submitted");
-  assert(tasks.tasks.every((task) => task.locked === false), "new cycle tasks should be editable");
+  assert(tasks.tasks.every((task) => task.locked === true), "draft cycle tasks should remain read-only");
+
+  const draftSubmit = await fetch(`${baseUrl}/api/scoring360/submit`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ cycleId: "2026-08-360", scores: [{ assignmentId: tasks.tasks[0].id, score: 80 }] }),
+  });
+  assert(draftSubmit.status === 409, `draft cycle must reject scoring submissions, got ${draftSubmit.status}`);
 
   console.log("scoring360 api test passed");
 } finally {

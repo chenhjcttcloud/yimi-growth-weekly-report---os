@@ -2,17 +2,18 @@ export const defaultScoring360ConfigManagers = [
   { openId: "mock_manager", name: "Demo Manager" },
 ];
 
-export function parseScoring360LaunchDays(value, legacyDay = 15) {
+export function parseScoring360LaunchDays(value, legacyDay = 25) {
   const source = String(value || "").trim();
-  if (!source) return [1, 15];
+  const fallbackDay = Number.isInteger(Number(legacyDay)) && Number(legacyDay) >= 20
+    ? Number(legacyDay)
+    : 25;
+  if (!source) return [fallbackDay];
   const days = source
     .split(/[,\n;]/)
     .map((item) => Number(String(item).trim()))
-    .filter((day) => Number.isInteger(day) && day >= 1 && day <= 31);
-  if (days.length === 0 && Number.isInteger(Number(legacyDay))) {
-    days.push(Number(legacyDay));
-  }
-  return Array.from(new Set(days)).sort((left, right) => left - right);
+    .filter((day) => Number.isInteger(day) && day >= 20 && day <= 31);
+  const uniqueDays = Array.from(new Set(days));
+  return uniqueDays.length === 1 ? uniqueDays : [fallbackDay];
 }
 
 export function scoring360CycleForLaunchDate(dateLike) {
@@ -21,13 +22,12 @@ export function scoring360CycleForLaunchDate(dateLike) {
     throw new Error("invalid_scoring360_launch_date");
   }
   const localDate = shanghaiDateParts(date);
-  const round = localDate.day >= 15 ? 2 : 1;
-  const period = previousMonthPeriod(localDate);
+  const period = currentMonthPeriod(localDate);
   return {
-    id: `${period.year}-${String(period.month).padStart(2, "0")}-round${round}-360`,
-    label: `${period.year}年${period.month}月协同360评分 · 第${round}轮`,
-    mode: "monthly_round",
-    round,
+    id: `${period.year}-${String(period.month).padStart(2, "0")}-360`,
+    label: `${period.year}年${period.month}月协同360评分`,
+    mode: "monthly",
+    round: 1,
     startDate: `${period.year}-${String(period.month).padStart(2, "0")}-01`,
     endDate: `${period.year}-${String(period.month).padStart(2, "0")}-${String(period.daysInMonth).padStart(2, "0")}`,
     monthKey: `${period.year}-${String(period.month).padStart(2, "0")}`,
@@ -81,9 +81,9 @@ function shanghaiDateParts(date) {
   };
 }
 
-function previousMonthPeriod(date) {
-  const year = date.month === 1 ? date.year - 1 : date.year;
-  const month = date.month === 1 ? 12 : date.month - 1;
+function currentMonthPeriod(date) {
+  const year = date.year;
+  const month = date.month;
   return {
     year,
     month,
