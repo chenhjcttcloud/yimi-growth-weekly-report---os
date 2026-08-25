@@ -65,6 +65,8 @@ export function ScoresPage({ visibleEmployees = [], access }: ScoresPageProps) {
   const [tasksLoading, setTasksLoading] = useState(false);
   const [tasksReloadKey, setTasksReloadKey] = useState(0);
   const [submitState, setSubmitState] = useState<"idle" | "saving" | "saved" | "error">("idle");
+  const [launchState, setLaunchState] = useState<"idle" | "sending" | "done" | "error">("idle");
+  const [launchMessage, setLaunchMessage] = useState("");
   const visibleNames = useMemo(() => new Set(visibleEmployees.map((employee) => employee.name).filter(Boolean)), [visibleEmployees]);
   const currentCycle = apiLoaded ? apiCycle : currentScoring360Cycle;
   const weeklyEmployees = visibleNames.size > 0
@@ -174,6 +176,34 @@ export function ScoresPage({ visibleEmployees = [], access }: ScoresPageProps) {
     }
   }
 
+  async function launchScoring360Cycle() {
+    if (!window.confirm("确认发起本月协同 360，并立即向所有待评分同事发送首轮飞书提醒？")) return;
+    setLaunchState("sending");
+    setLaunchMessage("");
+    try {
+      const response = await fetch("/api/scoring360/reminders/send", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ kind: "launch", dryRun: false }),
+      });
+      const result = await response.json();
+      if (!response.ok || !result.ok) throw new Error(result.error || "launch_failed");
+      const overview = await fetch("/api/scoring360").then((item) => item.ok ? item.json() : null);
+      if (overview?.ok) {
+        setApiCycle(overview.cycle || null);
+        setApiResults(Array.isArray(overview.results) ? overview.results : null);
+        setApiEvaluatorOptions(Array.isArray(overview.evaluatorOptions) ? overview.evaluatorOptions.filter(Boolean) : []);
+        setApiLoaded(true);
+      }
+      setTasksReloadKey((value) => value + 1);
+      setLaunchMessage(`本月评分已发起：成功 ${result.sent || 0} 人，跳过 ${result.skipped || 0} 人，失败 ${result.failed || 0} 人。`);
+      setLaunchState("done");
+    } catch (error) {
+      setLaunchMessage(error instanceof Error ? error.message : "发起评分失败");
+      setLaunchState("error");
+    }
+  }
+
   return (
     <div className="page-stack">
       <section className="score-overview-grid">
@@ -229,11 +259,17 @@ export function ScoresPage({ visibleEmployees = [], access }: ScoresPageProps) {
                 <h3>{currentCycle?.label || "协同360评分"}</h3>
               </div>
               {canSwitchEvaluator ? (
-                <select value={selectedEvaluator} onChange={(event) => setSelectedEvaluator(event.target.value)}>
-                  {evaluatorOptions.map((name) => (
-                    <option value={name} key={name}>{name}</option>
-                  ))}
-                </select>
+                <div className="scoring-toolbar-actions">
+                  <select value={selectedEvaluator} onChange={(event) => setSelectedEvaluator(event.target.value)}>
+                    {evaluatorOptions.map((name) => (
+                      <option value={name} key={name}>{name}</option>
+                    ))}
+                  </select>
+                  <button className="primary-button" type="button" onClick={launchScoring360Cycle} disabled={launchState === "sending"}>
+                    <Send size={15} />
+                    <span>{launchState === "sending" ? "发起中" : "发起本月评分"}</span>
+                  </button>
+                </div>
               ) : (
                 <div className="score-identity-pill">我的评分任务：{activeEvaluator || "当前账号"}</div>
               )}
@@ -247,7 +283,7 @@ export function ScoresPage({ visibleEmployees = [], access }: ScoresPageProps) {
               <div>
                 <span>完成窗口</span>
                 <strong>每月下旬启动一次</strong>
-                <p>启动后 24 小时内完成；48 小时仍未完成会收到一次飞书提醒。</p>
+                <p>发起后立即收到首轮提醒；24 小时仍未完成会再次提醒，48 小时为本轮截止时间。</p>
               </div>
               <div>
                 <span>滚动计算</span>
@@ -255,6 +291,7 @@ export function ScoresPage({ visibleEmployees = [], access }: ScoresPageProps) {
                 <p>页面同时展示上期分、当期均分和滚动协同分，避免一次评分决定长期判断。</p>
               </div>
             </div>
+            {launchMessage ? <p className={launchState === "error" ? "form-error" : "settings-success"}>{launchMessage}</p> : null}
             <div className="scoring-task-list">
               {tasksLoading ? (
                 <p className="empty-state">正在加载评分任务...</p>

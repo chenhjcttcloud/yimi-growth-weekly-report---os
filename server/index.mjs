@@ -62,8 +62,8 @@ const config = {
   ),
   scoring360ReminderHour: Number(process.env.SCORING360_REMINDER_HOUR || 10),
   scoring360ReminderMinute: Number(process.env.SCORING360_REMINDER_MINUTE || 0),
-  scoring360ReminderDueHours: Number(process.env.SCORING360_REMINDER_DUE_HOURS || 24),
-  scoring360ReminderFollowupHours: Number(process.env.SCORING360_REMINDER_FOLLOWUP_HOURS || 48),
+  scoring360ReminderDueHours: Number(process.env.SCORING360_REMINDER_DUE_HOURS || 48),
+  scoring360ReminderFollowupHours: Number(process.env.SCORING360_REMINDER_FOLLOWUP_HOURS || 24),
   scoring360HistoricalWeight: Number(process.env.SCORING360_HISTORICAL_WEIGHT || 0.3),
   scoring360CurrentWeight: Number(process.env.SCORING360_CURRENT_WEIGHT || 0.7),
   scoring360ReminderIdentity: process.env.SCORING360_REMINDER_FEISHU_IDENTITY || "bot",
@@ -1223,7 +1223,11 @@ async function getMyScoring360Tasks(req, res, url) {
     return;
   }
   const cycle = await loadScoring360Cycle(cycleId);
-  const cycleOpen = Boolean(cycle?.launchAt && ["open", "active"].includes(cycle.status));
+  const cycleOpen = Boolean(
+    cycle?.launchAt
+      && ["open", "active"].includes(cycle.status)
+      && !isScoring360CycleDeadlinePassed(cycle),
+  );
   if (!cycleOpen && !canSelectEvaluator) {
     sendJson(res, 200, { ok: true, cycleId, evaluator, tasks: [] });
     return;
@@ -1280,6 +1284,10 @@ async function submitScoring360(req, res) {
   const cycle = await loadScoring360Cycle(cycleId);
   if (!cycle?.launchAt || !["open", "active"].includes(cycle.status)) {
     sendJson(res, 409, { ok: false, error: "scoring_cycle_not_open" });
+    return;
+  }
+  if (isScoring360CycleDeadlinePassed(cycle)) {
+    sendJson(res, 409, { ok: false, error: "scoring_cycle_deadline_passed" });
     return;
   }
 
@@ -1451,6 +1459,7 @@ async function sendScoring360Reminder(req, res) {
   }
   const body = await readJsonBody(req, { limitBytes: 30_000 });
   const kind = body.kind === "followup" ? "followup" : "launch";
+  const evaluatorOpenId = String(body.evaluatorOpenId || "").trim();
   const requestedCycleId = String(body.cycleId || "").trim();
   const cycleId = requestedCycleId
     ? await resolveScoring360CycleId(requestedCycleId)
@@ -1462,6 +1471,7 @@ async function sendScoring360Reminder(req, res) {
     kind,
     dryRun: body.dryRun !== false,
     force: Boolean(body.force),
+    evaluatorOpenId,
     source: "manual",
     actor: session?.user || mockUser(),
   });
@@ -1595,7 +1605,7 @@ async function loadScoring360PendingRecipients(cycleId) {
     .sort((left, right) => right.pendingCount - left.pendingCount || left.evaluatorName.localeCompare(right.evaluatorName, "zh-CN"));
 }
 
-async function runScoring360Reminder({ cycleId, kind = "launch", dryRun = true, force = false, source = "manual", actor = null } = {}) {
+async function runScoring360Reminder({ cycleId, kind = "launch", dryRun = true, force = false, evaluatorOpenId = "", source = "manual", actor = null } = {}) {
   cycleId = cycleId || (kind === "launch"
     ? await ensureScoring360CycleForLaunchDate(scoring360ActiveDate())
     : await resolveScoring360CycleId(""));
@@ -1604,8 +1614,14 @@ async function runScoring360Reminder({ cycleId, kind = "launch", dryRun = true, 
   let cycle = await loadScoring360Cycle(cycleId);
   if (!cycle) return { ok: false, error: "cycle_not_found" };
   const pending = await loadScoring360PendingRecipients(cycleId);
+  const recipients = evaluatorOpenId
+    ? pending.filter((recipient) => recipient.evaluatorOpenId === evaluatorOpenId)
+    : pending;
+  if (evaluatorOpenId && recipients.length === 0) {
+    return { ok: false, error: "target_evaluator_not_pending" };
+  }
   const results = [];
-  for (const recipient of pending) {
+  for (const recipient of recipients) {
     const idempotencyKey = buildScoring360ReminderIdempotencyKey(cycle.id, recipient.evaluatorOpenId || recipient.evaluatorName, kind);
     const existing = await querySqlRows(`
       SELECT status, feishu_message_id, created_at
@@ -1734,7 +1750,7 @@ function buildScoring360ReminderMessage({ cycle, recipient, kind }) {
   const pendingNames = recipient.pendingNames.slice(0, 6).join("、");
   const more = recipient.pendingNames.length > 6 ? `等 ${recipient.pendingNames.length} 位同事` : "";
   const action = kind === "followup" ? "温柔提醒一下，你还有协同 360 评分没有完成。" : "协同 360 评分周期已经启动。";
-  const dueText = cycle.dueAt ? `本轮建议在 ${formatChineseDateTime(cycle.dueAt)} 前完成。` : `本轮建议在 24 小时内完成。`;
+  const dueText = cycle.dueAt ? `本轮请在 ${formatChineseDateTime(cycle.dueAt)} 前完成。` : `本轮截止时间为启动后 48 小时。`;
   return `${recipient.evaluatorName}，${action}
 
 这不是人情分，也不是简单给同事排高低，而是帮助团队看见：谁在协作中持续贡献价值，谁可能变成信息孤岛，以及哪些协作关系需要被管理层及时补位。
@@ -1742,7 +1758,7 @@ function buildScoring360ReminderMessage({ cycle, recipient, kind }) {
 你这轮需要评价 ${recipient.pendingCount} 个对象：${pendingNames}${more}。
 ${dueText}
 
-计算方式会在成长 OS 中透明展示：当期协同分 = 本轮收到的评分平均值；滚动协同分 = 上期/历史分 × ${Math.round(weights.historicalWeight * 100)}% + 当期分 × ${Math.round(weights.currentWeight * 100)}%。如果 48 小时后仍有未完成项，系统会再提醒一次。
+计算方式会在成长 OS 中透明展示：当期协同分 = 本轮收到的评分平均值；滚动协同分 = 上期/历史分 × ${Math.round(weights.historicalWeight * 100)}% + 当期分 × ${Math.round(weights.currentWeight * 100)}%。如果 24 小时后仍有未完成项，系统会再提醒一次；48 小时为本轮截止时间。
 
 入口：${config.baseUrl}/scores?tab=my360
 
@@ -1755,6 +1771,12 @@ function formatChineseDateTime(value) {
   if (!Number.isFinite(date.getTime())) return String(value);
   const shanghai = dateInShanghai(date);
   return `${shanghai.getMonth() + 1}月${shanghai.getDate()}日 ${String(shanghai.getHours()).padStart(2, "0")}:${String(shanghai.getMinutes()).padStart(2, "0")}`;
+}
+
+function isScoring360CycleDeadlinePassed(cycle) {
+  if (!cycle?.dueAt) return false;
+  const dueTime = new Date(String(cycle.dueAt).replace(" ", "T")).getTime();
+  return Number.isFinite(dueTime) && Date.now() >= dueTime;
 }
 
 function buildScoring360ReminderIdempotencyKey(cycleId, recipientKey, kind) {

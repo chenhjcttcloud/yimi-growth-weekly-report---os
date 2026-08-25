@@ -72,6 +72,21 @@ try {
   assert(preview.cycle?.id === "2026-08-360", `expected monthly preview cycle, got ${preview.cycle?.id}`);
   assert(preview.cycle?.status === "draft", `dry run must not activate cycle, got ${preview.cycle?.status}`);
 
+  const reminderStatus = await fetchJson(`${baseUrl}/api/scoring360/reminders?cycleId=2026-08-360`);
+  assert(reminderStatus.schedule?.followupHours === 24, `expected 24 hour followup, got ${reminderStatus.schedule?.followupHours}`);
+  assert(reminderStatus.schedule?.dueHours === 48, `expected 48 hour deadline, got ${reminderStatus.schedule?.dueHours}`);
+  assert(reminderStatus.pending.length > 1, "expected multiple pending evaluators for targeted reminder coverage");
+
+  const target = reminderStatus.pending[0];
+  const targetedPreview = await postJson(`${baseUrl}/api/scoring360/reminders/send`, {
+    cycleId: "2026-08-360",
+    kind: "followup",
+    dryRun: true,
+    evaluatorOpenId: target.evaluatorOpenId,
+  });
+  assert(targetedPreview.count === 1, `targeted reminder must process exactly one evaluator, got ${targetedPreview.count}`);
+  assert(targetedPreview.results[0]?.recipient?.evaluatorOpenId === target.evaluatorOpenId, "targeted reminder must keep the requested evaluator");
+
   const overviewAfterPreview = await fetchJson(`${baseUrl}/api/scoring360`);
   assert(overviewAfterPreview.cycle?.id === fixture.cycles[0]?.id, "dry run must not switch the current cycle");
 

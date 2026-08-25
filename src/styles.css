@@ -2464,6 +2464,11 @@ button {
   line-height: 1.5;
 }
 
+.scoring360-person-reminder {
+  justify-self: start;
+  margin-top: 4px;
+}
+
 .roster-audit-kpis {
   display: grid;
   grid-template-columns: repeat(4, minmax(0, 1fr));
@@ -3031,6 +3036,14 @@ button {
   border-radius: 8px;
   color: #172033;
   background: #ffffff;
+}
+
+.scoring-toolbar-actions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  justify-content: flex-end;
 }
 
 .score-identity-pill {

@@ -549,8 +549,15 @@ export function SettingsPage({ access }: SettingsPageProps) {
     }
   }
 
-  async function sendScoring360Reminder(kind: "launch" | "followup", dryRun = true) {
-    if (!dryRun && !window.confirm(`确认向当前待评分人员真实发送${kind === "launch" ? "首轮" : "补充"}提醒？`)) return;
+  async function sendScoring360Reminder(
+    kind: "launch" | "followup",
+    dryRun = true,
+    target?: NonNullable<Scoring360ReminderStatus["pending"]>[number],
+  ) {
+    const confirmation = target
+      ? `确认提醒 ${target.evaluatorName}？此人还有 ${target.pendingCount} 个评分对象未完成。`
+      : `确认向当前待评分人员真实发送${kind === "launch" ? "首轮" : "补充"}提醒？`;
+    if (!dryRun && !window.confirm(confirmation)) return;
     setScoring360ReminderState("running");
     setScoring360ReminderError("");
     setScoring360ReminderResult(null);
@@ -558,7 +565,12 @@ export function SettingsPage({ access }: SettingsPageProps) {
       const response = await fetch("/api/scoring360/reminders/send", {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({ cycleId: scoring360ReminderStatus?.cycle?.id, kind, dryRun }),
+        body: JSON.stringify({
+          cycleId: scoring360ReminderStatus?.cycle?.id,
+          kind,
+          dryRun,
+          evaluatorOpenId: target?.evaluatorOpenId || "",
+        }),
       });
       const result = await response.json();
       if (!response.ok || !result.ok) throw new Error(result.error || "send_scoring360_reminder_failed");
@@ -872,7 +884,7 @@ export function SettingsPage({ access }: SettingsPageProps) {
         <div className="scoring360-config-copy">
           <strong>{scoring360ReminderStatus?.cycle?.label || "当前周期"}</strong>
           <span>
-            计划每月 {scoring360ScheduleDays} 日开启，24 小时完成；48 小时仍未完成则补提醒。当前模式：{scoring360ReminderStatus?.launchMode === "scheduled" ? "服务器定时" : "管理员确认后手动发送"}。
+            计划每月 {scoring360ScheduleDays} 日开启；发起后立即通知，24 小时仍未完成则补提醒，48 小时截止。当前模式：{scoring360ReminderStatus?.launchMode === "scheduled" ? "服务器定时" : "管理员确认后手动发送"}。
           </span>
         </div>
         <div className="scoring360-reminder-actions">
@@ -880,24 +892,32 @@ export function SettingsPage({ access }: SettingsPageProps) {
             dry-run 预览首轮提醒
           </button>
           <button className="secondary-button" type="button" onClick={() => sendScoring360Reminder("followup", true)} disabled={scoring360ReminderState === "running"}>
-            dry-run 预览48小时补提醒
+            dry-run 预览24小时补提醒
           </button>
           <button className="primary-button" type="button" onClick={() => sendScoring360Reminder("launch", false)} disabled={scoring360ReminderState === "running"}>
-            真实发送首轮提醒
+            发起本月评分并发送首轮提醒
           </button>
           <button className="primary-button" type="button" onClick={() => sendScoring360Reminder("followup", false)} disabled={scoring360ReminderState === "running"}>
-            真实发送48小时补提醒
+            批量发送24小时补提醒
           </button>
           <button className="secondary-button" type="button" onClick={loadScoring360ReminderStatus}>
             刷新
           </button>
         </div>
         <div className="scoring360-pending-list">
-          {(scoring360ReminderStatus?.pending || []).slice(0, 12).map((item) => (
+          {(scoring360ReminderStatus?.pending || []).map((item) => (
             <div className={item.deliverable ? "" : "is-warning"} key={item.evaluatorName}>
               <strong>{item.evaluatorName}</strong>
               <span>{item.pendingCount}/{item.totalCount} 未评 · {item.department || "未填部门"}</span>
-              <small>{item.deliverable ? item.pendingNames.slice(0, 4).join("、") : "缺少 open_id，暂不能飞书提醒"}</small>
+              <small>{item.deliverable ? item.pendingNames.join("、") : "缺少 open_id，暂不能飞书提醒"}</small>
+              <button
+                className="secondary-button scoring360-person-reminder"
+                type="button"
+                disabled={!item.deliverable || scoring360ReminderState === "running"}
+                onClick={() => sendScoring360Reminder("followup", false, item)}
+              >
+                提醒此人
+              </button>
             </div>
           ))}
           {(scoring360ReminderStatus?.pending || []).length === 0 ? <p className="empty-state">当前周期暂无待评分对象。</p> : null}
