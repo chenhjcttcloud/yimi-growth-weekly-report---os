@@ -20,7 +20,7 @@ const child = spawn(process.execPath, ["server/index.mjs"], {
     SERVER_PORT: String(port),
     BASE_URL: baseUrl,
     WEEKLY_REPORT_DB_PATH: dbPath,
-    SCORING360_ACTIVE_DATE: "2026-08-25T10:00:00+08:00",
+    SCORING360_ACTIVE_DATE: "2099-08-25T10:00:00+08:00",
     MOCK_USER_OPEN_ID: "mock_manager",
     MOCK_USER_NAME: managerName,
     MOCK_USER_EMAIL: "manager@example.invalid",
@@ -70,17 +70,17 @@ try {
     kind: "launch",
     dryRun: true,
   });
-  assert(preview.cycle?.id === "2026-08-360", `expected monthly preview cycle, got ${preview.cycle?.id}`);
+  assert(preview.cycle?.id === "2099-08-360", `expected monthly preview cycle, got ${preview.cycle?.id}`);
   assert(preview.cycle?.status === "draft", `dry run must not activate cycle, got ${preview.cycle?.status}`);
 
-  const reminderStatus = await fetchJson(`${baseUrl}/api/scoring360/reminders?cycleId=2026-08-360`);
+  const reminderStatus = await fetchJson(`${baseUrl}/api/scoring360/reminders?cycleId=2099-08-360`);
   assert(reminderStatus.schedule?.followupHours === 24, `expected 24 hour followup, got ${reminderStatus.schedule?.followupHours}`);
   assert(reminderStatus.schedule?.dueHours === 48, `expected 48 hour deadline, got ${reminderStatus.schedule?.dueHours}`);
   assert(reminderStatus.pending.length > 1, "expected multiple pending evaluators for targeted reminder coverage");
 
   const target = reminderStatus.pending[0];
   const targetedPreview = await postJson(`${baseUrl}/api/scoring360/reminders/send`, {
-    cycleId: "2026-08-360",
+    cycleId: "2099-08-360",
     kind: "followup",
     dryRun: true,
     evaluatorOpenId: target.evaluatorOpenId,
@@ -91,8 +91,8 @@ try {
   const overviewAfterPreview = await fetchJson(`${baseUrl}/api/scoring360`);
   assert(overviewAfterPreview.cycle?.id === originalCycleId, "dry run must not switch the current cycle");
 
-  const tasks = await fetchJson(`${baseUrl}/api/scoring360/my-tasks?cycleId=2026-08-360&evaluator=${encodeURIComponent(managerName)}`);
-  assert(tasks.cycleId === "2026-08-360", `expected current tasks cycle, got ${tasks.cycleId}`);
+  const tasks = await fetchJson(`${baseUrl}/api/scoring360/my-tasks?cycleId=2099-08-360&evaluator=${encodeURIComponent(managerName)}`);
+  assert(tasks.cycleId === "2099-08-360", `expected current tasks cycle, got ${tasks.cycleId}`);
   assert(tasks.tasks.length > 0, "expected manager scoring tasks copied from template");
   assert(tasks.tasks.every((task) => task.submitted === false), "new cycle tasks should not be submitted");
   assert(tasks.tasks.every((task) => task.locked === true), "draft cycle tasks should remain read-only");
@@ -100,7 +100,7 @@ try {
   const draftSubmit = await fetch(`${baseUrl}/api/scoring360/submit`, {
     method: "POST",
     headers: { "content-type": "application/json" },
-    body: JSON.stringify({ cycleId: "2026-08-360", scores: [{ assignmentId: tasks.tasks[0].id, score: 80 }] }),
+    body: JSON.stringify({ cycleId: "2099-08-360", scores: [{ assignmentId: tasks.tasks[0].id, score: 80 }] }),
   });
   assert(draftSubmit.status === 409, `draft cycle must reject scoring submissions, got ${draftSubmit.status}`);
 
