@@ -1,59 +1,8 @@
 import { useEffect, useMemo, useState } from "react";
 import { Activity, AlertCircle, ChevronDown, MessageSquare, MousePointerClick, Quote, Sparkles, Trophy } from "lucide-react";
 import { HorizontalBars } from "../components/SimpleCharts";
-import { appData, getCoordinationTags, insightsForPeriod } from "../lib/data";
+import { appData, getCoordinationTags, insightsForPeriod,weeklyForPeriod } from "../lib/data";
 import type { ThemeInsight } from "../lib/types";
-
-const fallbackThemeInsights: ThemeInsight[] = [
-  {
-    label: "跨部门评审",
-    value: 7,
-    severity: "P1",
-    summary: "评审输入不完整会造成重复沟通和返工。",
-    detail: "匿名演示数据表明，产品和运营需要在评审前共同确认数据、假设、目标和待决策问题。",
-    quotes: [
-      {
-        author: "林清",
-        department: "产品部",
-        week: "1月第二周",
-        text: "匿名示例原文：跨部门评审的输入信息仍不完整。",
-      },
-    ],
-    nextStep: "建立评审前置清单，并用一次真实评审验证是否减少返工。",
-  },
-  {
-    label: "复购运营",
-    value: 6,
-    severity: "P1",
-    summary: "触达动作已有数据，但低活跃用户的真实原因仍需补足。",
-    detail: "匿名演示数据只用于展示主题分拣、原文引用和后续任务之间的关系。",
-    quotes: [
-      {
-        author: "周远",
-        department: "运营部",
-        week: "1月第二周",
-        text: "匿名示例原文：低活跃用户的反馈样本仍然不足。",
-      },
-    ],
-    nextStep: "完成五位用户访谈，并依据反馈更新分层触达策略。",
-  },
-  {
-    label: "机制沉淀",
-    value: 5,
-    severity: "P2",
-    summary: "已经验证的个人方法还需要转成团队可复用机制。",
-    detail: "AI 不只判断任务是否完成，也关注是否形成模板、检查表和新的组织上下文。",
-    quotes: [
-      {
-        author: "匿名同事",
-        department: "跨部门",
-        week: "1月第二周",
-        text: "匿名示例原文：下一步要把个人方法变成团队机制。",
-      },
-    ],
-    nextStep: "记录方法的输入、步骤、验收条件和首次执行反馈。",
-  },
-];
 
 interface ContributionActivity {
   userId?: string;
@@ -91,13 +40,13 @@ interface TrendsPageProps {
 
 export function TrendsPage({ selectedPeriodId }: TrendsPageProps) {
   const periodInsights = insightsForPeriod(selectedPeriodId);
-  const themes = periodInsights.themes.length > 0 ? periodInsights.themes : fallbackThemeInsights;
+  const themes = periodInsights.themes;
   const [openTheme, setOpenTheme] = useState(themes[0]?.label ?? "");
+  useEffect(()=>setOpenTheme(themes[0]?.label||""),[selectedPeriodId]);
   const [activity, setActivity] = useState<ContributionActivity[]>([]);
   const [showAllContributors, setShowAllContributors] = useState(false);
-  const departmentData = Object.entries(appData.departmentScores)
-    .map(([label, value]) => ({ label, value }))
-    .sort((a, b) => b.value - a.value);
+  const periodDepartments=weeklyForPeriod(selectedPeriodId).filter(w=>w.qualityAvailable!==false).reduce<Record<string,{total:number;count:number}>>((all,w)=>{const d=all[w.department||'未分部门']||{total:0,count:0};d.total+=w.total;d.count++;all[w.department||'未分部门']=d;return all;},{});
+  const departmentData=Object.entries(periodDepartments).map(([label,d])=>({label,value:Math.round(d.total/d.count*10)/10})).sort((a,b)=>b.value-a.value);
   const contributors = useMemo(() => buildContributorRows(activity), [activity]);
   const topContributors = contributors.slice(0, 10);
   const displayedContributors = showAllContributors ? contributors : topContributors;
@@ -126,13 +75,13 @@ export function TrendsPage({ selectedPeriodId }: TrendsPageProps) {
             <h2>部门周报质量均分</h2>
           </div>
         </div>
-        <HorizontalBars data={departmentData} />
+        {departmentData.length?<HorizontalBars data={departmentData} />:<p className="pf-caption">本周期暂无完成AI分析的周报，分析完成后显示部门均分。</p>}
       </article>
       <article className="panel contribution-panel">
         <div className="panel-heading compact">
           <div>
             <span className="section-label">Growth Contributors</span>
-            <h2>组织成长贡献者 Top10</h2>
+            <h2>累计组织成长贡献者 Top10</h2>
           </div>
         </div>
         <div className="contribution-overview">
@@ -187,7 +136,7 @@ export function TrendsPage({ selectedPeriodId }: TrendsPageProps) {
         </div>
         <div className="contribution-footer">
           <p className="contribution-note">
-            默认展示上一周期Top10，管理视角可展开完整排序。
+            根据现有周报与使用记录累计计算，可展开完整排序。
           </p>
           <button className="secondary-button" type="button" onClick={() => setShowAllContributors((current) => !current)}>
             {showAllContributors ? "收起为 Top10" : `管理视角：展开完整排序（${contributors.length}人）`}
@@ -203,7 +152,7 @@ export function TrendsPage({ selectedPeriodId }: TrendsPageProps) {
             <h2>跨周问题分拣</h2>
           </div>
         </div>
-        <div className="theme-list">
+        <div className="theme-list">{!themes.length&&<p className="pf-caption">本周期暂无已分析的问题主题。</p>}
           {themes.map((theme) => {
             const expanded = openTheme === theme.label;
             const tags = getCoordinationTags({

@@ -2,11 +2,13 @@ import { useEffect, useMemo, useState } from "react";
 import { PriorityBadge } from "../components/PriorityBadge";
 import { appData, attentionQueueForInsights, insightsForPeriod, priorityRank } from "../lib/data";
 import { truncate } from "../lib/format";
+import {AppSelect} from '../components/AppSelect';
 
 interface TasksPageProps {
   selectedPeriodId: string;
   taskCreated: boolean;
   onCreateTasks: () => void;
+  readOnly?:boolean;
 }
 
 interface FeishuTaskRow {
@@ -21,11 +23,13 @@ interface FeishuTaskRow {
   updatedAt?: string;
 }
 
-export function TasksPage({ selectedPeriodId, taskCreated, onCreateTasks }: TasksPageProps) {
+export function TasksPage({ selectedPeriodId, taskCreated, onCreateTasks,readOnly=false }: TasksPageProps) {
   const [feishuTasks, setFeishuTasks] = useState<FeishuTaskRow[]>([]);
   const [taskLedgerState, setTaskLedgerState] = useState<"loading" | "ready" | "error">("loading");
   const periodInsights = insightsForPeriod(selectedPeriodId);
   const periodAttentionQueue = attentionQueueForInsights(periodInsights);
+  const [enabled,setEnabled]=useState(false),[people,setPeople]=useState<{userId:string;name:string;department:string}[]>([]),[selected,setSelected]=useState<number[]>([]),[owners,setOwners]=useState<Record<number,string>>({}),[busy,setBusy]=useState(false),[message,setMessage]=useState(''),[revision,setRevision]=useState(0);
+  useEffect(()=>{setSelected([]);setOwners({});setMessage('');},[selectedPeriodId]);
 
   useEffect(() => {
     let ignore = false;
@@ -37,6 +41,7 @@ export function TasksPage({ selectedPeriodId, taskCreated, onCreateTasks }: Task
         const result = await response.json();
         if (!ignore) {
           setFeishuTasks(Array.isArray(result.tasks) ? result.tasks : []);
+          setEnabled(result.taskCreateEnabled===true);setPeople(result.employees||[]);
           setTaskLedgerState("ready");
         }
       } catch {
@@ -49,7 +54,7 @@ export function TasksPage({ selectedPeriodId, taskCreated, onCreateTasks }: Task
       ignore = true;
       window.clearInterval(timer);
     };
-  }, [taskCreated]);
+  }, [taskCreated,revision]);
 
   const kimiEmployeeTasks = periodInsights.employeeInsights.flatMap((insight) => insight.taskCandidates);
   const employeeTaskRows = kimiEmployeeTasks.length > 0
@@ -62,22 +67,22 @@ export function TasksPage({ selectedPeriodId, taskCreated, onCreateTasks }: Task
         person: task.source || task.owner,
         lane: "同事闭环",
         evidence: task.evidence,
+        ownerUserId:task.ownerUserId||'',
       }))
-    : appData.employeeTasks.map((task) => ({
-        priority: task.priority,
-        title: task.title,
-        description: task.description,
-        dueDate: task.dueDate,
-        theme: task.theme,
-        person: task.source,
-        lane: "同事闭环",
-        evidence: task.evidence,
-      }));
+    : [];
   const allTasks = [
-    ...periodAttentionQueue.map((task) => ({ ...task, lane: "老板关注", person: task.source })),
+    ...periodAttentionQueue.map((task) => ({ ...task,ownerUserId:task.ownerUserId||'', lane: "老板关注", person: task.source })),
     ...employeeTaskRows,
   ].sort((a, b) => priorityRank(a.priority) - priorityRank(b.priority));
-  const createText = taskCreated ? `已确认 ${feishuTasks.length} 个飞书任务` : "批量创建已确认任务";
+  const createText = busy?'正在创建…':`创建选中的飞书任务（${selected.length}）`;
+  async function createSelected(){
+    setBusy(true);setMessage('');try{
+      const candidates=selected.map(index=>{const t=allTasks[index],ownerUserId=owners[index]||t.ownerUserId;if(!ownerUserId)throw Error('请为每条选中任务选择负责人');return {periodId:selectedPeriodId,title:t.title,description:t.description,priority:t.priority,ownerUserId,evidence:t.evidence,dueDate:t.dueDate,useDueDate:Boolean(t.dueDate)};});
+      const r=await fetch('/api/tasks/create',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({candidates})}),j=await r.json();if(!r.ok)throw Error(j.error==='task_creation_disabled'?'任务创建尚未开启，请在系统设置接通飞书任务':'创建未完成，请检查飞书权限和负责人');
+      if(j.results.some((v:{error?:string})=>v.error==='feishu_reauthorization_required')){setMessage('飞书授权已到期，请重新授权后再创建；已成功的任务会保留。');setRevision(v=>v+1);return;}
+      const saved=j.results.filter((v:{ok:boolean;dryRun?:boolean})=>v.ok&&!v.dryRun).length,failed=j.results.length-saved;setMessage(`已创建或确认已有任务 ${saved} 个${failed?`，${failed} 个未成功，请检查权限后重试`:''}。`);if(saved)onCreateTasks();if(!failed)setSelected([]);setRevision(v=>v+1);
+    }catch(e){setMessage(e instanceof Error?e.message:'创建失败');}finally{setBusy(false);}
+  }
   const taskStats = useMemo(() => {
     const completed = feishuTasks.filter((task) => task.status === "completed").length;
     const active = feishuTasks.filter((task) => !["completed", "deleted"].includes(task.status)).length;
@@ -93,21 +98,24 @@ export function TasksPage({ selectedPeriodId, taskCreated, onCreateTasks }: Task
             <span className="section-label">Action System</span>
             <h2>周报问题到飞书任务</h2>
           </div>
-          <button className={`primary-button ${taskCreated ? "is-confirmed" : ""}`} type="button" onClick={onCreateTasks}>
+          <button className="primary-button" type="button" disabled={busy||readOnly||!enabled||!selected.length||selected.length>50} onClick={()=>void createSelected()}>
             {createText}
           </button>
         </div>
+        {!enabled&&<p className="pf-notice">飞书任务创建尚未开启。可先回看候选，在「系统设置 → 飞书与数据集成」接通后再创建，不会模拟成功。</p>}{message&&<p role="status" className="pf-notice">{message}{message.includes('飞书授权已到期')&&<> <a href="/auth/login">重新授权飞书</a></>}</p>}
         <div className="task-board">
           {["老板关注", "同事闭环"].map((lane) => (
             <div className="task-column" key={lane}>
               <h3>{lane}</h3>
-              {allTasks.filter((task) => task.lane === lane).slice(0, 16).map((task) => (
+              {allTasks.map((task,index)=>({...task,index})).filter((task) => task.lane === lane).map((task) => (
                 <div className="task-card" key={`${lane}-${task.title}`}>
                   <div className="task-card-top">
                     <PriorityBadge priority={task.priority} />
                     <span>{task.person}</span>
                   </div>
                   <strong>{task.title}</strong>
+                  <label><input type="checkbox" aria-label={`选择任务${task.title}`} disabled={busy||readOnly} checked={selected.includes(task.index)} onChange={()=>setSelected(xs=>xs.includes(task.index)?xs.filter(v=>v!==task.index):[...xs,task.index])}/>选择创建</label>
+                  <AppSelect aria-label={`任务负责人${task.title}`} value={owners[task.index]||task.ownerUserId} disabled={busy||readOnly} placeholder="请选择负责人" searchable onValueChange={value=>setOwners(xs=>({...xs,[task.index]:value}))}>{people.map(e=><option key={e.userId} value={e.userId}>{e.name} · {e.department}</option>)}</AppSelect>
                   <p>{truncate(task.description, 120)}</p>
                   <small>{task.dueDate || "待定截止日"} · {task.theme}</small>
                 </div>

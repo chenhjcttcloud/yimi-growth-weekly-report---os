@@ -11,6 +11,9 @@ const dbPath = path.join(tempDir, "weekly-report-os.sqlite");
 try {
   const owner = await startServer({ userId: "mock_owner", name: "Owner" });
   try {
+    await postJson(owner.baseUrl, "/api/employees/manage", {
+      userId: "admin-open", name: "Joy Admin", department: "人力行政部",
+    });
     await postJson(owner.baseUrl, "/api/scoring360-admin-members", {
       members: [{ userId: "admin-open", name: "Joy Admin", department: "人力行政部" }],
     });

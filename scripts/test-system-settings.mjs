@@ -35,4 +35,4 @@ try{
  const reports=await performance.reports();assert.equal(reports[0].candidate,30);assert.equal(reports[0].onTime,true);assert.equal(reports[1].candidate,40);assert.equal(reports[1].late,true);
  assert((await service.logs()).length>=4);
  console.log('system settings tests passed: future-cycle policy, immutable versions, encrypted secret, no secret disclosure, runtime restore, audit trail');
-}finally{await rm(dir,{recursive:true,force:true});}
+}finally{console.log('Test artifacts retained:',dir);}

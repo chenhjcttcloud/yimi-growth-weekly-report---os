@@ -16,12 +16,14 @@ try {
  }});
  const user={userId:'ou_new',name:'新同事',email:'new@example.invalid'};
  const first=await sync(user,'test-token');assert(first.active);assert.equal(first.employee.department,'研发部');
+ run("INSERT INTO employee_directory_profiles(user_id,name_missing,synced_at) VALUES('ou_new',1,datetime('now')); UPDATE employees SET name='待同步姓名' WHERE user_id='ou_new';");
  await sync({...user,name:'更新姓名'},'test-token');assert.equal(run('SELECT COUNT(*) AS count FROM employees',true)[0].count,1);
  assert.equal(run('SELECT name FROM employees',true)[0].name,'更新姓名');
+ assert.equal(run("SELECT name_missing FROM employee_directory_profiles WHERE user_id='ou_new';",true)[0].name_missing,0,'verified SSO clears stale directory name warnings');
  run("UPDATE employees SET is_active=0 WHERE user_id='ou_new'");
  deny=true;const stopped=await sync(user,'test-token');assert.equal(stopped.active,false);assert.equal(stopped.employee.department,'研发部');
  assert(run('SELECT sync_note FROM employee_sso_logins',true)[0].sync_note.includes('权限'));
  const sameName=await sync({userId:'ou_other',name:'新同事'},'test-token');assert(sameName.active);assert.equal(run('SELECT COUNT(*) AS count FROM employees',true)[0].count,2);
  await assert.rejects(sync({name:'无身份'},'test-token'),/invalid_sso_identity/);
  console.log('SSO roster tests passed: first login, profile updates, user_id identity, department permissions, inactive account remains inactive');
-} finally {await rm(dir,{recursive:true,force:true});}
+} finally {console.log('Test artifacts retained:',dir);}

@@ -3,6 +3,43 @@ PRAGMA journal_mode = WAL;
 PRAGMA synchronous = NORMAL;
 PRAGMA busy_timeout = 5000;
 
+CREATE TABLE IF NOT EXISTS revoked_sessions (
+ session_id TEXT PRIMARY KEY, expires_at TEXT, reason TEXT NOT NULL,
+ revoked_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE TABLE IF NOT EXISTS backup_runs (
+ id TEXT PRIMARY KEY,kind TEXT NOT NULL,directory TEXT NOT NULL,status TEXT NOT NULL,
+ started_at TEXT NOT NULL,finished_at TEXT,schedule_date TEXT,manifest_hash TEXT,
+ file_count INTEGER,error TEXT,verified_at TEXT,verification_status TEXT
+);
+CREATE TABLE IF NOT EXISTS backup_schedule_claims (date TEXT PRIMARY KEY,id TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS operations_alerts (
+ id TEXT PRIMARY KEY,issue_key TEXT NOT NULL,alert_date TEXT NOT NULL,
+ recipient_user_id TEXT NOT NULL,message TEXT NOT NULL,status TEXT NOT NULL,message_id TEXT,
+ attempts INTEGER NOT NULL DEFAULT 0,first_attempt_at TEXT,last_attempt_at TEXT,next_attempt_at TEXT,
+ claim_token TEXT,last_error TEXT,
+ created_at TEXT NOT NULL DEFAULT (datetime('now')),UNIQUE(issue_key,alert_date,recipient_user_id)
+);
+CREATE TABLE IF NOT EXISTS operations_alert_attempts (
+ id TEXT PRIMARY KEY,alert_id TEXT NOT NULL,attempt_no INTEGER NOT NULL,status TEXT NOT NULL,
+ started_at TEXT NOT NULL,finished_at TEXT,message_id TEXT,error TEXT,UNIQUE(alert_id,attempt_no)
+);
+CREATE TABLE IF NOT EXISTS received_feishu_events (
+ event_id TEXT PRIMARY KEY, body_hash TEXT NOT NULL,
+ received_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE TABLE IF NOT EXISTS employee_employment_periods (
+ id TEXT PRIMARY KEY, employee_user_id TEXT NOT NULL, start_date TEXT NOT NULL,
+ end_date TEXT, source TEXT NOT NULL, updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+ CHECK(end_date IS NULL OR end_date>=start_date)
+);
+CREATE INDEX IF NOT EXISTS idx_employment_employee ON employee_employment_periods(employee_user_id,start_date);
+CREATE TABLE IF NOT EXISTS management_summaries (
+ id TEXT PRIMARY KEY, period_id TEXT NOT NULL, source_hash TEXT NOT NULL, model TEXT NOT NULL,
+ summary TEXT NOT NULL, created_by TEXT NOT NULL, created_at TEXT NOT NULL DEFAULT (datetime('now')),
+ UNIQUE(period_id,source_hash,model)
+);
+
 CREATE TABLE IF NOT EXISTS schema_migrations (
   version TEXT PRIMARY KEY,
   applied_at TEXT NOT NULL DEFAULT (datetime('now'))
@@ -12,6 +49,13 @@ CREATE TABLE IF NOT EXISTS app_settings (
   key TEXT PRIMARY KEY,
   value_json TEXT NOT NULL,
   updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+-- Directory discovery does not imply an SSO login or any management role.
+CREATE TABLE IF NOT EXISTS employee_directory_profiles (
+  user_id TEXT PRIMARY KEY,
+  name_missing INTEGER NOT NULL DEFAULT 0,
+  synced_at TEXT NOT NULL
 );
 
 CREATE TABLE IF NOT EXISTS employees (
@@ -517,6 +561,16 @@ CREATE TABLE IF NOT EXISTS personal_scoring_reminders (
  id TEXT PRIMARY KEY, requester_user_id TEXT NOT NULL, month TEXT NOT NULL,
  recipient_user_id TEXT NOT NULL, status TEXT NOT NULL, created_at TEXT NOT NULL, message_id TEXT
 );
+CREATE TABLE IF NOT EXISTS monthly_review_plans (
+ month TEXT NOT NULL,employee_user_id TEXT NOT NULL,plan_json TEXT NOT NULL,
+ created_at TEXT NOT NULL DEFAULT(datetime('now')),PRIMARY KEY(month,employee_user_id)
+);
+CREATE TABLE IF NOT EXISTS monthly_manager_handoffs (
+ id TEXT PRIMARY KEY,month TEXT NOT NULL,employee_user_id TEXT NOT NULL,
+ from_user_id TEXT NOT NULL,to_user_id TEXT NOT NULL,reason TEXT NOT NULL,
+ actor_user_id TEXT NOT NULL,actor_name TEXT NOT NULL,created_at TEXT NOT NULL,
+ UNIQUE(month,employee_user_id,from_user_id),CHECK(from_user_id<>to_user_id AND to_user_id<>employee_user_id)
+);
 CREATE INDEX IF NOT EXISTS idx_personal_scoring_reminders ON personal_scoring_reminders(requester_user_id,month,recipient_user_id,created_at);
 
 CREATE TABLE IF NOT EXISTS organization_departments (
@@ -617,3 +671,111 @@ WHEN
  OR ABS(COALESCE(json_extract(NEW.result_json,'$.managerScore'),-1000)-(CASE json_extract(NEW.evidence_json,'$.managerProgress.kind') WHEN 'boss' THEN (SELECT ROUND(AVG(score),1) FROM department_leader_scores WHERE month=NEW.month AND leader_user_id=NEW.employee_user_id AND department_id IN(SELECT value FROM json_each(NEW.evidence_json,'$.managerProgress.expectedIds'))) ELSE (SELECT ROUND(AVG(score),1) FROM monthly_manager_scores WHERE month=NEW.month AND employee_user_id=NEW.employee_user_id AND evaluator_user_id IN(SELECT value FROM json_each(NEW.evidence_json,'$.managerProgress.expectedIds'))) END))>0.001
  OR ABS(COALESCE(json_extract(NEW.result_json,'$.score'),-1000)-ROUND(json_extract(NEW.result_json,'$.peerScore')*0.7+json_extract(NEW.result_json,'$.managerScore')*0.3,1))>0.001
 BEGIN SELECT RAISE(ABORT,'weighted_scoring_incomplete_or_changed'); END;
+
+CREATE TRIGGER IF NOT EXISTS monthly_review_plan_no_update BEFORE UPDATE ON monthly_review_plans BEGIN SELECT RAISE(ABORT,'monthly_plan_locked'); END;
+CREATE TRIGGER IF NOT EXISTS monthly_review_plan_no_delete BEFORE DELETE ON monthly_review_plans BEGIN SELECT RAISE(ABORT,'monthly_plan_locked'); END;
+CREATE TRIGGER IF NOT EXISTS monthly_handoff_no_update BEFORE UPDATE ON monthly_manager_handoffs BEGIN SELECT RAISE(ABORT,'handoff_history_locked'); END;
+CREATE TRIGGER IF NOT EXISTS monthly_handoff_no_delete BEFORE DELETE ON monthly_manager_handoffs BEGIN SELECT RAISE(ABORT,'handoff_history_locked'); END;
+CREATE TRIGGER IF NOT EXISTS monthly_handoff_guard BEFORE INSERT ON monthly_manager_handoffs
+WHEN EXISTS(SELECT 1 FROM monthly_weighted_results WHERE month=NEW.month AND employee_user_id=NEW.employee_user_id)
+ OR EXISTS(SELECT 1 FROM performance_results WHERE month=NEW.month AND employee_user_id=NEW.employee_user_id AND kind='collaboration')
+ OR EXISTS(SELECT 1 FROM monthly_manager_scores WHERE month=NEW.month AND employee_user_id=NEW.employee_user_id AND evaluator_user_id=NEW.from_user_id)
+ OR NOT EXISTS(SELECT 1 FROM employees WHERE user_id=NEW.to_user_id AND is_active=1)
+BEGIN SELECT RAISE(ABORT,'result_locked'); END;
+CREATE TRIGGER IF NOT EXISTS monthly_manager_score_handoff_guard BEFORE INSERT ON monthly_manager_scores
+WHEN EXISTS(SELECT 1 FROM monthly_manager_handoffs WHERE month=NEW.month AND employee_user_id=NEW.employee_user_id AND from_user_id=NEW.evaluator_user_id)
+BEGIN SELECT RAISE(ABORT,'rating_responsibility_changed'); END;
+
+-- Additive successor support. Original records and immutable constraints stay intact.
+CREATE TABLE IF NOT EXISTS department_person_scores (
+ department_id TEXT NOT NULL,month TEXT NOT NULL,leader_user_id TEXT NOT NULL,score REAL NOT NULL CHECK(score>=0 AND score<=100),
+ comment TEXT NOT NULL,scorer_user_id TEXT NOT NULL,scorer_name TEXT NOT NULL,created_at TEXT NOT NULL,
+ PRIMARY KEY(department_id,month,leader_user_id)
+);
+CREATE TRIGGER IF NOT EXISTS department_person_scores_no_update BEFORE UPDATE ON department_person_scores BEGIN SELECT RAISE(ABORT,'result_locked'); END;
+CREATE TRIGGER IF NOT EXISTS department_person_scores_no_delete BEFORE DELETE ON department_person_scores BEGIN SELECT RAISE(ABORT,'result_locked'); END;
+
+CREATE TABLE IF NOT EXISTS monthly_person_weighted_results (
+ month TEXT NOT NULL, employee_user_id TEXT NOT NULL, employee_name TEXT NOT NULL,
+ kind TEXT NOT NULL DEFAULT 'collaboration' CHECK(kind='collaboration'),
+ result_json TEXT NOT NULL, evidence_json TEXT NOT NULL, confirmed_by TEXT NOT NULL,
+ confirmed_at TEXT NOT NULL, PRIMARY KEY(month,employee_user_id,kind)
+);
+CREATE VIEW IF NOT EXISTS all_department_leader_scores AS
+ SELECT * FROM department_leader_scores UNION ALL SELECT * FROM department_person_scores;
+CREATE VIEW IF NOT EXISTS all_monthly_weighted_results AS
+ SELECT * FROM monthly_weighted_results UNION ALL SELECT * FROM monthly_person_weighted_results;
+CREATE TRIGGER IF NOT EXISTS person_monthly_manager_scores_no_update BEFORE UPDATE ON monthly_manager_scores BEGIN SELECT RAISE(ABORT,'result_locked'); END;
+CREATE TRIGGER IF NOT EXISTS person_monthly_manager_scores_no_delete BEFORE DELETE ON monthly_manager_scores BEGIN SELECT RAISE(ABORT,'result_locked'); END;
+CREATE TRIGGER IF NOT EXISTS person_monthly_weighted_results_no_update BEFORE UPDATE ON monthly_person_weighted_results BEGIN SELECT RAISE(ABORT,'result_locked'); END;
+CREATE TRIGGER IF NOT EXISTS person_monthly_weighted_results_no_delete BEFORE DELETE ON monthly_person_weighted_results BEGIN SELECT RAISE(ABORT,'result_locked'); END;
+CREATE TRIGGER IF NOT EXISTS person_monthly_manager_scores_after_publication BEFORE INSERT ON monthly_manager_scores
+WHEN EXISTS(SELECT 1 FROM all_monthly_weighted_results WHERE month=NEW.month AND employee_user_id=NEW.employee_user_id)
+BEGIN SELECT RAISE(ABORT,'result_locked'); END;
+CREATE TRIGGER IF NOT EXISTS person_weighted_response_insert_lock BEFORE INSERT ON scoring360_responses
+WHEN EXISTS(SELECT 1 FROM all_monthly_weighted_results p JOIN scoring360_cycles c ON substr(c.start_date,1,7)=p.month JOIN scoring360_assignments a ON a.id=NEW.assignment_id WHERE c.id=NEW.cycle_id AND a.evaluee_user_id=p.employee_user_id)
+BEGIN SELECT RAISE(ABORT,'result_locked'); END;
+CREATE TRIGGER IF NOT EXISTS person_weighted_response_update_lock BEFORE UPDATE ON scoring360_responses
+WHEN EXISTS(SELECT 1 FROM all_monthly_weighted_results p JOIN scoring360_cycles c ON substr(c.start_date,1,7)=p.month JOIN scoring360_assignments a ON a.id IN(OLD.assignment_id,NEW.assignment_id) WHERE c.id IN(OLD.cycle_id,NEW.cycle_id) AND a.evaluee_user_id=p.employee_user_id)
+BEGIN SELECT RAISE(ABORT,'result_locked'); END;
+CREATE TRIGGER IF NOT EXISTS person_weighted_response_delete_lock BEFORE DELETE ON scoring360_responses
+WHEN EXISTS(SELECT 1 FROM all_monthly_weighted_results p JOIN scoring360_cycles c ON substr(c.start_date,1,7)=p.month JOIN scoring360_assignments a ON a.id=OLD.assignment_id WHERE c.id=OLD.cycle_id AND a.evaluee_user_id=p.employee_user_id)
+BEGIN SELECT RAISE(ABORT,'result_locked'); END;
+CREATE TRIGGER IF NOT EXISTS person_weighted_assignment_insert_lock BEFORE INSERT ON scoring360_assignments
+WHEN EXISTS(SELECT 1 FROM all_monthly_weighted_results p JOIN scoring360_cycles c ON substr(c.start_date,1,7)=p.month WHERE c.id=NEW.cycle_id AND p.employee_user_id=NEW.evaluee_user_id)
+BEGIN SELECT RAISE(ABORT,'result_locked'); END;
+CREATE TRIGGER IF NOT EXISTS person_weighted_assignment_update_lock BEFORE UPDATE ON scoring360_assignments
+WHEN EXISTS(SELECT 1 FROM all_monthly_weighted_results p JOIN scoring360_cycles c ON substr(c.start_date,1,7)=p.month WHERE (c.id=NEW.cycle_id AND p.employee_user_id=NEW.evaluee_user_id) OR (c.id=OLD.cycle_id AND p.employee_user_id=OLD.evaluee_user_id))
+BEGIN SELECT RAISE(ABORT,'result_locked'); END;
+CREATE TRIGGER IF NOT EXISTS person_weighted_assignment_delete_lock BEFORE DELETE ON scoring360_assignments
+WHEN EXISTS(SELECT 1 FROM all_monthly_weighted_results p JOIN scoring360_cycles c ON substr(c.start_date,1,7)=p.month WHERE c.id=OLD.cycle_id AND p.employee_user_id=OLD.evaluee_user_id)
+BEGIN SELECT RAISE(ABORT,'result_locked'); END;
+CREATE TRIGGER IF NOT EXISTS person_weighted_cycle_update_lock BEFORE UPDATE OF id,start_date,end_date ON scoring360_cycles
+WHEN EXISTS(SELECT 1 FROM all_monthly_weighted_results WHERE month=substr(OLD.start_date,1,7))
+BEGIN SELECT RAISE(ABORT,'result_locked'); END;
+CREATE TRIGGER IF NOT EXISTS person_weighted_cycle_delete_lock BEFORE DELETE ON scoring360_cycles
+WHEN EXISTS(SELECT 1 FROM all_monthly_weighted_results WHERE month=substr(OLD.start_date,1,7))
+BEGIN SELECT RAISE(ABORT,'result_locked'); END;
+CREATE TRIGGER IF NOT EXISTS person_weighted_result_validation BEFORE INSERT ON monthly_person_weighted_results
+WHEN
+ NOT EXISTS(SELECT 1 FROM scoring360_assignments a JOIN scoring360_cycles c ON c.id=a.cycle_id WHERE substr(c.start_date,1,7)=NEW.month AND a.evaluee_user_id=NEW.employee_user_id AND COALESCE(a.status,'active')='active')
+ OR EXISTS(SELECT 1 FROM scoring360_assignments a JOIN scoring360_cycles c ON c.id=a.cycle_id LEFT JOIN scoring360_responses r ON r.assignment_id=a.id WHERE substr(c.start_date,1,7)=NEW.month AND a.evaluee_user_id=NEW.employee_user_id AND (COALESCE(a.status,'active')='active' OR r.id IS NOT NULL) AND (r.id IS NULL OR trim(COALESCE(r.comment,''))=''))
+ OR COALESCE(json_array_length(NEW.evidence_json,'$.managerProgress.expectedIds'),0)=0
+ OR (CASE json_extract(NEW.evidence_json,'$.managerProgress.kind') WHEN 'boss' THEN (SELECT count(*) FROM all_department_leader_scores WHERE month=NEW.month AND leader_user_id=NEW.employee_user_id AND department_id IN(SELECT value FROM json_each(NEW.evidence_json,'$.managerProgress.expectedIds'))) ELSE (SELECT count(*) FROM monthly_manager_scores WHERE month=NEW.month AND employee_user_id=NEW.employee_user_id AND evaluator_user_id IN(SELECT value FROM json_each(NEW.evidence_json,'$.managerProgress.expectedIds'))) END) != json_array_length(NEW.evidence_json,'$.managerProgress.expectedIds')
+ OR ABS(COALESCE(json_extract(NEW.result_json,'$.peerScore'),-1000)-(SELECT ROUND(AVG(r.score),1) FROM scoring360_assignments a JOIN scoring360_cycles c ON c.id=a.cycle_id JOIN scoring360_responses r ON r.assignment_id=a.id WHERE substr(c.start_date,1,7)=NEW.month AND a.evaluee_user_id=NEW.employee_user_id))>0.001
+ OR ABS(COALESCE(json_extract(NEW.result_json,'$.managerScore'),-1000)-(CASE json_extract(NEW.evidence_json,'$.managerProgress.kind') WHEN 'boss' THEN (SELECT ROUND(AVG(score),1) FROM all_department_leader_scores WHERE month=NEW.month AND leader_user_id=NEW.employee_user_id AND department_id IN(SELECT value FROM json_each(NEW.evidence_json,'$.managerProgress.expectedIds'))) ELSE (SELECT ROUND(AVG(score),1) FROM monthly_manager_scores WHERE month=NEW.month AND employee_user_id=NEW.employee_user_id AND evaluator_user_id IN(SELECT value FROM json_each(NEW.evidence_json,'$.managerProgress.expectedIds'))) END))>0.001
+ OR ABS(COALESCE(json_extract(NEW.result_json,'$.score'),-1000)-ROUND(json_extract(NEW.result_json,'$.peerScore')*0.7+json_extract(NEW.result_json,'$.managerScore')*0.3,1))>0.001
+BEGIN SELECT RAISE(ABORT,'weighted_scoring_incomplete_or_changed'); END;
+
+CREATE TRIGGER IF NOT EXISTS monthly_weighted_results_cross_generation_lock BEFORE INSERT ON monthly_weighted_results
+WHEN EXISTS(SELECT 1 FROM all_monthly_weighted_results WHERE month=NEW.month AND employee_user_id=NEW.employee_user_id)
+ OR EXISTS(SELECT 1 FROM performance_results WHERE month=NEW.month AND employee_user_id=NEW.employee_user_id AND kind='collaboration')
+BEGIN SELECT RAISE(ABORT,'result_locked'); END;
+CREATE TRIGGER IF NOT EXISTS monthly_person_weighted_results_cross_generation_lock BEFORE INSERT ON monthly_person_weighted_results
+WHEN EXISTS(SELECT 1 FROM all_monthly_weighted_results WHERE month=NEW.month AND employee_user_id=NEW.employee_user_id)
+ OR EXISTS(SELECT 1 FROM performance_results WHERE month=NEW.month AND employee_user_id=NEW.employee_user_id AND kind='collaboration')
+BEGIN SELECT RAISE(ABORT,'result_locked'); END;
+CREATE TRIGGER IF NOT EXISTS department_leader_scores_person_publication_lock BEFORE INSERT ON department_leader_scores
+WHEN EXISTS(SELECT 1 FROM all_department_leader_scores WHERE department_id=NEW.department_id AND month=NEW.month AND leader_user_id=NEW.leader_user_id)
+ OR EXISTS(SELECT 1 FROM all_monthly_weighted_results WHERE month=NEW.month AND employee_user_id=NEW.leader_user_id)
+ OR EXISTS(SELECT 1 FROM performance_results WHERE month=NEW.month AND employee_user_id=NEW.leader_user_id AND kind='collaboration')
+BEGIN SELECT RAISE(ABORT,'result_locked'); END;
+CREATE TRIGGER IF NOT EXISTS department_person_scores_person_publication_lock BEFORE INSERT ON department_person_scores
+WHEN EXISTS(SELECT 1 FROM all_department_leader_scores WHERE department_id=NEW.department_id AND month=NEW.month AND leader_user_id=NEW.leader_user_id)
+ OR EXISTS(SELECT 1 FROM all_monthly_weighted_results WHERE month=NEW.month AND employee_user_id=NEW.leader_user_id)
+ OR EXISTS(SELECT 1 FROM performance_results WHERE month=NEW.month AND employee_user_id=NEW.leader_user_id AND kind='collaboration')
+BEGIN SELECT RAISE(ABORT,'result_locked'); END;
+CREATE TRIGGER IF NOT EXISTS person_monthly_handoff_guard BEFORE INSERT ON monthly_manager_handoffs
+WHEN EXISTS(SELECT 1 FROM all_monthly_weighted_results WHERE month=NEW.month AND employee_user_id=NEW.employee_user_id)
+BEGIN SELECT RAISE(ABORT,'result_locked'); END;
+
+CREATE TABLE IF NOT EXISTS feishu_user_grants (
+ session_id TEXT PRIMARY KEY,user_id TEXT NOT NULL,app_id TEXT NOT NULL,
+ encrypted_tokens TEXT NOT NULL,state TEXT NOT NULL DEFAULT 'active',updated_at TEXT NOT NULL
+);
+
+-- Unlike changes only visibility; original reaction records remain available.
+CREATE TABLE IF NOT EXISTS personal_reaction_states (
+ target_id TEXT NOT NULL,actor_user_id TEXT NOT NULL,liked INTEGER NOT NULL CHECK(liked IN(0,1)),
+ updated_at TEXT NOT NULL DEFAULT(datetime('now')),PRIMARY KEY(target_id,actor_user_id)
+);

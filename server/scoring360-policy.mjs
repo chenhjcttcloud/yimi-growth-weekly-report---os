@@ -1,6 +1,7 @@
-export const defaultScoring360ConfigManagers = [
-  { userId: "mock_manager", name: "Demo Manager" },
-];
+// Management access must come from explicit configuration or role grants.
+// Development perspectives have their own guarded switch; no demo user is
+// implicitly authorized in either development or Feishu authentication mode.
+export const defaultScoring360ConfigManagers = [];
 
 export function parseScoring360LaunchDays(value, legacyDay = 25) {
   const source = String(value || "").trim();

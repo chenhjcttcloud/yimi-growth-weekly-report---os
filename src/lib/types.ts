@@ -55,6 +55,7 @@ export interface UserAccess {
 }
 
 export interface WeeklyScore {
+  qualityAvailable?:boolean;
   name: string;
   department: string;
   weekId?: string;

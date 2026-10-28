@@ -1,5 +1,6 @@
 import { createHash, randomUUID } from 'node:crypto';
 import {weeklyReportSchedule} from './weekly-report-schedule.mjs';
+import {employedOn} from './employee-lifecycle.mjs';
 
 // Personal workspace exposes a strict allowlist of the signed-in employee's data.
 export function createPersonalWorkspace({ performance, readData, query, exec, sql, config, askAi, createTask, policyFor, calendar=()=>({}) }) {
@@ -23,6 +24,7 @@ export function createPersonalWorkspace({ performance, readData, query, exec, sq
     for(const report of mine) if(!map.has(report.end)) map.set(report.end,{id:report.content?.['周期ID']||`period-${report.end}`,label:report.content?.['周次']||`${report.start} — ${report.end}`,start:report.start,end:report.end});
     const year=Number(month.slice(0,4)),m=Number(month.slice(5));
     const now=new Date();
+    const employment=await query(`SELECT * FROM employee_employment_periods WHERE employee_user_id=${sql(user.userId)};`);
     const today=new Intl.DateTimeFormat('sv-SE',{timeZone:'Asia/Shanghai'}).format(now);
     const coverageStart=raw.meta?.collectionStartDate||[...map.values()].map(p=>p.start).filter(Boolean).sort()[0]||new Date(now.getTime()-((new Date(today+'T00:00:00Z').getUTCDay()||7)-1)*86400000).toLocaleDateString('sv-SE',{timeZone:'Asia/Shanghai'});
     if(month>today.slice(0,7)) throw Error('future_month');
@@ -37,7 +39,8 @@ export function createPersonalWorkspace({ performance, readData, query, exec, sq
       const report=mine.find(r=>r.end===p.end),c=report?.content||{};
       const submitted=Boolean(report?.submitted);
       const schedule=weeklyReportSchedule(p.end,calendar(),policy.deadlineTime),dueAt=schedule.dueAt,future=Date.parse(dueAt||'')>Date.now();
-      const status=p.exempt||schedule.exempt?'免交':schedule.calendarPending?'等待日历':!report&&p.start<coverageStart?'未收集':submitted?(report.timestampUnknown?'待核实时间':report.late?'迟交':'准时'):future?'未到期':'未交';
+      const outsideEmployment=employment.length>0&&!employedOn(employment,schedule.deadlineDate||p.end);
+      const status=outsideEmployment?'不在职':p.exempt||schedule.exempt?'免交':schedule.calendarPending?'等待日历':!report&&p.start<coverageStart?'未收集':submitted?(report.timestampUnknown?'待核实时间':report.late?'迟交':'准时'):future?'未到期':'未交';
       const facts={results:text(c,'本周成果摘要','results'),problems:text(c,'问题摘要','problems'),plan:text(c,'下周计划摘要','nextPlan'),reflection:text(c,'思考与复盘摘要','reflection')};
       const modules=[['成果','成果分'],['问题','问题分'],['计划','计划分'],['复盘','复盘分']];
       const radar=modules.every(([,key])=>c[key]!=null&&String(c[key]).trim()!==''&&Number.isFinite(Number(c[key]))&&Number(c[key])>=0&&Number(c[key])<=100)?modules.map(([label,key])=>({label,value:Number(c[key])})):[];
@@ -87,10 +90,10 @@ export function createPersonalWorkspace({ performance, readData, query, exec, sq
     const tasks=await tasksFor(user,selected);
     const threadKey=keyFor(user,selected.id);
     const comments=await query(`SELECT id,author_name,hex(body) AS body_hex,created_at FROM comments WHERE target_type='personal_weekly_report' AND target_id=${sql(threadKey)} AND deleted_at IS NULL ORDER BY created_at,id;`);
-    const reactions=await query(`SELECT actor_user_id FROM reactions WHERE target_type='personal_weekly_report' AND target_id=${sql(threadKey)} AND reaction_type='like';`);
+    const reactions=await query(`SELECT actor_user_id FROM reactions r WHERE target_type='personal_weekly_report' AND target_id=${sql(threadKey)} AND reaction_type='like' AND NOT EXISTS(SELECT 1 FROM personal_reaction_states s WHERE s.target_id=r.target_id AND s.actor_user_id=r.actor_user_id AND s.liked=0);`);
     const messageRows=await query(`SELECT role,hex(body) AS body_hex,created_at FROM personal_coach_messages WHERE owner_user_id=${sql(user.userId)} AND week_id=${sql(selected.id)} ORDER BY created_at,rowid LIMIT 100;`);
     const messages=messageRows.map(r=>({role:r.role,body:Buffer.from(r.body_hex,'hex').toString('utf8'),created_at:r.created_at}));
-    const reportCount=weeks.filter(w=>w.submitted&&w.status!=='免交').length;
+    const reportCount=weeks.filter(w=>w.submitted&&!['免交','不在职'].includes(w.status)).length;
     const analysis=selected.submitted?{
       mode:personalInsight?.coachSummary?(source?.meta?.provider==='development-fixture'?'demo':'archived'):'local',
       label:personalInsight?.coachSummary?(source?.meta?.provider==='development-fixture'?'开发演示分析（非实时 AI）':'已存档的 AI 点评'):'基于周报的辅助整理（非实时 AI）',
@@ -101,7 +104,7 @@ export function createPersonalWorkspace({ performance, readData, query, exec, sq
         {title:'支持请求',text:'下一步需要谁提供什么支持？你准备交付什么、在什么时候验证？'},
       ],
     }:null;
-    return {employee:{name:user.name,userId:user.userId,department:employee?.['部门']||''},months,month,weeks,selectedWeekId:selected.id,analysis,tasks,comments:comments.map(c=>({id:c.id,authorName:c.author_name,body:Buffer.from(c.body_hex,'hex').toString('utf8'),createdAt:c.created_at})),likeCount:reactions.length,liked:reactions.some(r=>r.actor_user_id===user.userId),messages,history:history.history,ratingProgress:history.ratingProgress?.find(p=>p.month===month)||null,rollingQuality:history.rollingQuality,rollingMonths:history.rollingMonths,monthSummary:{expected:weeks.filter(w=>!['未到期','免交','未收集','等待日历'].includes(w.status)).length,submitted:reportCount,onTime:weeks.filter(w=>w.status==='准时').length,late:weeks.filter(w=>w.status==='迟交').length,missing:weeks.filter(w=>w.status==='未交').length,upcoming:weeks.filter(w=>w.status==='未到期').length},aiConfigured:Boolean(config.moonshotApiKey),taskCreateEnabled:config.taskCreateEnabled};
+    return {employee:{name:user.name,userId:user.userId,department:employee?.['部门']||''},months,month,weeks,selectedWeekId:selected.id,analysis,tasks,comments:comments.map(c=>({id:c.id,authorName:c.author_name,body:Buffer.from(c.body_hex,'hex').toString('utf8'),createdAt:c.created_at})),likeCount:reactions.length,liked:reactions.some(r=>r.actor_user_id===user.userId),messages,history:history.history,ratingProgress:history.ratingProgress?.find(p=>p.month===month)||null,rollingQuality:history.rollingQuality,rollingMonths:history.rollingMonths,monthSummary:{expected:weeks.filter(w=>!['未到期','免交','未收集','等待日历','不在职'].includes(w.status)).length,submitted:reportCount,onTime:weeks.filter(w=>w.status==='准时').length,late:weeks.filter(w=>w.status==='迟交').length,missing:weeks.filter(w=>w.status==='未交').length,upcoming:weeks.filter(w=>w.status==='未到期').length},aiConfigured:Boolean(config.moonshotApiKey),taskCreateEnabled:config.taskCreateEnabled};
   }
   async function saveTask(user,body) {
     const {week}=await context(user,body.month,body.weekId);
@@ -124,7 +127,7 @@ export function createPersonalWorkspace({ performance, readData, query, exec, sq
       if(!content||content.length>4000)throw Error('invalid_comment');
       await exec(`INSERT INTO comments(id,target_type,target_id,author_user_id,author_name,body,visibility) VALUES(${sql(randomUUID())},'personal_weekly_report',${sql(target)},${sql(user.userId)},${sql(user.name)},${sql(content)},'self_manager');`);
     } else {
-      await exec(`BEGIN; DELETE FROM reactions WHERE target_type='personal_weekly_report' AND target_id=${sql(target)} AND actor_user_id=${sql(user.userId)} AND reaction_type='like' AND ${body.liked===false?'1':'0'}; INSERT OR IGNORE INTO reactions(id,target_type,target_id,actor_user_id,reaction_type) SELECT ${sql(randomUUID())},'personal_weekly_report',${sql(target)},${sql(user.userId)},'like' WHERE ${body.liked===false?'0':'1'}; COMMIT;`);
+      await exec(`BEGIN; INSERT OR IGNORE INTO reactions(id,target_type,target_id,actor_user_id,reaction_type) VALUES(${sql(randomUUID())},'personal_weekly_report',${sql(target)},${sql(user.userId)},'like'); INSERT INTO personal_reaction_states(target_id,actor_user_id,liked) VALUES(${sql(target)},${sql(user.userId)},${body.liked===false?0:1}) ON CONFLICT(target_id,actor_user_id) DO UPDATE SET liked=excluded.liked,updated_at=datetime('now'); COMMIT;`);
     }
     return {ok:true};
   }

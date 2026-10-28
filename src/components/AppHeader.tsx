@@ -30,6 +30,7 @@ interface AppHeaderProps {
   previewEmployees?: Array<{userId:string;name:string;department?:string}>;
   onChangeAdminPerspective?: (value:string)=>void;
   summaryReady: boolean;
+  summaryBusy?:boolean;
   taskCreated: boolean;
   selectedPeriodId: string;
   onSelectPeriod: (periodId: string) => void;
@@ -58,6 +59,7 @@ export function AppHeader({
   previewEmployees=[],
   onChangeAdminPerspective,
   summaryReady,
+  summaryBusy=false,
   taskCreated,
   selectedPeriodId,
   onSelectPeriod,
@@ -123,7 +125,7 @@ export function AppHeader({
     <header className="app-header">
       <div>
         <h1>{titles[activePage]}</h1>
-        {canViewBossDashboard && activePage !== "growth" && activePage !== "departments" ? <div className="header-meta">
+        {canViewBossDashboard && activePage !== "growth" && activePage !== "departments" && activePage !== "scores" ? <div className="header-meta">
           <span>{currentPeriodLabel(selectedPeriodId)}</span>
           <span>数据生成：{appData.generatedOn}</span>
           <AppSelect
@@ -131,6 +133,7 @@ export function AppHeader({
             value={selectedPeriodId}
             onValueChange={onSelectPeriod}
             aria-label="选择周报周期"
+            disabled={summaryBusy}
           >
             {appData.periods.slice().reverse().map((period) => (
               <option value={period.id} key={period.id}>
@@ -138,7 +141,7 @@ export function AppHeader({
               </option>
             ))}
           </AppSelect>
-        </div> : <p className="header-meta">{activePage==="departments"?"部门层级 · 团队成员 · 月度表现 · 负责人评分":"月度结果 · 每周周报 · AI 教练 · 行动闭环"}</p>}
+        </div> : <p className="header-meta">{activePage==="scores"?"月度结果 · 配评安排 · 评分任务":activePage==="departments"?"部门层级 · 团队成员 · 月度表现 · 负责人评分":"月度结果 · 每周周报 · AI 教练 · 行动闭环"}</p>}
       </div>
 
       <div className="header-actions">
@@ -187,17 +190,17 @@ export function AppHeader({
               title={externalView ? "外部访问链接为只读模式，不能创建飞书任务" : undefined}
             >
               <CheckCircle2 size={16} />
-              <span>{externalView ? "只读访问" : taskCreated ? "任务已模拟创建" : "创建关注任务"}</span>
+              <span>{externalView ? "只读访问" : "查看关注任务"}</span>
             </button>
             <button
               className={`primary-button ${summaryReady ? "is-confirmed" : ""}`}
               type="button"
               onClick={onGenerateSummary}
-              disabled={externalView}
+              disabled={externalView||summaryBusy}
               title={externalView ? "外部访问链接为只读模式，不能生成或写入公司总结" : undefined}
             >
               <Send size={16} />
-              <span>{externalView ? "只读视图" : summaryReady ? "总结已生成" : "生成公司总结"}</span>
+              <span>{externalView ? "只读视图" : summaryBusy?'正在生成…':summaryReady ? "重新生成公司总结" : "生成公司总结"}</span>
             </button>
           </>
         ) : null}

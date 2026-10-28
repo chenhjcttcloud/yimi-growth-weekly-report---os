@@ -34,6 +34,8 @@ const settings={overview:async()=>({report:{templateName:items[0].rule_name,rule
 const fetcher=async url=>{let data;if(url.includes('tenant_access_token'))data={code:0,tenant_access_token:'fake'};else if(url.includes('tasks/query'))data={code:0,data:{items,has_more:false}};else{aiCalls++;data={choices:[{message:{content:JSON.stringify({scores:[80,80,80,80],summary:'测试分析',tasks:[]})}}]};}return {ok:true,status:200,json:async()=>data};};
 const sync=createLiveReportSync({query,exec,sql,config,settings,calendar:()=>calendar,fetcher,pause:async()=>{},writeStatus:async()=>{},refreshDirectory:async()=>{}});
 await sync.run({start:'2026-02-01',end:'2026-10-27'});
+// This fixture is employed for the entire window; inferred report discovery is a separate lifecycle test.
+run("INSERT INTO employee_employment_periods(id,employee_user_id,start_date,source) VALUES('full-window','staff','2026-01-01','manager');");
 assert.equal(run("SELECT is_late FROM weekly_reports WHERE id='lark-report-eve';",true)[0].is_late,0);
 assert.equal(run("SELECT is_late FROM weekly_reports WHERE id='lark-report-sat';",true)[0].is_late,0);
 const managerReviews={snapshot:async()=>({plans:new Map(),scores:[],bossScores:[]}),progress:()=>({kind:'unassigned',expected:0,submitted:0,complete:false,score:null})};

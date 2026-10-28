@@ -24,7 +24,7 @@ try{
  assert.equal((await service.personal({userId:'leader'}))[0].score,92);
  assert.equal((await service.personal({userId:'other'})).length,0);
  await assert.rejects(service.score(body,{userId:'boss',name:'老板'}),/result_locked/);
- assert.throws(()=>run('UPDATE department_leader_scores SET score=0'),/result_locked/);
+ assert.throws(()=>run('UPDATE department_person_scores SET score=0'),/result_locked/);
  assert.equal(run('SELECT COUNT(*) n FROM performance_results',true)[0].n,0,'boss score must remain separate from peer scores');
  roster.push({userId:'multi',name:'多部门成员',department:'产品部, 研发部'});
  run(`INSERT INTO organization_departments(id,name,updated_at) VALUES('legacy','产品部, 研发部',datetime('now'));`);
@@ -35,4 +35,4 @@ try{
  assert.equal(product.metrics.headcount,3);assert.equal(product.metrics.submissionRate,75);assert.equal(product.metrics.onTimeRate,50);assert.equal(product.metrics.quality,92,'aggregate published scores by identity, never by duplicate names');assert.equal(product.metrics.qualityReference,85);assert.equal(product.metrics.collaboration,88);assert.equal(product.metrics.pendingRatings,1);assert.equal(product.leaderScore.score,92);assert.equal(dashboard.multiDepartmentCount,1);
  await assert.rejects(service.dashboard('9999-01',{months:[],monthly:[],results:[]}),/invalid_month/);
  console.log('department tests passed: department roster, leader membership, monthly boss score, self-only results, immutable score, multiple departments, identity-safe monthly aggregates, final/reference separation');
-}finally{await rm(dir,{recursive:true,force:true});}
+}finally{console.log('Test artifacts retained:',dir);}

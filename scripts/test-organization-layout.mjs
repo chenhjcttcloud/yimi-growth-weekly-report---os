@@ -37,10 +37,10 @@ try{
  assert.deepEqual(view.employees.find(e=>e.userId==='domestic').directDepartmentIds,[domestic.id],'rename preserves member identity');
  assert.equal(view.departments.at(-1).id,domestic.id,'custom ordering is persisted');
  // A late SQL failure must roll back earlier writes, not leave a half-saved tree.
- run("CREATE TRIGGER fail_layout BEFORE UPDATE ON organization_departments WHEN NEW.id='promotion' BEGIN SELECT RAISE(ABORT,'test_failure'); END;");
+ run("CREATE TABLE fixture_fault(enabled INTEGER); INSERT INTO fixture_fault VALUES(1); CREATE TRIGGER fail_layout BEFORE UPDATE ON organization_departments WHEN NEW.id='promotion' AND (SELECT enabled FROM fixture_fault)=1 BEGIN SELECT RAISE(ABORT,'test_failure'); END;");
  await assert.rejects(save(view.departments.map(d=>d.id===overseas.id?{...d,name:'海外新名称'}:d)),/test_failure/);
  assert.equal((await service.overview()).departments.find(d=>d.id===overseas.id).name,'海外事业部');
- run('DROP TRIGGER fail_layout;');
+ run('UPDATE fixture_fault SET enabled=0;');
  await save(view.departments.map(d=>d.id==='promotion'?{...d,is_active:0}:d));
  view=await service.overview();
  await assert.rejects(service.score({departmentId:'promotion',month,score:91,comment:'不允许'}, {userId:'boss',name:'老板'}),/department_inactive/);

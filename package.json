@@ -39,6 +39,8 @@
     "test:identity": "node scripts/test-user-id-migration.mjs && node scripts/test-sso-roster.mjs",
     "test:feishu-leaders": "node scripts/test-feishu-leaders.mjs",
     "test:navigation": "node scripts/test-navigation-refresh.mjs",
+    "test:business": "node scripts/test-business-regression.mjs",
+    "test:roles": "node scripts/test-role-authorization.mjs",
     "test:weighted-monthly": "node scripts/test-weighted-monthly.mjs && node scripts/test-weighted-monthly-api.mjs"
   },
   "dependencies": {

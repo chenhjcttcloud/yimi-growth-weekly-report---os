@@ -1,14 +1,20 @@
+import {MonthlyReviewHandoffs} from '../components/MonthlyReviewHandoffs';
+import {OperationsSettings} from '../components/OperationsSettings';
+
 import {useLocationSection} from '../lib/navigation';
+import {EmploymentDates,type EmploymentPeriod} from '../components/EmploymentDates';
 import { FeishuReportConfiguration } from '../components/FeishuReportConfiguration';
 import { AppSelect } from '../components/AppSelect';
 import { SystemConfiguration } from '../components/SystemConfiguration';
 import { DepartmentManagement } from '../components/DepartmentManagement';
-import { useEffect, useMemo, useRef, useState } from "react";
+import { lazy, Suspense, useEffect, useMemo, useRef, useState } from "react";
 import { Activity, CheckCheck, Database, Link2, Settings2, ShieldCheck, UsersRound } from "lucide-react";
 import { ResultEmpty } from "../components/PerformanceUI";
 import type { DragEvent } from "react";
 import { appData } from "../lib/data";
 import type { UserAccess } from "../lib/types";
+import '../styles/company-roster.css';
+const RoleAuthorization = lazy(() => import('../components/RoleAuthorization').then(module=>({default:module.RoleAuthorization})));
 
 interface ExternalLink {
   id: string;
@@ -41,13 +47,8 @@ interface ImportResult {
   warnings?: string[];
 }
 
-interface BossViewMember {
-  userId: string;
-  name: string;
-  department: string;
-}
-
 interface ManagedEmployee {
+  employmentPeriods?:EmploymentPeriod[];
   lastLoginAt?:string;
   syncNote?:string;
   userId: string;
@@ -58,6 +59,25 @@ interface ManagedEmployee {
   roleLevel?: string;
   active: boolean;
   source?: string;
+  directorySyncedAt?:string;
+  nameMissing?:boolean;
+}
+
+interface DirectorySyncResult {
+  total:number;
+  created:number;
+  updated:number;
+  preservedInactive:number;
+  failed:number;
+  failedUserIds?:string[];
+  notReturnedLocalCount?:number;
+  missingNames:number;
+  scannedDepartments:number;
+  coverage:'company'|'visible_scope';
+  expectedCompanyTotal?:number|null;
+  scopeComplete:boolean;
+  incomplete:boolean;
+  finishedAt:string;
 }
 
 interface LarkReportSyncStatus {
@@ -251,14 +271,15 @@ interface AccountActivityStatus {
 }
 
 interface SettingsPageProps {
+  onOpenScoringSetup?:()=>void;
   access?: UserAccess;
 }
 
-export function SettingsPage({ access }: SettingsPageProps) {
+export function SettingsPage({ access,onOpenScoringSetup }: SettingsPageProps) {
   const bossView = access ? Boolean(access.bossView) : true;
   const canManageScoring360 = access ? Boolean(access.bossView || access.canManageScoring360) : true;
   const canManagePersonnel = access ? Boolean(access.bossView || access.canManagePersonnel) : true;
-  const sections=['overview',...(canManagePersonnel?['organization','people']:[]),...(canManageScoring360?['rules','scoring','cycles']:[]),...(bossView?['permissions','ai','integrations','logs','activity']:[])];
+  const sections=['overview',...(canManagePersonnel?['organization','people']:[]),...(canManageScoring360?['rules','scoring','handoffs','cycles']:[]),...(bossView?['permissions','ai','integrations','operations','logs','activity']:[])];
   const [settingsTab, setSettingsTabState] = useLocationSection('settingsTab',sections,'overview');
   const setSettingsTab=(next:string)=>{if(next===settingsTab||window.dispatchEvent(new Event('organization-before-leave',{cancelable:true})))setSettingsTabState(next);};
   useEffect(() => { document.querySelector('.settings-content')?.scrollTo({top:0}); }, [settingsTab]);
@@ -274,13 +295,20 @@ export function SettingsPage({ access }: SettingsPageProps) {
   useEffect(() => { void loadRuntimeStatus(); }, []);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const [externalLinks, setExternalLinks] = useState<ExternalLink[]>([]);
-  const [adminMembers,setAdminMembers]=useState<BossViewMember[]>([]);
-  const [adminState,setAdminState]=useState("idle");
-  const [bossViewMembers, setBossViewMembers] = useState<BossViewMember[]>([]);
-  const [bossViewState, setBossViewState] = useState<"idle" | "saving" | "saved" | "error">("idle");
   const [managedEmployees, setManagedEmployees] = useState<ManagedEmployee[]>([]);
   const [managedEmployeeState, setManagedEmployeeState] = useState<"idle" | "saving" | "saved" | "error">("idle");
   const [employeeMessage,setEmployeeMessage]=useState("");
+  const [employeeQuery,setEmployeeQuery]=useState('');
+  const [employeeFilter,setEmployeeFilter]=useState<'all'|'active'|'inactive'>('all');
+  const [employeeLoadError,setEmployeeLoadError]=useState('');
+  const [employeeLoading,setEmployeeLoading]=useState(false);
+  const [directoryLastSync,setDirectoryLastSync]=useState<DirectorySyncResult|null>(null);
+  const [directoryStatusError,setDirectoryStatusError]=useState('');
+  const directoryNeedsAttention=Boolean(directoryLastSync&&(directoryLastSync.incomplete||Number(directoryLastSync.failed)>0||Number(directoryLastSync.missingNames)>0));
+  const filteredManagedEmployees = useMemo(()=>managedEmployees.filter(employee=>
+    (employeeFilter==='all'||employee.active===(employeeFilter==='active'))&&
+    `${employee.name} ${employee.department} ${employee.userId}`.toLowerCase().includes(employeeQuery.trim().toLowerCase())
+  ),[managedEmployees,employeeQuery,employeeFilter]);
   const [externalName, setExternalName] = useState("外部顾问临时访问");
   const [ttlHours, setTtlHours] = useState("72");
   const [generatedUrl, setGeneratedUrl] = useState("");
@@ -311,8 +339,6 @@ export function SettingsPage({ access }: SettingsPageProps) {
   useEffect(() => {
     if (bossView) {
       loadExternalLinks();
-      loadBossViewMembers();
-      void fetch("/api/scoring360-admin-members").then(r=>r.json()).then(j=>setAdminMembers(j.members||[]));
       loadLarkReportSyncStatus();
       loadWeeklyReminderStatus();
       loadRosterAudit();
@@ -322,7 +348,7 @@ export function SettingsPage({ access }: SettingsPageProps) {
       loadScoring360Config();
       loadScoring360ReminderStatus();
     }
-    if (canManagePersonnel) loadManagedEmployees();
+    if (canManagePersonnel) {void loadManagedEmployees();void loadDirectoryStatus();}
   }, [bossView, canManageScoring360, canManagePersonnel]);
 
   useEffect(() => {
@@ -342,55 +368,37 @@ export function SettingsPage({ access }: SettingsPageProps) {
     return () => window.clearInterval(timer);
   }, [syncStatus?.running]);
 
-  async function saveAdminMembers(){
-    setAdminState('saving');
-    try{const r=await fetch('/api/scoring360-admin-members',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({members:adminMembers})});if(!r.ok)throw Error();setAdminState('saved');}catch{setAdminState('error');}
-  }
-  async function loadBossViewMembers() {
-    try {
-      const response = await fetch("/api/boss-view-members");
-      if (!response.ok) return;
-      const result = await response.json();
-      setBossViewMembers(Array.isArray(result.members) ? result.members : []);
-    } catch {
-      // Static preview keeps this as a visual configuration mock.
-    }
-  }
-
-  function toggleBossViewMember(member: BossViewMember) {
-    setBossViewState("idle");
-    setBossViewMembers((current) => {
-      const exists = current.some((item) => item.userId === member.userId);
-      if (exists) return current.filter((item) => item.userId !== member.userId);
-      return [...current, member];
-    });
-  }
-
-  async function saveBossViewMembers() {
-    setBossViewState("saving");
-    try {
-      const response = await fetch("/api/boss-view-members", {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({ members: bossViewMembers }),
-      });
-      if (!response.ok) throw new Error("save_boss_view_failed");
-      const result = await response.json();
-      setBossViewMembers(Array.isArray(result.members) ? result.members : bossViewMembers);
-      setBossViewState("saved");
-    } catch {
-      setBossViewState("error");
-    }
-  }
-
   async function loadManagedEmployees() {
+    setEmployeeLoading(true);setEmployeeLoadError('');
     try {
       const response = await fetch("/api/employees/manage");
-      if (!response.ok) return;
+      if (!response.ok) throw Error();
       const result = await response.json();
-      setManagedEmployees(Array.isArray(result.employees) ? result.employees : []);
+      if (!result.ok||!Array.isArray(result.employees)) throw Error();
+      setManagedEmployees(result.employees);
     } catch {
-      // Static preview keeps the roster panel empty.
+      setEmployeeLoadError('花名册暂时加载失败，请刷新重试。现有人员数据未改动。');
+    } finally {setEmployeeLoading(false);}
+  }
+  async function loadDirectoryStatus(){
+    try{const response=await fetch('/api/employees/directory-status'),result=await response.json();if(!response.ok||!result.ok)throw Error();setDirectoryLastSync(result.lastSync||null);setDirectoryStatusError('');}
+    catch{setDirectoryStatusError('最近同步状态暂时无法读取，可刷新状态后重试。');}
+  }
+  async function syncDirectory(){
+    setManagedEmployeeState('saving');setEmployeeMessage('');
+    try{
+      const response=await fetch('/api/employees/sync-feishu',{method:'POST',headers:{'content-type':'application/json'},body:'{}'}),result=await response.json();
+      if(!response.ok||!result.ok)throw Error(result.error||'directory_sync_failed');
+      setDirectoryLastSync(result);setDirectoryStatusError('');
+      await loadManagedEmployees();await loadDirectoryStatus();
+      const summary=`本次读取 ${Number(result.total)||0} 人，新增 ${Number(result.created)||0} 人，更新 ${Number(result.updated)||0} 人，保留已停用 ${Number(result.preservedInactive)||0} 人。`;
+      const warning=!result.scopeComplete||result.coverage!=='company'?'当前仅覆盖飞书授权范围，尚不能确认全公司已纳入。':result.incomplete||result.failed||result.missingNames?'仍有资料未补全，请查看下方同步详情。':'已完成本次公司人员同步。';
+      setEmployeeMessage(summary+warning);setManagedEmployeeState('saved');
+    }catch(error){
+      const code=error instanceof Error?error.message:'';
+      setManagedEmployeeState('error');
+      setEmployeeMessage(code==='directory_sync_running'?'正在执行通讯录同步，请稍后刷新状态。':code==='feishu_not_configured'?'请先在「飞书与数据集成」配置飞书应用。':'通讯录同步未完成。请检查飞书通讯录权限，并将应用的通讯录可见范围设置为「全部员工」后重试。');
+      await loadDirectoryStatus();
     }
   }
 
@@ -668,11 +676,13 @@ export function SettingsPage({ access }: SettingsPageProps) {
       {[
        {label:'工作空间',items:[{id:'overview',label:'运行概览',description:'服务状态与常用操作',icon:Settings2,visible:true}]},
        {label:'组织与人员',items:[{id:'organization',label:'组织与部门',description:'部门层级与负责人',icon:UsersRound,visible:canManagePersonnel},{id:'people',label:'员工管理',description:'飞书同步与在职状态',icon:UsersRound,visible:canManagePersonnel},{id:'permissions',label:'角色与权限',description:'老板、管理员与员工',icon:ShieldCheck,visible:bossView}]},
-       {label:'评分与成长',items:[{id:'rules',label:'评分规则',description:'权重与规则版本',icon:CheckCheck,visible:canManageScoring360},{id:'scoring',label:'协作评分关系',description:'配置谁给谁评分',icon:UsersRound,visible:canManageScoring360},{id:'cycles',label:'周期与提醒',description:'截止时间与催评频率',icon:Settings2,visible:canManageScoring360}]},
-       {label:'服务与记录',items:[{id:'ai',label:'AI 配置',description:'模型服务与密钥',icon:Database,visible:bossView},{id:'integrations',label:'飞书与数据集成',description:'连接、同步与导入',icon:Link2,visible:bossView},{id:'logs',label:'操作日志',description:'配置变更与操作记录',icon:Activity,visible:bossView},{id:'activity',label:'访问统计',description:'团队使用情况',icon:Activity,visible:bossView}]},
+       {label:'评分与成长',items:[{id:'rules',label:'评分规则',description:'权重与规则版本',icon:CheckCheck,visible:canManageScoring360},{id:'scoring',label:'月度配评入口',description:'前往评分工作台',icon:UsersRound,visible:canManageScoring360},{id:'handoffs',label:'月度评分交接',description:'负责人变动与待办交接',icon:UsersRound,visible:canManageScoring360},{id:'cycles',label:'周期与提醒',description:'截止时间与催评频率',icon:Settings2,visible:canManageScoring360}]},
+       {label:'服务与记录',items:[{id:'operations',label:'备份与告警',description:'服务器备份与故障提醒',icon:Database,visible:bossView},{id:'ai',label:'AI 配置',description:'模型服务与密钥',icon:Database,visible:bossView},{id:'integrations',label:'飞书与数据集成',description:'连接、同步与导入',icon:Link2,visible:bossView},{id:'logs',label:'操作日志',description:'配置变更与操作记录',icon:Activity,visible:bossView},{id:'activity',label:'访问统计',description:'团队使用情况',icon:Activity,visible:bossView}]},
       ].filter(group=>group.items.some(item=>item.visible)).map(group=><div className="settings-nav-group" key={group.label}><span className="settings-nav-group-label">{group.label}</span>{group.items.filter(item=>item.visible).map(({id,label,description,icon:Icon})=><button type="button" key={id} className={settingsTab===id?'is-active':''} aria-current={settingsTab===id?'page':undefined} onClick={()=>setSettingsTab(id)}><Icon size={17}/><span><strong>{label}</strong><small>{description}</small></span><span className="settings-nav-arrow">›</span></button>)}</div>)}
       </nav>
       <div className="settings-content">
+      {settingsTab==='handoffs'&&canManageScoring360&&<MonthlyReviewHandoffs/>}
+      {settingsTab==='operations'&&bossView&&<OperationsSettings/>}
       {settingsTab==='overview'&&<div className="settings-overview"><section className="settings-quick-actions" aria-label="常用设置">{[{id:'organization',title:'管理组织',text:'设置部门与负责人',icon:UsersRound},{id:'rules',title:'调整评分规则',text:'配置下个周期的权重',icon:CheckCheck},{id:'ai',title:'接入 AI',text:'配置模型与服务密钥',icon:Database}].map(({id,title,text,icon:Icon})=><button key={id} type="button" onClick={()=>setSettingsTab(id)}><span className="settings-quick-icon"><Icon size={20}/></span><strong>{title}</strong><small>{text}</small><span className="settings-quick-arrow">↗</span></button>)}</section>
         <section className="settings-summary-grid">{[
           ['在职员工',managedEmployees.filter(e=>e.active).length,'员工管理','people'],
@@ -686,167 +696,64 @@ export function SettingsPage({ access }: SettingsPageProps) {
       </div>}
       <section className="settings-grid" data-settings-tab={settingsTab}>
       {["rules","ai","cycles","logs"].includes(settingsTab)&&<SystemConfiguration section={settingsTab as "rules"|"ai"|"cycles"|"logs"}/>}
-      {bossView ? (
-        <>
-      <article className="panel" data-settings-group="permissions" hidden={settingsTab !== "permissions"}>
-        <div className="panel-heading compact">
-          <div>
-            <span className="section-label">SSO</span>
-            <h2>飞书登录与权限模型</h2>
-          </div>
-        </div>
-        <div className="permission-list">
-          <div><strong>员工</strong><span>查看本人自动生成的周报质量分、提交统计，以及全部评分完成后发布的月度综合分。</span></div>
-
-          <div><strong>管理员</strong><span>拥有与老板相同的管理功能，额外查看本人的分数、周报和成长记录。</span></div>
-          <div><strong>评分人</strong><span>仅在评分工作台完成本人分配到的评分任务。</span></div>
-          <div><strong>老板视角</strong><span>查看全公司经营看板、组织趋势、任务和月度会议，并管理角色授权。</span></div>
-        </div>
-      </article>
-      <article className="panel boss-access-panel" data-settings-group="permissions" hidden={settingsTab !== "permissions"}>
-        <div className="panel-heading compact">
-          <div>
-            <span className="section-label">Boss View</span>
-            <h2>老板视角授权名单</h2>
-          </div>
-          <span className="boss-access-count">已授权 {bossViewMembers.length} 人</span>
-        </div>
-        <p className="boss-access-copy">勾选后授予老板视角，可查看公司经营看板并维护角色授权。管理员请在下方单独授权。</p>
-        <div className="boss-member-grid">
-          {bossViewCandidates().map((member) => {
-            const checked = bossViewMembers.some((item) => item.userId === member.userId);
-            return (
-              <label className={`boss-member-option ${checked ? "is-selected" : ""}`} key={member.userId}>
-                <input
-                  type="checkbox"
-                  checked={checked}
-                  onChange={() => toggleBossViewMember(member)}
-                />
-                <span>
-                  <strong>{member.name}</strong>
-                  <small>{member.department || "未填部门"}</small>
-                </span>
-              </label>
-            );
-          })}
-        </div>
-        <div className="boss-access-actions">
-          <button className="primary-button" type="button" onClick={saveBossViewMembers} disabled={bossViewState === "saving"}>
-            {bossViewState === "saving" ? "保存中" : "保存老板视角名单"}
-          </button>
-          {bossViewState === "saved" ? <span className="settings-success">已保存，刷新页面后角色会同步为老板视角。</span> : null}
-          {bossViewState === "error" ? <span className="settings-error">保存失败，请确认当前账号有管理视角权限。</span> : null}
-        </div>
-      </article>
-      <article className="panel boss-access-panel" data-settings-group="permissions" hidden={settingsTab!=="permissions"}>
-       <div className="panel-heading compact"><div><span className="section-label">Administrator</span><h2>管理员授权名单</h2></div><span>已授权 {adminMembers.length} 人</span></div>
-       <p className="boss-access-copy">管理员使用自己的飞书员工身份，拥有完整管理功能，并额外保留个人分数、周报和评分任务。</p>
-       <div className="boss-member-grid">{bossViewCandidates().map(member=><label className="boss-member-option" key={member.userId}><input type="checkbox" checked={adminMembers.some(m=>m.userId===member.userId)} onChange={()=>{setAdminState('idle');setAdminMembers(ms=>ms.some(m=>m.userId===member.userId)?ms.filter(m=>m.userId!==member.userId):[...ms,member]);}}/><span><strong>{member.name}</strong><small>{member.department}</small></span></label>)}</div>
-       <div className="boss-access-actions"><button className="primary-button" disabled={adminState==='saving'} onClick={()=>void saveAdminMembers()}>保存管理员名单</button>{adminState==='saved'&&<span className="settings-success">管理员权限已保存。</span>}{adminState==='error'&&<span className="settings-error">保存失败，请重试。</span>}</div>
-      </article>
-
-
-        </>
-      ) : null}
+      {bossView && settingsTab === 'permissions' && <Suspense fallback={<p role="status">正在加载授权管理…</p>}><RoleAuthorization/></Suspense>}
       {canManagePersonnel && settingsTab === "organization" && <DepartmentManagement/>}
       {canManagePersonnel ? (
-      <article className="panel personnel-admin-panel" data-settings-group="people" hidden={settingsTab !== "people"}>
+      <article className="panel personnel-admin-panel company-roster" data-settings-group="people" hidden={settingsTab !== "people"}>
         <div className="panel-heading compact">
           <div>
-            <span className="section-label">Active Roster</span>
-            <h2>飞书 SSO 员工花名册</h2>
+            <span className="section-label">Company Roster</span>
+            <h2>公司员工花名册</h2>
           </div>
-          <span className="scoring360-live-badge">在职 {managedEmployees.filter((employee) => employee.active).length} 人</span>
+          <button type="button" className="primary-button company-roster-sync" disabled={managedEmployeeState==='saving'} onClick={()=>void syncDirectory()}>
+            {managedEmployeeState==='saving'?'正在同步公司人员…':'同步公司全部人员'}
+          </button>
         </div>
-        <p className="boss-access-copy">新员工首次通过飞书 SSO 登录后自动加入花名册；后续登录同步姓名、邮箱和可读取的部门信息。管理员只需停用账号，历史周报和评分继续保留，停用后登录不会自动恢复。</p>
-        {employeeMessage&&<p role={managedEmployeeState === "error"?"alert":"status"} className={managedEmployeeState === "error"?"settings-error":"settings-success"}>{employeeMessage}</p>}
-        <div className="personnel-admin-list">
-          {managedEmployees.map((employee) => (
+        <p className="company-roster-copy">从飞书收录公司人员，无需先登录成长 OS。后续 SSO 登录会更新本人资料；同步不会自动分配角色或评分人，已停用账号和历史记录继续保留。</p>
+        <div className="company-roster-metrics" aria-label="公司人员统计">
+          <div><span>已收录人员</span><strong>{managedEmployees.length}<small>人</small></strong></div>
+          <div><span>在职</span><strong>{managedEmployees.filter(employee=>employee.active).length}<small>人</small></strong></div>
+          <div><span>已停用</span><strong>{managedEmployees.filter(employee=>!employee.active).length}<small>人</small></strong></div>
+          <div><span>飞书公司人数</span><strong>{directoryLastSync?.expectedCompanyTotal??'—'}<small>{directoryLastSync?.expectedCompanyTotal!=null?'人':'待同步'}</small></strong></div>
+        </div>
+        <div className="company-roster-sync-status">
+          <div><strong>最近同步</strong><span>{directoryLastSync?.finishedAt?formatDateTime(directoryLastSync.finishedAt):'尚无公司全员同步记录'}</span></div>
+          <button type="button" className="company-roster-link" disabled={managedEmployeeState==='saving'||employeeLoading} onClick={()=>{void loadDirectoryStatus();void loadManagedEmployees();}}>刷新状态</button>
+        </div>
+        {directoryStatusError&&<p className="company-roster-warning" role="status">{directoryStatusError}</p>}
+        {directoryLastSync&&<div className={`company-roster-result ${directoryNeedsAttention||!directoryLastSync.scopeComplete||directoryLastSync.coverage!=='company'?'is-incomplete':''}`} role="status">
+          <strong>{!directoryLastSync.scopeComplete||directoryLastSync.coverage!=='company'?'当前仅同步了飞书授权范围内人员':directoryNeedsAttention?'人员已收录，部分资料仍待补全':'本次公司人员同步已完成'}</strong>
+          <p>读取 {directoryLastSync.total??0} 人 · 扫描 {directoryLastSync.scannedDepartments??0} 个部门 · 新增 {directoryLastSync.created??0} 人 · 更新 {directoryLastSync.updated??0} 人 · 保留停用 {directoryLastSync.preservedInactive??0} 人</p>
+          {(!directoryLastSync.scopeComplete||directoryLastSync.coverage!=='company')&&<p>尚不能确认全公司已纳入。请将飞书应用的通讯录可见范围设为「全部员工」，再重新同步。</p>}
+          {Number(directoryLastSync.missingNames)>0&&<p>{directoryLastSync.missingNames} 人的姓名待补全，请检查「获取用户基本信息」权限及应用发布状态。已收录的 user_id 和已有姓名会保留。</p>}
+          {Number(directoryLastSync.failed)>0&&<p>{directoryLastSync.failed} 人的信息未能完整获取；原有数据保留，请核实权限后重试。</p>}
+          {Number(directoryLastSync.notReturnedLocalCount)>0&&<p>另有 {directoryLastSync.notReturnedLocalCount} 个原有账号本次未返回，已保留，请核实。</p>}
+        </div>}
+        {employeeMessage&&<p role={managedEmployeeState === "error"?"alert":"status"} className={`company-roster-message ${managedEmployeeState==='error'?'is-error':''}`}>{employeeMessage}</p>}
+        <div className="company-roster-toolbar">
+          <div className="company-roster-filters" aria-label="筛选员工状态">{([{id:'all',label:'全部',count:managedEmployees.length},{id:'active',label:'在职',count:managedEmployees.filter(employee=>employee.active).length},{id:'inactive',label:'已停用',count:managedEmployees.filter(employee=>!employee.active).length}] as const).map(item=><button type="button" key={item.id} aria-pressed={employeeFilter===item.id} onClick={()=>setEmployeeFilter(item.id)}>{item.label}<span>{item.count}</span></button>)}</div>
+          <input type="search" aria-label="搜索公司员工" placeholder="搜索姓名、部门或 user_id" value={employeeQuery} onChange={event=>setEmployeeQuery(event.target.value)}/>
+        </div>
+        {employeeLoadError&&<p className="company-roster-message is-error" role="alert">{employeeLoadError}</p>}
+        {employeeLoading&&!managedEmployees.length?<p className="company-roster-empty" role="status">正在读取公司花名册…</p>:<div className="personnel-admin-list company-roster-list" aria-label="公司员工列表">
+          {filteredManagedEmployees.map((employee) => (
             <div className={employee.active ? "" : "is-inactive"} key={employee.userId}>
-              <span><strong>{employee.name}</strong><small>{employee.department || "部门待同步"} · user_id：{employee.userId}</small>{employee.lastLoginAt?<small>最近 SSO 登录：{employee.lastLoginAt}</small>:<small>现有导入记录 · 首次 SSO 登录后同步</small>}{employee.syncNote&&<small>{employee.syncNote}</small>}</span>
+              <div className="company-roster-avatar" aria-hidden="true">{employee.nameMissing?'?':(employee.name||'?').slice(0,1)}</div>
+              <div className="employee-profile"><strong>{employee.nameMissing?'姓名待补全':employee.name||'姓名待补全'}{employee.nameMissing&&<em>资料待补全</em>}</strong><small>{employee.department || "部门待同步"} · user_id：{employee.userId}</small>{employee.lastLoginAt?<small>最近 SSO 登录：{formatDateTime(employee.lastLoginAt)}</small>:employee.source==='feishu_directory'?<small className="company-roster-source">已从飞书收录 · 尚未登录</small>:<small>尚未通过 SSO 登录 · 现有收录记录</small>}{employee.syncNote&&<small className="company-roster-note">{employee.syncNote}</small>}<EmploymentDates key={employee.userId+JSON.stringify(employee.employmentPeriods)} userId={employee.userId} active={employee.active} periods={employee.employmentPeriods||[]} onSaved={loadManagedEmployees}/></div>
               <button className="secondary-button" type="button" onClick={() => setManagedEmployeeActive(employee, false)} disabled={managedEmployeeState === "saving" || !employee.active}>
                 {employee.active ? "停用" : "已停用"}
               </button>
             </div>
           ))}
-        </div>
+          {!filteredManagedEmployees.length&&<p className="company-roster-empty">{managedEmployees.length?'没有匹配人员，请调整搜索或状态筛选。':'尚未收录公司人员，点击「同步公司全部人员」开始。'}</p>}
+        </div>}
+        <p className="company-roster-count">当前显示 {filteredManagedEmployees.length} / {managedEmployees.length} 人<span>以飞书 user_id 识别人员</span></p>
       </article>
       ) : null}
       {canManageScoring360 ? (
         <>
-      <article className="panel scoring360-config-panel" data-settings-group="scoring" hidden={settingsTab !== "scoring"}>
-        <div className="panel-heading compact">
-          <div>
-            <span className="section-label">Collaboration 360</span>
-            <h2>协同360评分关系配置</h2>
-          </div>
-          <span className="scoring360-live-badge">
-            {scoring360Config?.diagnosis?.liveAssignments ? "活配置" : "静态兜底"}
-          </span>
-        </div>
-        <div className="scoring360-config-copy">
-          <strong>{scoring360Config?.cycle?.label || "当前评分周期"}</strong>
-          <span>{scoring360Config?.diagnosis?.note || "当前页面用于维护谁给谁打分；管理视角或协同360管理员可见。"}</span>
-        </div>
-        <div className="scoring360-reminder-actions"><button type="button" className="secondary-button" disabled={scoring360State==='saving'} onClick={()=>void prepareScoringCycle('prepare')}>创建/切换本月评分周期</button><button type="button" className="primary-button" disabled={scoring360State==='saving'} onClick={()=>void prepareScoringCycle('open')}>开放本月评分（不发消息）</button></div><p className="pf-caption">同事互评占70%，评分关系由管理者手动指定；负责人或老板评分占30%。先创建周期、配置关系，再开放评分。</p><div className="scoring360-config-form">
-          <label>
-            <span>被评分人</span>
-            <AppSelect
-              aria-label="被评分人"
-              value={scoring360Evaluee}
-              onValueChange={setScoring360Evaluee}
-              placeholder="输入或选择姓名"
-              searchable searchPlaceholder="搜索姓名…"
-            >{employeeChoices.map(e=><option key={e.userId} value={e.userId}>{e.name} · {e.department}</option>)}</AppSelect>
-          </label>
-          <label>
-            <span>评分人</span>
-            <AppSelect
-              aria-label="评分人"
-              value={scoring360Evaluator}
-              onValueChange={setScoring360Evaluator}
-              placeholder="输入或选择姓名"
-              searchable searchPlaceholder="搜索姓名…"
-            >{employeeChoices.map(e=><option key={e.userId} value={e.userId}>{e.name} · {e.department}</option>)}</AppSelect>
-          </label>
-          <button className="primary-button" type="button" onClick={addScoring360Assignment} disabled={scoring360State === "saving"}>
-            添加评分关系
-          </button>
-        </div>
-        <div className="scoring360-config-summary">
-          <span>当前 {scoring360Config?.assignments.length || 0} 条评分关系</span>
-          <button className="secondary-button" type="button" onClick={loadScoring360Config}>刷新</button>
-        </div>
-        <div className="scoring360-assignment-groups">
-          {!scoring360Config?.assignments.length ? <p className="settings-hint">暂无评分关系。请先确认在职花名册，再添加评分人与被评分人。</p> : null}
-          {groupScoring360Assignments(scoring360Config?.assignments || []).slice(0, 30).map((group) => (
-            <div className="scoring360-assignment-group" key={group.evalueeUserId}>
-              <div>
-                <strong>{group.evalueeName}</strong>
-                <span>{group.assignments.length} 位评分人</span>
-              </div>
-              <div className="scoring360-evaluator-chips">
-                {group.assignments.map((assignment) => (
-                  <span className={assignment.response ? "has-response" : ""} key={assignment.id}>
-                    {assignment.evaluatorName}
-                    {assignment.response ? <small>{assignment.response.score}分</small> : null}
-                    <button
-                      type="button"
-                      aria-label={`删除 ${assignment.evaluatorName} 对 ${assignment.evalueeName} 的评分关系`}
-                      onClick={() => removeScoring360Assignment(assignment.id)}
-                    >
-                      ×
-                    </button>
-                  </span>
-                ))}
-              </div>
-            </div>
-          ))}
-        </div>
-        {scoring360Error ? <p role="alert" className="settings-error">{scoring360Error}</p> : null}
-        {assignmentMessage ? <p role="status" className="settings-success">{assignmentMessage}</p> : null}
-      </article>
-      <article className="panel scoring360-reminder-panel" data-settings-group="scoring" hidden={settingsTab !== "scoring"}>
+      <article className="panel scoring-setup-entry" hidden={settingsTab!=="scoring"}><span className="settings-quick-icon"><UsersRound size={22}/></span><h2>配评，在工作台里完成。</h2><p>按月查看员工评分关系、选择同事评分人、沿用上月配置，并在开放前集中检查。</p><p className="pf-caption">负责人／老板30%从组织关系带出；系统设置继续管理评分规则、提醒和服务连接。</p><button type="button" className="primary-button" onClick={()=>onOpenScoringSetup?onOpenScoringSetup():window.location.assign('/?page=scores&scoreTab=setup')}>进入月度配评工作台 →</button></article>
+      <article className="panel scoring360-reminder-panel" data-settings-group="cycles" hidden={settingsTab !== "cycles"}>
         <div className="panel-heading compact">
           <div>
             <span className="section-label">360 Cycle</span>
@@ -1290,23 +1197,6 @@ function formatDateTime(value?: string) {
     hour: "2-digit",
     minute: "2-digit",
   });
-}
-
-function bossViewCandidates(): BossViewMember[] {
-  const priority = new Map<string, number>();
-  return appData.employeeSummary
-    .filter((employee) => employee.userId)
-    .map((employee) => ({
-      userId: employee.userId,
-      name: employee.name,
-      department: employee.department,
-    }))
-    .sort((left, right) => {
-      const leftPriority = priority.get(left.name) || 99;
-      const rightPriority = priority.get(right.name) || 99;
-      if (leftPriority !== rightPriority) return leftPriority - rightPriority;
-      return left.name.localeCompare(right.name, "zh-CN");
-    });
 }
 
 function groupScoring360Assignments(assignments: Scoring360ConfigAssignment[]) {

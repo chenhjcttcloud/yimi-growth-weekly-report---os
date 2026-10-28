@@ -1,0 +1,47 @@
+import assert from 'node:assert/strict';
+import {mkdtemp,mkdir,readFile,writeFile} from 'node:fs/promises';
+import {spawn,spawnSync} from 'node:child_process';
+import {createHmac,createHash,randomUUID} from 'node:crypto';
+import path from 'node:path';
+import {createSessionPolicy} from '../server/session-policy.mjs';
+import {validateFeishuEvent} from '../server/feishu-event-security.mjs';
+import {createEmployeeLifecycle} from '../server/employee-lifecycle.mjs';
+import {createPerformance} from '../server/performance.mjs';
+import {createDirectorySync} from '../server/directory-sync.mjs';
+await mkdir('outputs/tests',{recursive:true});const dir=await mkdtemp(path.resolve('outputs/tests/hardening-')),db=dir+'/test.sqlite',data=dir+'/data';await mkdir(data);
+const sql=v=>v==null?'NULL':"'"+String(v).replaceAll("'","''")+"'";
+const run=(s,json=false)=>{const p=spawnSync('sqlite3',['-bail',...(json?['-json']:[]),db],{input:s,encoding:'utf8'});assert.equal(p.status,0,p.stderr);return json?JSON.parse(p.stdout||'[]'):p.stdout;};const query=async s=>run(s,true),exec=async s=>run(s);
+run(await readFile('db/schema.sql','utf8'));
+let time=Date.parse('2026-10-28T02:00:00Z');const policy=createSessionPolicy({query,exec,sql,ttlHours:1,now:()=>time});await policy.load();const issued=policy.issue({user:{userId:'staff'}});assert(policy.valid(issued,'token'));assert(!policy.valid({user:{userId:'staff'},issuedAt:0},'legacy'));await policy.revoke(issued,'token');assert(!policy.valid(issued,'token'));const restart=createSessionPolicy({query,exec,sql,ttlHours:1,now:()=>time});await restart.load();assert(!restart.valid(issued,'token'));const next=restart.issue({});time+=3600001;assert(!restart.valid(next,'next'));
+const raw=Buffer.from(JSON.stringify({header:{event_id:'id',token:'token'}})),timestamp=String(Math.floor(time/1000)),nonce='test-nonce',key='test-encrypt-key';const signature=createHash('sha256').update(timestamp+nonce+key).update(raw).digest('hex');const input={raw,headers:{'x-lark-request-timestamp':timestamp,'x-lark-request-nonce':nonce,'x-lark-signature':signature},body:JSON.parse(raw),verificationToken:'token',encryptKey:key,now:time};assert.equal(validateFeishuEvent(input).eventId,'id');assert.throws(()=>validateFeishuEvent({...input,headers:{}}),/signature/);assert.throws(()=>validateFeishuEvent({...input,now:time+301000}),/signature/);assert.throws(()=>validateFeishuEvent({...input,body:{}}),/token/);assert.throws(()=>validateFeishuEvent({...input,verificationToken:'',encryptKey:''}),/not_configured/);
+run("INSERT INTO employees(user_id,name,department,is_active) VALUES('old','历史员工','原部门',1),('new','新员工','团队',1),('left','离职员工','团队',0); INSERT INTO feishu_tasks(guid,summary,status) VALUES('task','测试任务','created');");
+const rawData={meta:{collectionStartDate:'2026-09-14',periods:[{id:'old-week',start:'2026-09-14',end:'2026-09-18'},{id:'week',start:'2026-10-19',end:'2026-10-23'}]},employee_summary:[],weekly_scores:[]};
+const lifecycle=createEmployeeLifecycle({query,exec,sql,now:()=>new Date('2026-10-28T02:00:00Z')});await lifecycle.initialize(rawData);await lifecycle.setDates('old',{startDate:'2026-09-01'}, {userId:'admin',name:'管理员'});await lifecycle.setDates('left',{startDate:'2026-09-01',endDate:'2026-09-30'},{userId:'admin',name:'管理员'});
+const perf=createPerformance({query,exec,sql,readData:()=>rawData,policyFor:async()=>({weights:[30,25,25,20],deadlineTime:'20:00'}),calendar:()=>JSON.parse(awaitRead),managerReviews:{snapshot:async()=>({scores:[],bossScores:[]}),progress:()=>({expected:0,complete:false})},now:()=>new Date('2026-10-28T02:00:00Z')});
+const awaitRead=await readFile('src/data/chinaWorkCalendar.json','utf8');let view=await perf.overview();assert(!view.monthly.some(r=>r.userId==='new'&&r.month==='2026-09'));assert.equal(view.monthly.find(r=>r.userId==='new'&&r.month==='2026-10').timeliness.missing,0);assert(view.monthly.some(r=>r.userId==='left'&&r.month==='2026-09'));assert(!view.monthly.some(r=>r.userId==='left'&&r.month==='2026-10'));
+run("INSERT INTO feishu_department_links(open_department_id,department_id,parent_open_department_id,aliases_json,leader_name,synced_at,raw_json) VALUES('od','dept','','[]','',datetime('now'),'{\"name\":\"当前部门\"}');");
+let directoryCalls=0;
+const directory=createDirectorySync({query,exec,sql,config:{feishuAppId:'cli_test',feishuAppSecret:'test'},lifecycle,fetcher:async input=>{
+ directoryCalls++;const url=new URL(input);let body;
+ if(url.pathname.includes('tenant_access_token'))body={code:0,tenant_access_token:'test'};
+ else if(url.pathname.endsWith('/scopes'))body={code:0,data:{department_ids:['0'],user_ids:[],has_more:false}};
+ else if(url.pathname.endsWith('/departments/0'))body={code:0,data:{department:{member_count:3}}};
+ else if(url.pathname.endsWith('/children'))body={code:0,data:{items:[{open_department_id:'od',name:'当前部门'}],has_more:false}};
+ else if(url.pathname.endsWith('/find_by_department'))body={code:0,data:{items:url.searchParams.get('department_id')==='od'?['old','new','left'].map(user_id=>({user_id,name:'测试姓名',department_ids:['od'],leader_user_id:'head'})):[],has_more:false}};
+ else throw Error('Unexpected directory provider call');
+ return {ok:true,json:async()=>body};
+}});
+const directoryResult=await directory.run();assert.equal(directoryResult.failed,0);assert(directoryResult.scopeComplete);assert(directoryCalls>0);
+assert.equal(run("SELECT department FROM employees WHERE user_id='new';",true)[0].department,'当前部门');assert.equal(run("SELECT is_active FROM employees WHERE user_id='left';",true)[0].is_active,0);
+for(const name of ['prototypeData','scoring360','kimiInsights','kimiInsightsByPeriod','monthlyMeetingInsights'])await writeFile(data+'/'+name+'.json',JSON.stringify(name==='prototypeData'?rawData:name==='scoring360'?{cycles:[],assignments:[],responses:[]}:{}));
+const secret='isolated-security-lifecycle-secret',port=10800+Math.floor(Math.random()*300),base='http://127.0.0.1:'+port;let logs='',server;
+const env={...process.env,AUTH_MODE:'feishu',SESSION_SECRET:secret,SERVER_PORT:String(port),BASE_URL:base,APP_DATA_DIR:data,WEEKLY_REPORT_DB_PATH:db,WEEKLY_REPORT_UPLOAD_DIR:dir+'/uploads',CHINA_CALENDAR_AUTO_UPDATE_ENABLED:'false',LARK_REPORT_AUTO_SYNC_ENABLED:'false',LARK_AUTH_MONITOR_ENABLED:'false',SCORING360_REMINDER_ENABLED:'false',WEEKLY_REMINDER_ENABLED:'false',WEEKLY_UPDATE_REMINDER_ENABLED:'false',FEISHU_EVENT_VERIFICATION_TOKEN:'expected-token',FEISHU_EVENT_ENCRYPT_KEY:'',FEISHU_APP_ID:'',FEISHU_APP_SECRET:'',DEV_VIEW_SWITCH_ENABLED:'false'};
+const start=async()=>{server=spawn(process.execPath,['server/index.mjs'],{env,stdio:['ignore','pipe','pipe']});server.stderr.on('data',x=>logs+=x);for(let i=0;i<150;i++){if(server.exitCode!==null)throw Error(logs);try{if((await fetch(base+'/health')).ok)return;}catch{}await new Promise(r=>setTimeout(r,100));}throw Error('startup_timeout '+logs);};
+const stop=async()=>{server.kill('SIGTERM');if(server.exitCode===null)await new Promise(r=>server.once('exit',r));};
+const sign=s=>{const body=Buffer.from(JSON.stringify(s)).toString('base64url');return 'wos_session='+body+'.'+createHmac('sha256',secret).update(body).digest('base64url');};
+try{
+ await start();assert.equal((await fetch(base+'/api/me',{headers:{cookie:sign({user:{userId:'new'},issuedAt:0})}})).status,401);
+ const valid=sign({user:{userId:'new',name:'测试员工'},issuedAt:Date.now(),sessionId:randomUUID(),expiresAt:new Date(Date.now()+3600000).toISOString()});assert.equal((await fetch(base+'/api/me',{headers:{cookie:valid}})).status,200);await fetch(base+'/auth/logout',{method:'POST',headers:{cookie:valid}});assert.equal((await fetch(base+'/api/me',{headers:{cookie:valid}})).status,401);await stop();await start();assert.equal((await fetch(base+'/api/me',{headers:{cookie:valid}})).status,401);
+ const event={header:{event_type:'task.completed',event_id:'test-event'},event:{task:{guid:'task',status:'completed'}}};const send=body=>fetch(base+'/api/feishu/events',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify(body)});assert.equal((await send(event)).status,403);assert.equal(run("SELECT status FROM feishu_tasks WHERE guid='task';",true)[0].status,'created');const authenticated={...event,header:{...event.header,token:'expected-token'}};const responses=await Promise.all([send(authenticated),send(authenticated)]);assert(responses.every(r=>r.status===200));assert.equal(run('SELECT count(*) AS n FROM received_feishu_events;',true)[0].n,1);assert.equal(run("SELECT count(*) AS n FROM contribution_events WHERE event_type='task.completed';",true)[0].n,1);
+ console.log(JSON.stringify({ok:true,callbackAuthentication:true,eventDedup:true,sessionExpiry:true,logoutRevocationAcrossRestart:true,newHireNoRetroactiveMissing:true,formerEmployeeHistoryRetained:true,directoryIdentity:true,artifacts:dir}));
+}finally{if(server?.exitCode===null)await stop();console.log('Artifacts retained:',dir);}

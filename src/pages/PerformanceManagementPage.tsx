@@ -1,10 +1,17 @@
+import '../styles/scoring-workbench.css';
+import {useLocationSection} from '../lib/navigation';
 import {ManagerReviewsPanel} from '../components/ManagerReviewsPanel';
-import { useEffect, useState } from 'react';
+import {lazy,Suspense,useEffect,useState} from 'react';
+const ManualScoringSetup=lazy(()=>import('../components/ManualScoringSetup').then(module=>({default:module.ManualScoringSetup})));
 import { AppSelect } from '../components/AppSelect';
 import { CalendarDays, ChevronRight, Clock3, FileCheck2, FileText, History, ShieldCheck, UsersRound } from 'lucide-react';
 import { monthText, ResultEmpty, ResultMetric, ResultStatus, scoreText, SubmissionCounts } from '../components/PerformanceUI';
 import { ScoringTasksPage } from './ScoringTasksPage';
 export function PerformanceManagementPage(){
+ const [tab,setTab]=useLocationSection('scoreTab',['results','setup'] as const,'results');
+ return <div className="scoring-management-shell"><nav className="scoring-workbench-tabs" role="tablist" aria-label="评分工作台模块"><button type="button" role="tab" aria-selected={tab==='results'} onClick={()=>{if(tab==='results'||window.dispatchEvent(new Event('organization-before-leave',{cancelable:true})))setTab('results');}}>月度结果与进度</button><button type="button" role="tab" aria-selected={tab==='setup'} onClick={()=>setTab('setup')}>月度配评</button></nav>{tab==='setup'?<Suspense fallback={<p role="status">正在加载月度配评…</p>}><ManualScoringSetup/></Suspense>:<PerformanceResults/>}</div>;
+}
+function PerformanceResults(){
  const [data,setData]=useState<any>(null),[month,setMonth]=useState(''),[error,setError]=useState('');
  const [selectedName,setSelectedName]=useState('');
  const [tab,setTab]=useState<'review'|'reports'|'collaboration'|'history'>('review');
@@ -45,7 +52,7 @@ export function PerformanceManagementPage(){
       <p className="pf-review-hint">月度最终分＝负责人或老板评分30%＋同事互评均分70%，两部分完成后自动发布。</p>
       <div className="pf-confirm-list">{kinds.map(([kind,label])=>{const saved=locked(kind),ready=saved&&(kind==='timeliness'?saved.result.rate!=null:saved.result.score!=null);const value=kind==='timeliness'?saved?.result.rate:saved?.result.score;const note=kind==='quality'?'AI 完成四模块分析后自动汇总；新周报同步后自动更新':kind==='timeliness'?'按原始提交时间自动统计，无需审核或确认':'负责人或老板30%＋同事70%，全部必需评分完成后自动发布';return <div className="pf-confirm-row" key={kind}><span><strong>{label} · {scoreText(value)}{value!=null?(kind==='timeliness'?'%':' 分'):''}</strong><small>{saved?.scoring_rule==='legacy'?'历史已发布结果，保留原值':note}</small></span><ResultStatus confirmed={Boolean(ready)} label={ready?(saved.scoring_rule==='legacy'?'历史已发布':kind==='collaboration'?'已自动发布':'已自动生成'):kind==='quality'?'等待 AI 分析':kind==='timeliness'?(selected.timeliness.pendingCalendar?'等待工作日日历':selected.timeliness.pendingTimestamp?'等待提交时间补齐':'暂无到期周报'):'等待评分完成'}/></div>;})}</div>
       <div className="pf-review-stats"><div><span>周报质量自动分</span><strong>{scoreText(locked('quality')?.result.score)}<small> 分</small></strong></div><div><span>同事互评均分（70%）</span><strong>{scoreText(selected.peerCandidate)}<small> 分</small></strong></div><div><span>该员工协作评分进度</span><strong>{selected.collaborationSubmitted}<small> / {selected.collaborationExpected}</small></strong></div></div>
-      <p className="pf-notice">{selected.managerProgress.kind==='boss'?'老板':'负责人'}评分（30%）：{selected.managerProgress.submitted}/{selected.managerProgress.expected} 已完成 · {scoreText(selected.managerProgress.score)} 分。{!selected.managerProgress.expected&&'请先同步飞书部门负责人或直属上级。'}</p><SubmissionCounts stats={selected.timeliness}/>
+      <p className="pf-notice">{selected.managerProgress.kind==='boss'?'老板':'负责人'}评分（30%）：{selected.managerProgress.submitted}/{selected.managerProgress.expected} 已完成 · {scoreText(selected.managerProgress.score)} 分。{selected.managerProgress.handoffRequired?'原负责人已停用或身份缺失，请到「系统设置 → 月度评分交接」指定接任负责人。':!selected.managerProgress.expected&&'请先同步飞书部门负责人或直属上级。'}</p><SubmissionCounts stats={selected.timeliness}/>
       <p className="pf-caption pf-rule">周报质量权重：{(selected.reports[0]?.scoringPolicy?.weights||[30,25,25,20]).map((w:number,i:number)=>`${['成果','问题','计划','复盘'][i]} ${w}%`).join(' · ')}。及时率独立统计。</p>
       {!!selected.timeliness.pendingTimestamp&&<div className="pf-error">{selected.timeliness.pendingTimestamp} 份周报提交时间待核实，原始时间补齐后系统自动重算，当前不展示不准确的及时率。</div>}
      </>}

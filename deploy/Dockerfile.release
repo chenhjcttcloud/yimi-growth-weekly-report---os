@@ -1,9 +1,10 @@
 # Stage only server/, scripts/, db/, src/data/, package.json and prebuilt web/.
-# Retain the previous image and its assets; no cleanup or container replacement.
+# Retain previous images and assets. Previous containers are stopped and renamed.
 ARG BASE_IMAGE=emie-growth-os:production-20261026-userid
 FROM ${BASE_IMAGE}
 ARG RELEASE_ID
-LABEL cn.emie.growth.release=${RELEASE_ID}
+ARG SOURCE_REVISION
+LABEL cn.emie.growth.release=${RELEASE_ID} org.opencontainers.image.revision=${SOURCE_REVISION}
 COPY --chown=node:node server /app/server
 COPY --chown=node:node scripts /app/scripts
 COPY --chown=node:node db /app/db

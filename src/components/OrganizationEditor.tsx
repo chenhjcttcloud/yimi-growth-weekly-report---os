@@ -39,7 +39,7 @@ export function OrganizationEditor(){
   try{
    const response=await fetch('/api/departments/sync-feishu',{method:'POST',headers:{'content-type':'application/json'},body:'{}'}),result=await response.json();
    if(!response.ok)throw Error(errors[result.error]||(result.error==='feishu_not_configured'?'请先在系统设置中配置飞书应用。':'同步失败，请检查飞书通讯录权限和可见范围后重试。'));
-   await load();setMessage(`已同步 ${result.departmentCount} 个部门、${result.leaders} 个部门负责人。${result.unresolvedLeaderNames?' '+result.unresolvedLeaderNames+' 位负责人未返回姓名，已标记“姓名待同步”；请开通“获取用户基本信息” contact:user.base:readonly 后重新同步。':''}`);
+   await load();setMessage(`已同步 ${result.departmentCount} 个部门、${result.leaders} 个部门负责人。${result.directory?.incomplete?' 员工通讯录尚未同步，请到员工管理重试。':result.directory?.failed?' '+result.directory.failed+' 位员工资料未返回，原信息已保留。':''}${result.unresolvedLeaderNames?' '+result.unresolvedLeaderNames+' 位负责人未返回姓名，已标记“姓名待同步”；请开通“获取用户基本信息” contact:user.base:readonly 后重新同步。':''}`);
   }catch(error){setMessage(error instanceof Error?error.message:'同步失败，请重试。');}finally{setBusy(false);}
  }
  useEffect(()=>{if(!dirty)return;const warn=(e:BeforeUnloadEvent)=>{e.preventDefault();e.returnValue='';};const leave=(e:Event)=>{if(!window.confirm('组织架构有未保存修改，确定放弃并离开？'))e.preventDefault();};window.addEventListener('beforeunload',warn);window.addEventListener('organization-before-leave',leave);return()=>{window.removeEventListener('beforeunload',warn);window.removeEventListener('organization-before-leave',leave);};},[dirty]);

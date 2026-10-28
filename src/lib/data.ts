@@ -84,6 +84,7 @@ function mapEmployee(row: RawRecord): EmployeeSummary {
 
 function mapWeekly(row: RawRecord): WeeklyScore {
   return {
+    qualityAvailable:['成果分','问题分','计划分','复盘分'].every(k=>row[k]!=null&&String(row[k]).trim()!==''&&Number.isFinite(Number(row[k]))&&Number(row[k])>=0&&Number(row[k])<=100),
     name: toText(row["姓名"]),
     department: toText(row["部门"]),
     weekId: toText(row["周期ID"]),
@@ -406,7 +407,14 @@ export function insightsForPeriod(periodId?: string) {
   return kimiInsights;
 }
 
-export const scoring360 = rawScoring360 as Scoring360Data;
+export const scoring360:Scoring360Data = {
+  meta:rawScoring360.meta||{importedAt:''},
+  cycles:Array.isArray(rawScoring360.cycles)?rawScoring360.cycles:[],
+  employees:Array.isArray(rawScoring360.employees)?rawScoring360.employees:[],
+  assignments:Array.isArray(rawScoring360.assignments)?rawScoring360.assignments:[],
+  responses:Array.isArray(rawScoring360.responses)?rawScoring360.responses:[],
+  results:Array.isArray(rawScoring360.results)?rawScoring360.results:[],
+};
 
 export const currentScoring360Cycle = scoring360.cycles[0];
 
@@ -435,7 +443,7 @@ export function scoring360VisibleResults(visibleNames: Set<string>) {
 
 export function attentionQueueForInsights(insights = kimiInsights) {
   if (isMissingPeriodInsights(insights)) return [];
-  return insights.attentionQueue.length > 0 ? insights.attentionQueue : appData.bossTasks;
+  return insights.attentionQueue;
 }
 
 export const attentionQueue = attentionQueueForInsights(kimiInsights);
@@ -591,26 +599,14 @@ export const coordinationSignals: CoordinationSignal[] = coordinationSignalsForI
 
 export function companyMessageDraftForInsights(insights = kimiInsights) {
   if (isMissingPeriodInsights(insights)) return "";
-  return insights.companyMessageDraft || appData.groupMessageDraft;
+  return insights.companyMessageDraft || '';
 }
 
 export const companyMessageDraft = companyMessageDraftForInsights(kimiInsights);
 
 export function mustReadReportsForInsights(insights = kimiInsights) {
   if (isMissingPeriodInsights(insights)) return [];
-  return insights.mustReadReports.length > 0
-    ? insights.mustReadReports
-    : appData.employeeSummary
-      .slice(0, 5)
-      .map((employee) => {
-        return {
-          name: employee.name,
-          department: employee.department,
-          reason: employee.calibrationNote || employee.growthSummary,
-          focus: "阅读完整周报，确认结果、问题和下周承诺是否形成闭环。",
-          evidence: employee.growthSummary,
-        };
-      }) as MustReadReport[];
+  return insights.mustReadReports;
 }
 
 export const mustReadReports = mustReadReportsForInsights(kimiInsights);
@@ -1064,7 +1060,7 @@ function impactedDepartmentsForTask(task: AttentionTask, responsibleDepartments:
 function decisionQuestionFor(category: MonthlyMeetingCategory, task: AttentionTask) {
   const subject = task.theme || task.title.replace(/^【周报P\d】/, "");
   const questions: Record<MonthlyMeetingCategory, string> = {
-    经营问题: `${subject} 对收入、现金、库存或利润的真实影响是什么，7月由谁负责止血或增长？`,
+    经营问题: `${subject} 对收入、现金、库存或利润的真实影响是什么，本月由谁负责止血或增长？`,
     业务问题: `${subject} 的客户、渠道或交付链路卡在哪个节点，下一次可验证推进是什么？`,
     产品问题: `${subject} 是否影响上市、送审、品质或供应商稳定性，需要老板拍板还是部门内闭环？`,
     流程问题: `${subject} 是偶发问题还是机制缺口，是否要沉淀为SOP、看板或跨部门规则？`,

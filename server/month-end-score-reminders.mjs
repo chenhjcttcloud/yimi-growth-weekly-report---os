@@ -22,7 +22,7 @@ export function createMonthEndScoreReminders({query,exec,sql,managerReviews,boss
   validMonth(month);
   const people=await query('SELECT user_id,name,is_active FROM employees;'),byId=new Map(people.map(p=>[p.user_id,p]));
   const active=id=>!!id&&Number(byId.get(id)?.is_active)===1;
-  const published=new Set((await query(`SELECT employee_user_id FROM monthly_weighted_results WHERE month=${sql(month)} UNION SELECT employee_user_id FROM performance_results WHERE month=${sql(month)} AND kind='collaboration';`)).map(p=>p.employee_user_id));
+  const published=new Set((await query(`SELECT employee_user_id FROM all_monthly_weighted_results WHERE month=${sql(month)} UNION SELECT employee_user_id FROM performance_results WHERE month=${sql(month)} AND kind='collaboration';`)).map(p=>p.employee_user_id));
   const groups=new Map();
   function add(id,kind,key,name='') {
    if(!id||byId.has(id)&&!active(id))return;
@@ -37,8 +37,8 @@ export function createMonthEndScoreReminders({query,exec,sql,managerReviews,boss
    if(!active(id)||published.has(id))continue;
    const progress=managerReviews.progress(state,month,id);
    for(const expected of progress.expectedIds){
-    if(progress.records?.some(r=>(plan.kind==='boss'?r.department_id:r.evaluator_user_id)===expected))continue;
-    if(plan.kind==='boss'){
+    if(progress.records?.some(r=>(progress.kind==='boss'?r.department_id:r.evaluator_user_id)===expected))continue;
+    if(progress.kind==='boss'){
      for(const boss of bosses)if(boss.userId!==id)add(boss.userId,'boss',`${id}:${expected}`,boss.name);
     }else if(active(expected))add(expected,'manager',id);
    }

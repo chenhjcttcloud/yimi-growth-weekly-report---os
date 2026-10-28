@@ -38,6 +38,9 @@ export function App() {
   const [selectedPeriodId, setSelectedPeriodId] = useState(appData.currentWeekId || appData.periods.at(-1)?.id || "");
   const [taskCreated, setTaskCreated] = useState(false);
   const [summaryReady, setSummaryReady] = useState(false);
+  const [summaryBusy,setSummaryBusy]=useState(false),[summaryVersion,setSummaryVersion]=useState(0),[actionMessage,setActionMessage]=useState('');
+  useEffect(()=>{setSummaryReady(false);setActionMessage('');},[selectedPeriodId]);
+  async function generateSummary(){if(summaryBusy)return;setSummaryBusy(true);setActionMessage('');try{const r=await fetch('/api/management/summary',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({periodId:selectedPeriodId})}),j=await r.json();if(!r.ok)throw Error(j.error==='ai_not_configured'?'请先在系统设置配置 AI 服务':j.error==='no_reports'?'本周期没有可分析周报':'摘要生成未完成，请检查服务后重试');setSummaryReady(true);setSummaryVersion(v=>v+1);setActivePage('dashboard');setActionMessage(`已根据 ${j.summary.reportCount} 份本周期周报生成摘要，尚未发送消息。`);}catch(e){setActionMessage(e instanceof Error?e.message:'生成失败');}finally{setSummaryBusy(false);}}
   const [access, setAccess] = useState<UserAccess | null>(null);
   const [adminPerspective,setAdminPerspective]=useState<string>('management');
   const previewEmployeeId=access?.role==='system_admin'&&adminPerspective.startsWith('employee:')?adminPerspective.slice(9):'';
@@ -141,6 +144,7 @@ export function App() {
     if (activePage === "dashboard" && currentAccess.canViewBossDashboard) {
       return (
         <DashboardPage
+          summaryVersion={summaryVersion}
           selectedPeriodId={selectedPeriodId}
           externalView={externalView}
           onOpenEmployee={(name) => {
@@ -167,11 +171,11 @@ export function App() {
     }
 
     if (activePage === "tasks" && currentAccess.canViewBossDashboard) {
-      return <TasksPage selectedPeriodId={selectedPeriodId} taskCreated={taskCreated} onCreateTasks={() => setTaskCreated(true)} />;
+      return <TasksPage selectedPeriodId={selectedPeriodId} taskCreated={taskCreated} readOnly={externalView} onCreateTasks={() => setTaskCreated(true)} />;
     }
 
     if (activePage === "settings" && currentAccess.canViewSettings) {
-      return <SettingsPage access={currentAccess} />;
+      return <SettingsPage access={currentAccess} onOpenScoringSetup={()=>{rememberLocation('scoreTab','setup');setActivePage('scores');}} />;
     }
 
     if (["reports", "coach", "actions", "timeline"].includes(activePage) && currentAccess.role !== "boss" && !externalView) {
@@ -190,7 +194,7 @@ export function App() {
 
 
     return <FinalResultsPage previewEmployeeId={previewEmployeeId} key={activePage+previewEmployeeId} onOpenModule={setActivePage} />;
-  }, [activePage, selectedEmployee, selectedPeriodId, summaryReady, taskCreated, currentAccess, externalView, previewEmployeeId]);
+  }, [activePage, selectedEmployee, selectedPeriodId, summaryReady,summaryVersion, taskCreated, currentAccess, externalView, previewEmployeeId]);
 
   return (
     <div className="app-shell">
@@ -215,24 +219,21 @@ export function App() {
           externalView={externalView}
           canViewBossDashboard={currentAccess.canViewBossDashboard}
           summaryReady={summaryReady}
+          summaryBusy={summaryBusy}
           taskCreated={taskCreated}
           selectedPeriodId={selectedPeriodId}
           onSelectPeriod={setSelectedPeriodId}
           onCreateTasks={() => {
-            setTaskCreated(true);
             setActivePage("tasks");
           }}
-          onGenerateSummary={() => {
-            setSummaryReady(true);
-            setActivePage("dashboard");
-          }}
+          onGenerateSummary={()=>void generateSummary()}
           onOpenNotificationTarget={(employeeName) => {
             setSelectedEmployee(employeeName);
             setActivePage("scores");
           }}
         />
         {previewEmployee&&<div className="employee-preview-banner" role="status"><span>只读预览 · {previewEmployee.name}（{previewEmployee.department}） · 当前登录：{access?.currentEmployee?.name}</span><button type="button" onClick={()=>changePerspective('management')}>退出预览</button></div>}
-        <div className={`content-shell ${activePage === "settings" ? "content-shell-settings" : ""}`}>{access?page:<p role="status">正在恢复页面…</p>}</div>
+        <div className={`content-shell ${activePage === "settings" ? "content-shell-settings" : ""}`}>{actionMessage&&<p role="status" className="pf-notice app-action-message">{actionMessage}</p>}{access?page:<p role="status">正在恢复页面…</p>}</div>
       </main>
     </div>
   );

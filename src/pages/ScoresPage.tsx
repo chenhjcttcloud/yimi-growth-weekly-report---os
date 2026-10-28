@@ -285,13 +285,13 @@ export function ScoresPage({ visibleEmployees = [], access }: ScoresPageProps) {
               </div>
               <div>
                 <span>完成窗口</span>
-                <strong>每月下旬启动一次</strong>
-                <p>发起后立即收到首轮提醒；24 小时仍未完成会再次提醒，48 小时为本轮截止时间。</p>
+                <strong>按月配置并开放评分</strong>
+                <p>评分关系由管理员手动指定并开放；月末最后两个工作日按后台配置提醒未评分人员，本人也可在等待时间后催评。</p>
               </div>
               <div>
-                <span>滚动计算</span>
-                <strong>历史 {Math.round((currentCycle?.historicalWeight ?? 0.3) * 100)}% + 当期 {Math.round((currentCycle?.currentWeight ?? 0.7) * 100)}%</strong>
-                <p>页面同时展示上期分、当期均分和滚动协同分，避免一次评分决定长期判断。</p>
+                <span>月度合分</span>
+                <strong>负责人／老板 30% + 同事互评 70%</strong>
+                <p>两部分全部评分并填写评价后自动发布月度最终分，无需管理员或老板再次确认；旧版历史记录保留原口径。</p>
               </div>
             </div>
             {launchMessage ? <p className={launchState === "error" ? "form-error" : "settings-success"}>{launchMessage}</p> : null}
@@ -410,7 +410,7 @@ function Collaboration360Table({ results, top360 }: { results: Scoring360Result[
               <th>完成率</th>
               <th>上期分</th>
               <th>当期均分</th>
-              <th>滚动协同分</th>
+              <th>历史滚动分（旧口径）</th>
               <th>等级</th>
               <th>最低/最高</th>
               <th>评价人</th>

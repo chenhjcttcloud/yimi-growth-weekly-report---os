@@ -11,7 +11,7 @@ let clock=Date.parse('2026-10-20T00:00:00Z'),sent=[];
 const base={query:async s=>run(s,true),exec:async s=>run(s),sql,now:()=>clock};
 try {
  run(await readFile('db/schema.sql','utf8'));
- run("INSERT INTO scoring360_cycles(id,label,start_date,end_date,status,launch_at,created_at) VALUES('c','十月','2026-10-01','2026-10-31','open','2026-10-18T00:00:00Z','2026-10-18T00:00:00Z'); INSERT INTO scoring360_assignments(id,cycle_id,evaluee_name,evaluator_name,evaluee_user_id,evaluator_user_id,created_at) VALUES('a','c','本人','待评人','self','rater','2026-10-18T00:00:00Z'),('b','c','别人','无关评分人','other','other-rater','2026-10-18T00:00:00Z');");
+ run("INSERT INTO employees(user_id,name) VALUES('self','本人'),('rater','待评人'),('other','别人'),('other-rater','无关评分人'); INSERT INTO scoring360_cycles(id,label,start_date,end_date,status,launch_at,created_at) VALUES('c','十月','2026-10-01','2026-10-31','open','2026-10-18T00:00:00Z','2026-10-18T00:00:00Z'); INSERT INTO scoring360_assignments(id,cycle_id,evaluee_name,evaluator_name,evaluee_user_id,evaluator_user_id,created_at) VALUES('a','c','本人','待评人','self','rater','2026-10-18T00:00:00Z'),('b','c','别人','无关评分人','other','other-rater','2026-10-18T00:00:00Z');");
  const user={userId:'self',name:'本人'},preview=createPersonalScoringReminders({...base,enabled:false});
  clock-=47*3600000;assert.equal((await preview.status(user,'2026-10')).canRemind,false);clock+=47*3600000;
  assert.equal((await preview.status(user,'2026-10')).canRemind,true);
@@ -26,4 +26,4 @@ try {
  assert.equal((await service.status({userId:'unknown',name:'陌生人'},'2026-10')).expected,0);
  await assert.rejects(service.status(user,'bad-month'),/invalid_month/);
  console.log('personal scoring reminder tests passed: self-only recipients, 24-hour wait/cooldown, honest preview, completed-rater exclusion');
-}finally{await rm(dir,{recursive:true,force:true});}
+}finally{console.log('Test artifacts retained:',dir);}

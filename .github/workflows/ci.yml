@@ -26,4 +26,13 @@ jobs:
       - run: node scripts/test-month-end-score-reminders.mjs
       - run: node scripts/test-china-work-calendar.mjs
       - run: node scripts/test-weighted-monthly.mjs
+      - run: node scripts/test-security-lifecycle.mjs
+      - run: node scripts/test-setup-operations.mjs
+      - run: node scripts/test-reminder-reliability.mjs
+      - run: node scripts/test-monthly-handoffs.mjs
+      - run: node scripts/test-feishu-user-tokens.mjs
+      - run: node scripts/test-scoring-workbench.mjs
+      - run: node scripts/test-authorization-candidates.mjs
+      - run: node scripts/test-company-directory.mjs
+      - run: BUSINESS_TEST_SKIP_BROWSER=true TEST_STATIC_DIR=outputs/ci-preview node scripts/test-business-workflow.mjs
       - run: npm audit --audit-level=high

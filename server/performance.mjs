@@ -1,5 +1,6 @@
 import {createHash,randomUUID} from 'node:crypto';
 import {weeklyReportSchedule,monthFridays,shiftDate} from './weekly-report-schedule.mjs';
+import {employedOn,employedInMonth} from './employee-lifecycle.mjs';
 // Quality/statistics calculate automatically; required human ratings publish when complete.
 export function createPerformance({ query, exec, sql, readData, policyFor, managerReviews, calendar, now=()=>new Date() }) {
   const round = n => Math.round(n * 10) / 10;
@@ -7,7 +8,7 @@ export function createPerformance({ query, exec, sql, readData, policyFor, manag
   const monthOf = value => String(value || '').slice(0,7);
   async function confirmed() {
     return (await query(`SELECT *, 'legacy' AS scoring_rule FROM performance_results
-UNION ALL SELECT *, 'weighted_30_70' AS scoring_rule FROM monthly_weighted_results
+UNION ALL SELECT *, 'weighted_30_70' AS scoring_rule FROM all_monthly_weighted_results
 UNION ALL SELECT a.month,a.employee_user_id,a.employee_name,a.kind,a.result_json,a.evidence_json,'系统自动计算' AS confirmed_by,a.calculated_at AS confirmed_at,'automatic_report' AS scoring_rule FROM automatic_performance_results a
 WHERE a.rowid=(SELECT MAX(b.rowid) FROM automatic_performance_results b WHERE b.month=a.month AND b.employee_user_id=a.employee_user_id AND b.kind=a.kind)
 AND NOT EXISTS(SELECT 1 FROM performance_results p WHERE p.month=a.month AND p.employee_user_id=a.employee_user_id AND p.kind=a.kind)
@@ -77,14 +78,21 @@ WHERE COALESCE((SELECT calculation_hash FROM automatic_performance_results WHERE
     const months=[...new Set([...periods.map(p=>monthOf(p.end)),...rs.map(r=>r.month),...collaborations.map(c=>c.month),...managerState.scores.map(s=>s.month),...managerState.bossScores.map(s=>s.month),...results.map(r=>r.month)])].filter(m=>/^\d{4}-\d{2}$/.test(m)).sort().reverse();
     const directory = new Map((data.employee_summary||[]).map(e=>[e.user_id,{name:e['姓名'],department:e['部门'],userId:e.user_id}]));
     const roster=await query('SELECT user_id,name,department,is_active FROM employees;');
-    for(const e of roster) { if(Number(e.is_active)) directory.set(e.user_id,{name:e.name,department:e.department,userId:e.user_id}); else directory.delete(e.user_id); }
+    const servicePeriods=await query('SELECT * FROM employee_employment_periods;');
+    for(const e of roster)directory.set(e.user_id,{name:e.name,department:e.department,userId:e.user_id,active:Number(e.is_active)===1});
+    for(const e of directory.values()){
+      const own=servicePeriods.filter(p=>p.employee_user_id===e.userId);
+      const first=rs.filter(r=>r.employeeUserId===e.userId).map(r=>r.start).filter(Boolean).sort()[0]||today;
+      e.employmentPeriods=own.length?own:[{start_date:first,end_date:e.active===false?today:null,source:'inferred'}];
+    }
     const employees=[...directory.values()];
     const monthly=[];
     for(const month of months) for(const employee of employees){
+      if(!employedInMonth(employee.employmentPeriods,month)&&!results.some(r=>r.month===month&&r.employee_user_id===employee.userId))continue;
       const monthPolicy=policyFor?await policyFor(month):{deadlineTime:'20:00'};
-      const weeks=periods.filter(p=>{const schedule=weeklyReportSchedule(p.end,calendar?.()||{},monthPolicy.deadlineTime);return monthOf(p.end)===month&&(!calendar||p.start>=coverageStart)&&!schedule.exempt&&Date.parse(schedule.dueAt)<=now().getTime()&&!(p.exempt_people||[]).includes(employee.name);});
+      const weeks=periods.filter(p=>{const schedule=weeklyReportSchedule(p.end,calendar?.()||{},monthPolicy.deadlineTime);return monthOf(p.end)===month&&(!calendar||p.start>=coverageStart)&&employedOn(employee.employmentPeriods,schedule.deadlineDate)&&!schedule.exempt&&Date.parse(schedule.dueAt)<=now().getTime()&&!(p.exempt_people||[]).includes(employee.name);});
       const employeeReports=rs.filter(r=>r.employeeUserId===employee.userId&&r.month===month);
-      const counted=employeeReports.filter(r=>!r.schedule.exempt&&!(periods.find(p=>p.end===r.end)?.exempt_people||[]).includes(employee.name)),expected=new Set([...weeks.map(p=>p.end),...counted.map(r=>r.end)]).size;
+      const counted=employeeReports.filter(r=>employedOn(employee.employmentPeriods,r.schedule.deadlineDate)&&!r.schedule.exempt&&!(periods.find(p=>p.end===r.end)?.exempt_people||[]).includes(employee.name)),expected=new Set([...weeks.map(p=>p.end),...counted.map(r=>r.end)]).size;
       const submitted=counted.filter(r=>r.submitted).length;
       const onTime=counted.filter(r=>r.onTime).length;
       const cyclesForMonth=collaborations.filter(c=>c.month===month);
@@ -100,7 +108,7 @@ WHERE COALESCE((SELECT calculation_hash FROM automatic_performance_results WHERE
     for(const row of monthly.filter(r=>r.collaborationComplete)) {
       if(results.some(r=>r.month===row.month&&r.employee_user_id===row.userId&&r.kind==='collaboration'))continue;
       const snapshot={...row,publicationMode:'weighted_30_70',reviewNote:'负责人或老板评分30%＋同事互评70%，两部分完成后自动发布',reviewer:'系统自动发布'};
-      await exec(`INSERT OR IGNORE INTO monthly_weighted_results(month,employee_user_id,employee_name,kind,result_json,evidence_json,confirmed_by,confirmed_at) VALUES(${sql(row.month)},${sql(row.userId)},${sql(row.name)},'collaboration',${sql(JSON.stringify({score:row.collaborationCandidate,peerScore:row.peerCandidate,managerScore:row.managerProgress.score,weights:{manager:30,peers:70}}))},${sql(JSON.stringify(snapshot))},'系统自动发布',datetime('now'));`);
+      await exec(`INSERT OR IGNORE INTO monthly_person_weighted_results(month,employee_user_id,employee_name,kind,result_json,evidence_json,confirmed_by,confirmed_at) VALUES(${sql(row.month)},${sql(row.userId)},${sql(row.name)},'collaboration',${sql(JSON.stringify({score:row.collaborationCandidate,peerScore:row.peerCandidate,managerScore:row.managerProgress.score,weights:{manager:30,peers:70}}))},${sql(JSON.stringify(snapshot))},'系统自动发布',datetime('now'));`);
     }
     return {months,employees,monthly,collaborations,results:await confirmed()};
   }

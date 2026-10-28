@@ -1,5 +1,5 @@
 // Called only after Feishu has verified the authorization code and user identity.
-export function createSsoRoster({query,exec,sql,getJson,registerIdentity=async()=>{}}) {
+export function createSsoRoster({query,exec,sql,getJson,registerIdentity=async()=>{},lifecycle}) {
   return async function syncLogin(identity,token) {
     if(!identity.userId || !identity.name)throw Error('invalid_sso_identity');
     let profile={},department='',note='';
@@ -22,9 +22,11 @@ export function createSsoRoster({query,exec,sql,getJson,registerIdentity=async()
         email=CASE WHEN excluded.email<>'' THEN excluded.email ELSE employees.email END,
         manager_user_id=CASE WHEN excluded.manager_user_id<>'' THEN excluded.manager_user_id ELSE employees.manager_user_id END,
         updated_at=datetime('now');
-      INSERT INTO employee_sso_logins(user_id,last_login_at,sync_note) VALUES(${sql(identity.userId)},datetime('now'),${sql(note)})
+      INSERT INTO employee_sso_logins(user_id,last_login_at,sync_note) VALUES(${sql(identity.userId)},datetime('now'),COALESCE(${sql(note)},''))
       ON CONFLICT(user_id) DO UPDATE SET last_login_at=excluded.last_login_at,sync_note=excluded.sync_note;
+      UPDATE employee_directory_profiles SET name_missing=0 WHERE user_id=${sql(identity.userId)};
       COMMIT;`);
+    await lifecycle?.profile(identity.userId,profile.join_time);
     const employee=(await query(`SELECT * FROM employees WHERE user_id=${sql(identity.userId)};`))[0];
     return {employee,active:Number(employee?.is_active)===1};
   };

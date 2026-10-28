@@ -33,6 +33,7 @@ import { cnNumber, truncate } from "../lib/format";
 import type { Scoring360Result } from "../lib/types";
 
 interface DashboardPageProps {
+  summaryVersion?:number;
   selectedPeriodId: string;
   onOpenEmployee: (name: string) => void;
   externalView?: boolean;
@@ -49,7 +50,7 @@ function collaborationSignal(result: Scoring360Result) {
   return "孤岛风险";
 }
 
-export function DashboardPage({ selectedPeriodId, onOpenEmployee, externalView = false }: DashboardPageProps) {
+export function DashboardPage({ selectedPeriodId, onOpenEmployee, externalView = false,summaryVersion=0 }: DashboardPageProps) {
   const selectedPeriod = reportPeriods.find((period) => period.id === selectedPeriodId) ?? reportPeriods.at(-1);
   const periodInsights = insightsForPeriod(selectedPeriod?.id || selectedPeriodId);
   const hasPeriodInsights = hasInsightsForPeriod(selectedPeriod?.id || selectedPeriodId);
@@ -69,15 +70,15 @@ export function DashboardPage({ selectedPeriodId, onOpenEmployee, externalView =
   const [showAllDecisions, setShowAllDecisions] = useState(false);
   const [showAllMustRead, setShowAllMustRead] = useState(false);
   const selectedWeeklyRows = selectedPeriod ? weeklyForPeriod(selectedPeriod.id) : [];
-  const submittedCount = selectedPeriod?.submittedCount || appData.submittedCount || selectedWeeklyRows.length;
-  const exemptCount = selectedPeriod?.exemptPeople?.length || appData.exemptCount;
+  const submittedCount = selectedPeriod?selectedPeriod.submittedCount:selectedWeeklyRows.length;
+  const exemptCount = selectedPeriod?.exemptPeople?.length ?? 0;
   const peopleCount = Math.max(appData.peopleCount, submittedCount + exemptCount);
   const p0Count = periodAttentionQueue.filter((task) => task.priority === "P0").length;
   const coordinationCount = periodCoordinationSignals.filter((signal) => signal.priority === "P0").length;
   const praiseCount = selectedWeeklyRows.filter((week) => week.level === "A" || week.level === "A-").length;
   const mustRead = periodMustReadReports;
   const departmentBars = Object.entries(
-    selectedWeeklyRows.reduce<Record<string, { total: number; count: number }>>((groups, week) => {
+    selectedWeeklyRows.filter(w=>w.qualityAvailable!==false).reduce<Record<string, { total: number; count: number }>>((groups, week) => {
       const key = week.department || "未归类";
       const current = groups[key] || { total: 0, count: 0 };
       groups[key] = { total: current.total + week.total, count: current.count + 1 };
@@ -103,12 +104,7 @@ export function DashboardPage({ selectedPeriodId, onOpenEmployee, externalView =
       ? [
           `${selectedPeriod.label} 暂无独立 AI 分析快照。本页先展示该周期的提交统计与原始周报记录，不再混用最新周分析内容。`,
         ]
-    : [
-        "海外授权卡点仍是收入风险。土耳其/亚马逊授权跨周出现，已经影响客户转化节奏，需要老板直接推动外部期限。",
-        "送审流程正在成为产品上市瓶颈。返工、丝印五官、过审节点不确定反复出现，应该升级成可视化看板与 SOP。",
-        "AI 增效已经进入推广期。设计、IT、人力多部门都在推进，下一步要量化为节省工时、减少返工和提升交付速度。",
-        "客户开发需要从动作量转向转化漏斗。海外客户开发动作不少，但回复、意向、报价、成交的漏斗还不清楚。",
-      ];
+    : [];
   const collectiveFocus = periodInsights.collectiveFocus.length > 0
     ? periodInsights.collectiveFocus
     : !hasPeriodInsights && selectedPeriod
@@ -118,12 +114,7 @@ export function DashboardPage({ selectedPeriodId, onOpenEmployee, externalView =
             detail: "该周期只保留了结构化周报与统计数据，未保留可切换的 Kimi 总览/任务/必读周报快照。",
           },
         ]
-    : [
-        { title: "授权节点", detail: "所有外部授权必须有负责人、截止日和下一次升级时间。" },
-        { title: "送审返工", detail: "把返工原因沉淀成 SOP，不再依赖单人经验。" },
-        { title: "AI 工具落地", detail: "从“用了工具”升级到“节省了多少时间、减少了多少返工”。" },
-        { title: "客户开发", detail: "下周按客户漏斗汇报，不只汇报动作量。" },
-      ];
+    : [];
   const activeDepartmentBrief =
     departmentBriefs.find((brief) => brief.department === selectedDepartment) ?? departmentBriefs[0];
 
@@ -132,6 +123,7 @@ export function DashboardPage({ selectedPeriodId, onOpenEmployee, externalView =
     setSendStatus("idle");
     setSendNote("");
   }, [selectedPeriodId, periodCompanyMessageDraft]);
+  useEffect(()=>{if(externalView)return;const c=new AbortController();fetch('/api/management/summary?periodId='+encodeURIComponent(selectedPeriodId),{signal:c.signal}).then(r=>r.ok?r.json():null).then(j=>{if(j?.summary&&!j.summary.stale)setCompanyMessageText(j.summary.text);}).catch(()=>{});return()=>c.abort();},[selectedPeriodId,summaryVersion,externalView]);
 
   useEffect(() => {
     if (departmentBriefs.length === 0) return;
@@ -145,7 +137,7 @@ export function DashboardPage({ selectedPeriodId, onOpenEmployee, externalView =
     const message = companyMessageText.trim();
     if (!message || sendStatus === "sending") return;
     setSendStatus("sending");
-    setSendNote("正在通过飞书 CLI 发送到 EMIE 亿觅互相夸夸全员群...");
+    setSendNote("正在以当前登录人的飞书身份发送到公司群…");
     try {
       const response = await fetch("/api/company-message/send", {
         method: "POST",
@@ -158,16 +150,16 @@ export function DashboardPage({ selectedPeriodId, onOpenEmployee, externalView =
         }),
       });
       const result = await response.json().catch(() => ({}));
-      if (!response.ok || !result.ok) throw new Error(result.detail || result.error || "send_failed");
+      if(!response.ok||!result.ok)throw new Error(['delivery_uncertain','delivery_in_progress'].includes(result.error)?'发送状态待核实，请先在飞书确认，避免重复发送':result.error==='feishu_reauthorization_required'?'飞书授权已到期，请点击下方重新授权后再发送':result.detail||result.error||'send_failed');
       setSendStatus("sent");
       setSendNote(`已发送到 ${result.chatName || "公司大群"}，消息 ID：${result.messageId || "已记录"}`);
     } catch (error) {
       setSendStatus("error");
-      setSendNote(`发送失败：${error instanceof Error ? error.message : "请检查服务器飞书 CLI 用户授权"}`);
+      setSendNote(`发送失败：${error instanceof Error ? error.message : "请检查当前飞书授权和群聊权限"}`);
     }
   }
 
-  const heroLine = executiveSummary[0] || "本周公司整体运转平稳，暂无需要老板立即介入的风险。";
+  const heroLine = executiveSummary[0] || "本周期尚无管理分析，请先同步周报或生成公司总结。";
 
   return (
     <div className="v2-page v2-page-wide v3-workbench-page">
@@ -619,7 +611,7 @@ export function DashboardPage({ selectedPeriodId, onOpenEmployee, externalView =
                 <span>{externalView ? "只读视图" : sendStatus === "sending" ? "发送中..." : "一键发飞书群消息"}</span>
               </button>
             </div>
-            {sendNote ? <p className={`v2-card-sub v2-section-gap message-send-status is-${sendStatus}`}>{sendNote}</p> : null}
+            {sendNote ? <p className={`v2-card-sub v2-section-gap message-send-status is-${sendStatus}`}>{sendNote}{sendNote.includes('授权已到期')&&<a href="/auth/login">重新授权飞书</a>}</p> : null}
           </section> : null}
 
           {activeWorkspaceTab === "organization" ? <section className="v2-card">
