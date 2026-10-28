@@ -1,0 +1,32 @@
+name: emie-growth-os
+services:
+  app:
+    build: .
+    image: emie-growth-os:local
+    restart: unless-stopped
+    init: true
+    ports:
+      - "0.0.0.0:${GROWTH_OS_PORT:-5180}:5174"
+    env_file:
+      - .env
+    environment:
+      SERVER_PORT: "5174"
+      TZ: Asia/Shanghai
+      AUTH_MODE: ${AUTH_MODE:-mock}
+      DEV_VIEW_SWITCH_ENABLED: ${DEV_VIEW_SWITCH_ENABLED:-false}
+      BASE_URL: ${GROWTH_OS_BASE_URL:-http://localhost:5180}
+      SESSION_SECRET: ${SESSION_SECRET:?Set SESSION_SECRET in .env}
+      APP_DATA_DIR: ${APP_DATA_DIR:-src/data}
+      WEEKLY_REPORT_DB_PATH: ${WEEKLY_REPORT_DB_PATH:-/app/outputs/demo/weekly-report-os.sqlite}
+      WEEKLY_REPORT_UPLOAD_DIR: /app/outputs/uploads
+      LARK_REPORT_AUTO_SYNC_ENABLED: ${LARK_REPORT_AUTO_SYNC_ENABLED:-false}
+      LARK_AUTH_MONITOR_ENABLED: ${LARK_AUTH_MONITOR_ENABLED:-false}
+      FEISHU_TASK_CREATE_ENABLED: ${FEISHU_TASK_CREATE_ENABLED:-false}
+      WEEKLY_REMINDER_ENABLED: ${WEEKLY_REMINDER_ENABLED:-false}
+      WEEKLY_UPDATE_REMINDER_ENABLED: ${WEEKLY_UPDATE_REMINDER_ENABLED:-false}
+      SCORING360_LAUNCH_MODE: ${SCORING360_LAUNCH_MODE:-scheduled}
+      SCORING360_REMINDER_ENABLED: ${SCORING360_REMINDER_ENABLED:-false}
+    volumes:
+      - growth-data:/app/outputs
+volumes:
+  growth-data:

@@ -56,7 +56,7 @@ const fallbackThemeInsights: ThemeInsight[] = [
 ];
 
 interface ContributionActivity {
-  openId?: string;
+  userId?: string;
   name?: string;
   visits?: number;
   comments?: number;
@@ -117,7 +117,8 @@ export function TrendsPage({ selectedPeriodId }: TrendsPageProps) {
   }, []);
 
   return (
-    <section className="trend-grid">
+    <section className="trend-grid trend-columns">
+      <div className="trend-column">
       <article className="panel">
         <div className="panel-heading compact">
           <div>
@@ -127,6 +128,74 @@ export function TrendsPage({ selectedPeriodId }: TrendsPageProps) {
         </div>
         <HorizontalBars data={departmentData} />
       </article>
+      <article className="panel contribution-panel">
+        <div className="panel-heading compact">
+          <div>
+            <span className="section-label">Growth Contributors</span>
+            <h2>组织成长贡献者 Top10</h2>
+          </div>
+        </div>
+        <div className="contribution-overview">
+          <div>
+            <Trophy size={18} />
+            <strong>{topContributors[0]?.name || "待生成"}</strong>
+            <span>当前贡献分最高</span>
+          </div>
+          <div>
+            <Activity size={18} />
+            <strong>{activePeopleCount}/{appData.peopleCount}</strong>
+            <span>本轮有成长行为</span>
+          </div>
+          <div>
+            <AlertCircle size={18} />
+            <strong>{lowEngagementCount}</strong>
+            <span>低参与，不默认展开点名</span>
+          </div>
+        </div>
+        <div className="contribution-weight-grid">
+          {contributionWeights.map((item) => (
+            <div key={item.label}>
+              <strong>{item.value}%</strong>
+              <span>{item.label}</span>
+              <small>{item.description}</small>
+            </div>
+          ))}
+        </div>
+        <div className="contributor-list">
+          {displayedContributors.map((row, index) => (
+            <div className="contributor-row" key={row.name}>
+              <div className="contributor-rank">{index + 1}</div>
+              <div className="contributor-main">
+                <div className="contributor-title">
+                  <strong>{row.name}</strong>
+                  <span>{row.department}</span>
+                  <small>{row.strongestSignal}</small>
+                </div>
+                <div className="contributor-meter">
+                  <i style={{ width: `${Math.max(8, (row.score / topScore) * 100)}%` }} />
+                </div>
+                <div className="contributor-metrics">
+                  <span><Trophy size={13} />周报 {row.qualityScore.toFixed(1)}</span>
+                  <span><MousePointerClick size={13} />访问 {row.visits}</span>
+                  <span><MessageSquare size={13} />互动 {row.comments + row.likes}</span>
+                  <span><Sparkles size={13} />追问 {row.followups}</span>
+                </div>
+              </div>
+              <strong className="contributor-score">{row.score.toFixed(1)}</strong>
+            </div>
+          ))}
+        </div>
+        <div className="contribution-footer">
+          <p className="contribution-note">
+            默认展示上一周期Top10，管理视角可展开完整排序。
+          </p>
+          <button className="secondary-button" type="button" onClick={() => setShowAllContributors((current) => !current)}>
+            {showAllContributors ? "收起为 Top10" : `管理视角：展开完整排序（${contributors.length}人）`}
+          </button>
+        </div>
+      </article>
+      </div>
+      <div className="trend-column">
       <article className="panel theme-insight-panel">
         <div className="panel-heading compact">
           <div>
@@ -193,81 +262,16 @@ export function TrendsPage({ selectedPeriodId }: TrendsPageProps) {
           })}
         </div>
       </article>
-      <article className="panel contribution-panel">
-        <div className="panel-heading compact">
-          <div>
-            <span className="section-label">Growth Contributors</span>
-            <h2>组织成长贡献者 Top10</h2>
-          </div>
-        </div>
-        <div className="contribution-overview">
-          <div>
-            <Trophy size={18} />
-            <strong>{topContributors[0]?.name || "待生成"}</strong>
-            <span>当前贡献分最高</span>
-          </div>
-          <div>
-            <Activity size={18} />
-            <strong>{activePeopleCount}/{appData.peopleCount}</strong>
-            <span>本轮有成长行为</span>
-          </div>
-          <div>
-            <AlertCircle size={18} />
-            <strong>{lowEngagementCount}</strong>
-            <span>低参与，不默认展开点名</span>
-          </div>
-        </div>
-        <div className="contribution-weight-grid">
-          {contributionWeights.map((item) => (
-            <div key={item.label}>
-              <strong>{item.value}%</strong>
-              <span>{item.label}</span>
-              <small>{item.description}</small>
-            </div>
-          ))}
-        </div>
-        <div className="contributor-list">
-          {displayedContributors.map((row, index) => (
-            <div className="contributor-row" key={row.name}>
-              <div className="contributor-rank">{index + 1}</div>
-              <div className="contributor-main">
-                <div className="contributor-title">
-                  <strong>{row.name}</strong>
-                  <span>{row.department}</span>
-                  <small>{row.strongestSignal}</small>
-                </div>
-                <div className="contributor-meter">
-                  <i style={{ width: `${Math.max(8, (row.score / topScore) * 100)}%` }} />
-                </div>
-                <div className="contributor-metrics">
-                  <span><Trophy size={13} />周报 {row.qualityScore.toFixed(1)}</span>
-                  <span><MousePointerClick size={13} />访问 {row.visits}</span>
-                  <span><MessageSquare size={13} />互动 {row.comments + row.likes}</span>
-                  <span><Sparkles size={13} />追问 {row.followups}</span>
-                </div>
-              </div>
-              <strong className="contributor-score">{row.score.toFixed(1)}</strong>
-            </div>
-          ))}
-        </div>
-        <div className="contribution-footer">
-          <p className="contribution-note">
-            默认展示上一周期Top10，老板视角可展开完整排序。
-          </p>
-          <button className="secondary-button" type="button" onClick={() => setShowAllContributors((current) => !current)}>
-            {showAllContributors ? "收起为 Top10" : `老板视角：展开完整排序（${contributors.length}人）`}
-          </button>
-        </div>
-      </article>
+      </div>
     </section>
   );
 }
 
 function buildContributorRows(activity: ContributionActivity[]): ContributorRow[] {
-  const byOpenId = new Map(activity.filter((item) => item.openId).map((item) => [item.openId, item]));
+  const byUserId = new Map(activity.filter((item) => item.userId).map((item) => [item.userId, item]));
   const byName = new Map(activity.filter((item) => item.name).map((item) => [item.name, item]));
   const rows = appData.employeeSummary.map((employee) => {
-    const real = byOpenId.get(employee.openId) || byName.get(employee.name);
+    const real = byUserId.get(employee.userId) || byName.get(employee.name);
     return {
       name: employee.name,
       department: employee.department,

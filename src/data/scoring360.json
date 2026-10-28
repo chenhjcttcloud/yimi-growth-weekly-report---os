@@ -26,19 +26,27 @@
       "averageScore": 89
     }
   ],
-  "employees": ["Demo Manager", "林清", "周远"],
+  "employees": [
+    "Demo Manager",
+    "林清",
+    "周远"
+  ],
   "assignments": [
     {
       "id": "demo-assignment-001",
       "cycleId": "demo-2026-01",
       "evaluee": "林清",
-      "evaluator": "Demo Manager"
+      "evaluator": "Demo Manager",
+      "evalueeUserId": "demo_user_id_001",
+      "evaluatorUserId": "mock_manager"
     },
     {
       "id": "demo-assignment-002",
       "cycleId": "demo-2026-01",
       "evaluee": "周远",
-      "evaluator": "林清"
+      "evaluator": "林清",
+      "evalueeUserId": "demo_user_id_002",
+      "evaluatorUserId": "demo_user_id_001"
     }
   ],
   "responses": [
@@ -75,7 +83,9 @@
       "level": "A",
       "minScore": 91,
       "maxScore": 91,
-      "evaluators": ["Demo Manager"]
+      "evaluators": [
+        "Demo Manager"
+      ]
     },
     {
       "name": "周远",
@@ -90,7 +100,9 @@
       "level": "B+",
       "minScore": 87,
       "maxScore": 87,
-      "evaluators": ["林清"]
+      "evaluators": [
+        "林清"
+      ]
     }
   ]
 }

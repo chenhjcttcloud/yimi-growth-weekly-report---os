@@ -9,33 +9,39 @@ const tempDir = await mkdtemp(path.join(tmpdir(), "weekly-report-os-sc360-admin-
 const dbPath = path.join(tempDir, "weekly-report-os.sqlite");
 
 try {
-  const owner = await startServer({ openId: "mock_owner", name: "Owner" });
+  const owner = await startServer({ userId: "mock_owner", name: "Owner" });
   try {
     await postJson(owner.baseUrl, "/api/scoring360-admin-members", {
-      members: [{ openId: "admin-open", name: "Joy Admin", department: "人力行政部" }],
+      members: [{ userId: "admin-open", name: "Joy Admin", department: "人力行政部" }],
     });
 
     await postJson(owner.baseUrl, "/api/employees/manage", {
-      openId: "owner-open",
+      userId: "mock_owner",
       name: "Owner",
       department: "管理层",
       email: "owner@example.invalid",
     });
     await postJson(owner.baseUrl, "/api/employees/manage", {
-      openId: "employee-open",
+      userId: "employee-open",
       name: "Employee A",
       department: "测试部",
       email: "employee-a@example.invalid",
     });
     await postJson(owner.baseUrl, "/api/employees/manage", {
-      openId: "evaluator-open",
+      userId: "evaluator-open",
       name: "Evaluator B",
       department: "测试部",
       email: "evaluator-b@example.invalid",
     });
 
     const configBefore = await fetchJson(owner.baseUrl, "/api/scoring360/config");
-    assert(configBefore.employees.some((employee) => employee.openId === "employee-open"), "active employee should be configurable");
+    assert(configBefore.employees.some((employee) => employee.userId === "employee-open"), "active employee should be configurable");
+
+    await postJson(owner.baseUrl, "/api/scoring360/assignments", {
+      cycleId: configBefore.cycle.id,
+      evalueeName: "Employee A",
+      evaluatorName: "Evaluator B",
+    });
 
     const historicalAssignment = await postJson(owner.baseUrl, "/api/scoring360/assignments", {
       cycleId: configBefore.cycle.id,
@@ -53,18 +59,14 @@ try {
     const retained = overviewAfterDelete.results.find((item) => item.name === "Employee A");
     assert(retained?.submitted === 1, "removing a relationship must preserve submitted scoring history");
 
-    await postJson(owner.baseUrl, "/api/scoring360/assignments", {
-      cycleId: configBefore.cycle.id,
-      evalueeName: "Employee A",
-      evaluatorName: "Evaluator B",
-    });
+
     await postJson(owner.baseUrl, "/api/employees/manage/status", {
-      openId: "employee-open",
+      userId: "employee-open",
       active: false,
     });
 
     const configAfter = await fetchJson(owner.baseUrl, "/api/scoring360/config");
-    assert(!configAfter.employees.some((employee) => employee.openId === "employee-open"), "inactive employee must leave current scoring candidates");
+    assert(!configAfter.employees.some((employee) => employee.userId === "employee-open"), "inactive employee must leave current scoring candidates");
     const inactiveCreate = await requestJson(owner.baseUrl, "/api/scoring360/assignments", {
       method: "POST",
       body: {
@@ -76,22 +78,30 @@ try {
     assert(inactiveCreate.status === 409, `inactive assignment should be rejected, got ${inactiveCreate.status}`);
     const reminders = await fetchJson(owner.baseUrl, "/api/scoring360/reminders");
     assert(!reminders.pending.some((item) => item.pendingNames.includes("Employee A")), "inactive employee must leave reminder pending lists");
+    const invalidEmployee=await requestJson(owner.baseUrl,"/api/employees/manage",{method:"POST",body:{name:"",userId:""}});
+    assert(invalidEmployee.status===400,"blank employee form must return a validation error");
+    await postJson(owner.baseUrl,"/api/employees/manage",{userId:"employee-open",name:"Employee A",department:"测试部"});
+    const restored=await fetchJson(owner.baseUrl,"/api/employees/manage");
+    assert(restored.employees.filter(e=>e.userId==="employee-open").length===1,"restore should not duplicate employee");
+    assert(restored.employees.find(e=>e.userId==="employee-open").active===true,"upsert should restore inactive employee");
   } finally {
     await owner.stop();
   }
 
-  const admin = await startServer({ openId: "admin-open", name: "Joy Admin" });
+  const admin = await startServer({ userId: "admin-open", name: "Joy Admin" });
   try {
     const me = await fetchJson(admin.baseUrl, "/api/me");
-    assert(me.access?.bossView === false, "scoring admin should not inherit boss view");
+    assert(me.access?.bossView === true, "administrator shares boss management capabilities");
     assert(me.access?.canManageScoring360 === true, "configured scoring admin should manage scoring360");
     assert(me.access?.canManagePersonnel === true, "configured scoring admin should manage personnel");
     await fetchJson(admin.baseUrl, "/api/employees/manage");
+    assert((await requestJson(admin.baseUrl,"/api/boss-view-members")).status===200,"administrator shares role management capabilities");
+    assert(me.access?.role === "system_admin", "administrator has separate role");
   } finally {
     await admin.stop();
   }
 
-  const member = await startServer({ openId: "member-open", name: "普通同事" });
+  const member = await startServer({ userId: "member-open", name: "普通同事" });
   try {
     const response = await requestJson(member.baseUrl, "/api/employees/manage");
     assert(response.status === 403, `ordinary member should be forbidden, got ${response.status}`);
@@ -110,15 +120,15 @@ async function startServer(user) {
   const child = spawn(process.execPath, ["server/index.mjs"], {
     cwd: rootDir,
     env: {
-      ...process.env,
+      ...process.env, APP_DATA_DIR: "src/data",
       AUTH_MODE: "mock",
       SERVER_PORT: String(port),
       BASE_URL: baseUrl,
       WEEKLY_REPORT_DB_PATH: dbPath,
       SCORING360_ACTIVE_DATE: "2026-06-24T10:00:00+08:00",
-      MOCK_USER_OPEN_ID: user.openId,
+      MOCK_USER_ID: user.userId,
       MOCK_USER_NAME: user.name,
-      MOCK_USER_EMAIL: `${user.openId}@example.invalid`,
+      MOCK_USER_EMAIL: `${user.userId}@example.invalid`,
     },
     stdio: ["ignore", "pipe", "pipe"],
   });

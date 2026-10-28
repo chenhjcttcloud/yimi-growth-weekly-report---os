@@ -22,10 +22,10 @@ assert.equal(isScoring360CycleForDate(monthlyCycle, new Date("2026-08-31T23:59:0
 assert.equal(isScoring360CycleForDate(monthlyCycle, new Date("2026-09-01T00:01:00+08:00")), false);
 assert.equal(isScoring360CycleForDate({ id: "2026-07-round2-360" }, new Date("2026-08-24T20:00:00+08:00")), false);
 
-assert.equal(isScoring360ConfigManager({ openId: "mock_manager", name: "Demo Manager" }), true);
-assert.equal(isScoring360ConfigManager({ openId: "", name: "Demo Manager" }), true);
-assert.equal(isScoring360ConfigManager({ openId: "", name: "Demo" }), false);
-assert.equal(isScoring360ConfigManager({ openId: "", name: "Manager" }), false);
-assert.equal(isScoring360ConfigManager({ openId: "", name: "普通同事" }), false);
+assert.equal(isScoring360ConfigManager({ userId: "mock_manager", name: "Demo Manager" }), true);
+assert.equal(isScoring360ConfigManager({ userId: "", name: "Demo Manager" }), false);
+assert.equal(isScoring360ConfigManager({ userId: "", name: "Demo" }), false);
+assert.equal(isScoring360ConfigManager({ userId: "", name: "Manager" }), false);
+assert.equal(isScoring360ConfigManager({ userId: "", name: "普通同事" }), false);
 
 console.log("scoring360 policy checks passed");

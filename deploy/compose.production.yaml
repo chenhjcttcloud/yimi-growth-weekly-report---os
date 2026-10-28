@@ -1,0 +1,32 @@
+name: emie-growth-os-production
+services:
+  app:
+    image: emie-growth-os:production-20261028-auto-scores
+    restart: unless-stopped
+    init: true
+    env_file: .env
+    environment:
+      SERVER_PORT: "5174"
+      TZ: Asia/Shanghai
+      APP_DATA_DIR: /app/outputs/live
+      WEEKLY_REPORT_DB_PATH: /app/outputs/live/growth.sqlite
+      WEEKLY_REPORT_UPLOAD_DIR: /app/outputs/uploads
+    ports:
+      - "127.0.0.1:5180:5174"
+    volumes:
+      - ./data:/app/outputs
+    read_only: true
+    tmpfs:
+      - /tmp:size=64m,mode=1777
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    mem_limit: 768m
+    cpus: 1.5
+    pids_limit: 128
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"

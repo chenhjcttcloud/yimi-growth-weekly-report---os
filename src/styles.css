@@ -1935,7 +1935,7 @@ button {
   cursor: pointer;
 }
 
-.monthly-fact-list span {
+.monthly-fact-list button > span {
   display: grid;
   grid-template-columns: 38px minmax(0, 1fr);
   gap: 8px;
@@ -4992,3 +4992,16 @@ button {
     text-align: left;
   }
 }
+
+.performance-review-form { display: grid; gap: 14px; margin: 20px 0; grid-template-columns: repeat(auto-fit,minmax(220px,1fr)); }
+.performance-review-form label { display: flex; flex-direction: column; gap: 8px; font-size: 13px; }
+.performance-review-form input, .performance-review-form textarea { border: 1px solid #d8dedb; border-radius: 8px; padding: 10px; background: white; color: #253a30; }
+.performance-review-form textarea { min-height: 80px; }
+.full-panel details { margin-top: 20px; border-top: 1px solid #e2e8e4; padding-top: 16px; }
+.full-panel summary { cursor: pointer; font-weight: 600; }
+
+.admin-perspective-switch{display:inline-flex;align-items:center;gap:8px;padding:8px 12px;border:1px solid #d6e5dd;border-radius:10px;background:#f0f7f3;color:#087f68;flex-shrink:0}
+.admin-perspective-switch select{border:0;background:transparent;color:inherit;font:inherit;font-size:13px;cursor:pointer;max-width:160px;outline-offset:3px}
+.employee-preview-banner{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:10px 24px;background:#fff7df;color:#79571d;border-bottom:1px solid #eadbb9;font-size:13px;flex-shrink:0}
+.employee-preview-banner button{border:1px solid #d8c99e;border-radius:8px;background:#fffdf5;color:inherit;padding:5px 10px;cursor:pointer;white-space:nowrap}
+@media(max-width:700px){.employee-preview-banner{padding:8px 12px;align-items:flex-start}.admin-perspective-switch select{max-width:140px}}

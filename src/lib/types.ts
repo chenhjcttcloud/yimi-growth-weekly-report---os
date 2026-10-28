@@ -1,6 +1,8 @@
 import type { LucideIcon } from "lucide-react";
 
-export type PageKey = "dashboard" | "monthly" | "scores" | "tasks" | "growth" | "trends" | "settings";
+export type PersonalModule = "reports" | "coach" | "actions" | "timeline";
+
+export type PageKey = PersonalModule | "dashboard" | "monthly" | "scores" | "tasks" | "growth" | "trends" | "settings" | "departments";
 
 export type Priority = "P0" | "P1" | "P2";
 
@@ -15,7 +17,7 @@ export interface NavItem {
 export interface EmployeeSummary {
   name: string;
   department: string;
-  openId: string;
+  userId: string;
   email: string;
   reportCount: number;
   onTimeCount: number;
@@ -30,7 +32,7 @@ export interface EmployeeSummary {
 }
 
 export interface VisibleEmployee {
-  openId: string;
+  userId: string;
   name: string;
   department: string;
   email?: string;
@@ -47,7 +49,7 @@ export interface UserAccess {
   currentEmployee?: VisibleEmployee | null;
   visibilityMode: "all_company" | "self_department_and_reports" | "self_only" | string;
   visibleEmployees: VisibleEmployee[];
-  visibleOpenIds: string[];
+  visibleUserIds: string[];
   visibleNames: string[];
   visibleDepartments: string[];
 }
@@ -102,7 +104,7 @@ export interface AttentionTask {
   title: string;
   description: string;
   owner: string;
-  ownerOpenId: string;
+  ownerUserId: string;
   dueDate: string;
   evidence: string;
 }
@@ -323,7 +325,7 @@ export interface EmployeeTask {
   priority: Priority;
   source: string;
   department: string;
-  assigneeOpenId: string;
+  assigneeUserId: string;
   theme: string;
   title: string;
   description: string;
@@ -335,7 +337,7 @@ export interface EmployeeTask {
 export interface FeedbackDraft {
   name: string;
   department: string;
-  openId: string;
+  userId: string;
   delivery: string;
   body: string;
 }
@@ -399,7 +401,7 @@ export interface KimiTaskCandidate {
   source: string;
   department: string;
   owner: string;
-  ownerOpenId?: string;
+  ownerUserId?: string;
   title: string;
   description: string;
   dueDate: string;

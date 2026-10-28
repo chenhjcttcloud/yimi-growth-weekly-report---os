@@ -117,8 +117,8 @@ function dedupeLatest(records) {
   return Array.from(latest.values()).sort((a, b) => cleanText(a.employeeName).localeCompare(cleanText(b.employeeName), "zh-Hans-CN"));
 }
 
-function recordOpenId(record) {
-  return cleanText(record.lark?.fromUserId || record.openId || record.open_id);
+function recordUserId(record) {
+  return cleanText(record.lark?.fromUserId || record.userId || record.user_id);
 }
 
 function buildWeeklyRow(record, options, employeeIndex) {
@@ -129,7 +129,7 @@ function buildWeeklyRow(record, options, employeeIndex) {
   return {
     "姓名": name,
     "部门": cleanText(record.department),
-    "open_id": recordOpenId(record) || previous["open_id"] || "",
+    "user_id": recordUserId(record) || previous["user_id"] || "",
     "企业邮箱": cleanText(record.email) || previous["企业邮箱"] || "",
     "周期ID": options.id,
     "周次": week,
@@ -187,7 +187,7 @@ function rebuildEmployeeSummary(data, weeklyRows, importRecords) {
       return {
         "姓名": name,
         "部门": latest["部门"] || previous["部门"] || "",
-        "open_id": previous["open_id"] || latest["open_id"] || "",
+        "user_id": previous["user_id"] || latest["user_id"] || "",
         "企业邮箱": latestEmailByName.get(name) || previous["企业邮箱"] || latest["企业邮箱"] || "",
         "周报数": sorted.length,
         "准时次数": sorted.length - lateCount,

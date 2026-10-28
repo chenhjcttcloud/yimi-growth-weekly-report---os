@@ -1,5 +1,5 @@
 export const defaultScoring360ConfigManagers = [
-  { openId: "mock_manager", name: "Demo Manager" },
+  { userId: "mock_manager", name: "Demo Manager" },
 ];
 
 export function parseScoring360LaunchDays(value, legacyDay = 25) {
@@ -40,14 +40,13 @@ export function isScoring360CycleForDate(cycle, dateLike) {
 }
 
 export function isScoring360ConfigManager(user, managers = defaultScoring360ConfigManagers) {
-  const openId = String(user?.openId || user?.open_id || "").trim();
+  const userId = String(user?.userId || user?.user_id || "").trim();
   const name = String(user?.name || user?.姓名 || "").trim();
   return managers.some((manager) => {
-    const managerOpenId = String(manager?.openId || manager?.open_id || "").trim();
+    const managerUserId = String(manager?.userId || manager?.user_id || "").trim();
     const managerName = String(manager?.name || manager?.姓名 || "").trim();
     return Boolean(
-      (openId && managerOpenId && openId === managerOpenId) ||
-        (name && managerName && name === managerName),
+      managerUserId ? userId === managerUserId : (name && managerName && name === managerName),
     );
   });
 }
@@ -57,14 +56,14 @@ export function normalizeScoring360Managers(input) {
   const seen = new Set();
   return list
     .map((item) => {
-      if (typeof item === "string") return { openId: item.trim(), name: "" };
+      if (typeof item === "string") return { userId: item.trim(), name: "" };
       return {
-        openId: String(item?.openId || item?.open_id || "").trim(),
+        userId: String(item?.userId || item?.user_id || "").trim(),
         name: String(item?.name || item?.姓名 || "").trim(),
       };
     })
     .filter((item) => {
-      const key = item.openId || item.name;
+      const key = item.userId || item.name;
       if (!key || seen.has(key)) return false;
       seen.add(key);
       return true;

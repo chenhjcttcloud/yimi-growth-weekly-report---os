@@ -312,16 +312,16 @@ async function upsertOutbox(dbPath, rows) {
   for (const row of rows) {
     statements.push(`
       INSERT INTO weekly_reminder_outbox (
-        id, period_id, period_label, recipient_open_id, recipient_name, department, message,
+        id, period_id, period_label, recipient_user_id, recipient_name, department, message,
         personalization_note, provider, model, prompt_hash, status, source_json, updated_at
       ) VALUES (
         ${sqlValue(row.id)}, ${sqlValue(row.periodId)}, ${sqlValue(row.periodLabel)},
-        ${sqlValue(row.recipientOpenId)}, ${sqlValue(row.recipientName)}, ${sqlValue(row.department)},
+        ${sqlValue(row.recipientUserId)}, ${sqlValue(row.recipientName)}, ${sqlValue(row.department)},
         ${sqlValue(row.message)}, ${sqlValue(row.personalizationNote)}, ${sqlValue(row.provider)},
         ${sqlValue(row.model)}, ${sqlValue(row.promptHash)}, 'prepared', ${sqlValue(JSON.stringify(row.source))},
         datetime('now')
       )
-      ON CONFLICT(period_id, recipient_open_id) DO UPDATE SET
+      ON CONFLICT(period_id, recipient_user_id) DO UPDATE SET
         period_label = excluded.period_label,
         recipient_name = excluded.recipient_name,
         department = excluded.department,
@@ -394,7 +394,7 @@ async function main() {
   const baseUrl = stripTrailingSlash(env.BASE_URL || "https://reportos.emie.cn");
   const employees = (raw.employee_summary || [])
     .map((row) => ({
-      openId: String(row.open_id || row.openId || "").trim(),
+      userId: String(row.user_id || row.userId || "").trim(),
       name: String(row["姓名"] || row.name || "").trim(),
       department: String(row["部门"] || row.department || "").trim(),
       averageScore: row["平均分"],
@@ -402,7 +402,7 @@ async function main() {
       trend: row["趋势"],
       growthSummary: shorten(row["一句话成长判断"], 360),
     }))
-    .filter((employee) => employee.openId && employee.name && !exempt.has(employee.name))
+    .filter((employee) => employee.userId && employee.name && !exempt.has(employee.name))
     .filter((employee) => selectedNames.size === 0 || selectedNames.has(employee.name))
     .slice(0, limit > 0 ? limit : undefined);
 
@@ -438,7 +438,7 @@ async function main() {
       id: randomUUID(),
       periodId: outboxPeriodId,
       periodLabel: period.label,
-      recipientOpenId: employee.openId,
+      recipientUserId: employee.userId,
       recipientName: employee.name,
       department: employee.department,
       message,

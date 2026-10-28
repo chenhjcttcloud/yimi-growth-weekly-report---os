@@ -35,7 +35,7 @@ async function loadDotEnv(filePath) {
 async function readRoster(dbPath) {
   const sql = `
     SELECT
-      COALESCE(open_id, ''),
+      COALESCE(user_id, ''),
       COALESCE(name, ''),
       COALESCE(department, ''),
       COALESCE(email, ''),
@@ -50,8 +50,8 @@ async function readRoster(dbPath) {
     .split(/\r?\n/)
     .filter(Boolean)
     .map((line) => {
-      const [openId, name, department, email, active] = line.split("\t");
-      return { openId, name, department, email, active: Number(active) === 1 };
+      const [userId, name, department, email, active] = line.split("\t");
+      return { userId, name, department, email, active: Number(active) === 1 };
     })
     .filter((row) => row.name);
 }
@@ -60,7 +60,7 @@ function defaultSummary(row) {
   return {
     "姓名": row.name,
     "部门": row.department,
-    "open_id": row.openId,
+    "user_id": row.userId,
     "企业邮箱": row.email,
     "在职状态": "在职",
     "周报数": 0,
@@ -83,7 +83,7 @@ async function main() {
   const data = JSON.parse(prototypeText);
   const previousSummary = data.employee_summary ?? [];
   const previousByName = new Map(previousSummary.map((row) => [row["姓名"], row]));
-  const previousByOpenId = new Map(previousSummary.filter((row) => row.open_id).map((row) => [row.open_id, row]));
+  const previousByUserId = new Map(previousSummary.filter((row) => row.user_id).map((row) => [row.user_id, row]));
   const activeRoster = roster.filter((row) => row.active);
   const inactiveNames = roster.filter((row) => !row.active).map((row) => row.name);
   if (activeRoster.length === 0) throw new Error("Active roster is empty; refusing to replace employee_summary");
@@ -118,13 +118,13 @@ async function main() {
   }
 
   const employeeSummary = activeRoster.map((row) => {
-    const previous = previousByOpenId.get(row.openId) ?? previousByName.get(row.name) ?? {};
+    const previous = previousByUserId.get(row.userId) ?? {};
     return {
       ...defaultSummary(row),
       ...previous,
       "姓名": row.name,
       "部门": row.department || previous["部门"] || "",
-      "open_id": row.openId || previous["open_id"] || "",
+      "user_id": row.userId || previous["user_id"] || "",
       "企业邮箱": row.email || previous["企业邮箱"] || "",
       "在职状态": "在职",
     };

@@ -1,4 +1,5 @@
 import { useState } from "react";
+import { AppSelect } from "../components/AppSelect";
 import {
   ArrowRight,
   BookOpen,
@@ -77,7 +78,7 @@ interface TaskCandidate {
   title: string;
   description: string;
   owner: string;
-  ownerOpenId?: string;
+  ownerUserId?: string;
   dueDate: string;
   metric: string;
   evidence: string;
@@ -194,7 +195,7 @@ function splitTaskIntoCandidates(task: EmployeeTask, index: number): TaskCandida
       title: `明确「${task.theme}」现状与影响范围`,
       description: "把当前状态、影响对象、卡住的具体环节写成 3 条事实，避免把整段周报直接变成任务。",
       owner,
-      ownerOpenId: task.assigneeOpenId,
+      ownerUserId: task.assigneeUserId,
       dueDate,
       metric: "形成一页现状说明，至少包含 1 个数据或具体案例。",
       evidence,
@@ -212,7 +213,7 @@ function splitTaskIntoCandidates(task: EmployeeTask, index: number): TaskCandida
       title: "拆出下周第一个可验证动作",
       description: "从周报里的想法中提炼一个能在 3 个工作日内完成的动作，并指定协作者或支持人。",
       owner,
-      ownerOpenId: task.assigneeOpenId,
+      ownerUserId: task.assigneeUserId,
       dueDate,
       metric: "动作完成后能回传截图、链接、会议结论或飞书任务状态。",
       evidence,
@@ -230,7 +231,7 @@ function splitTaskIntoCandidates(task: EmployeeTask, index: number): TaskCandida
       title: "补齐衡量指标与复盘口径",
       description: "把“做了”升级成“做到什么程度”，明确验收指标、完成口径和下周复盘问题。",
       owner,
-      ownerOpenId: task.assigneeOpenId,
+      ownerUserId: task.assigneeUserId,
       dueDate: "下次周报前",
       metric: "下周周报能直接回答：完成了吗、结果如何、还卡在哪里。",
       evidence,
@@ -354,9 +355,9 @@ export function EmployeeGrowthPage({ selectedPeriodId, selectedEmployee, onSelec
       headers: { "content-type": "application/json" },
       body: JSON.stringify({
         targetType: "weekly_report",
-        targetId: `weekly:${employee.openId || employee.name}`,
+        targetId: `weekly:${employee.userId || employee.name}`,
         employeeName: employee.name,
-        employeeOpenId: employee.openId,
+        employeeUserId: employee.userId,
         body: text,
       }),
     }).catch(() => {
@@ -374,9 +375,9 @@ export function EmployeeGrowthPage({ selectedPeriodId, selectedEmployee, onSelec
       headers: { "content-type": "application/json" },
       body: JSON.stringify({
         targetType: "weekly_report",
-        targetId: `weekly:${employee.openId || employee.name}`,
+        targetId: `weekly:${employee.userId || employee.name}`,
         employeeName: employee.name,
-        employeeOpenId: employee.openId,
+        employeeUserId: employee.userId,
         reactionType: "like",
       }),
     }).catch(() => {
@@ -442,7 +443,7 @@ export function EmployeeGrowthPage({ selectedPeriodId, selectedEmployee, onSelec
             priority: candidate.priority,
             title: candidate.title,
             description: candidate.description,
-            ownerOpenId: candidate.ownerOpenId,
+            ownerUserId: candidate.ownerUserId,
             dueDate: candidate.dueDate,
             useDueDate: Boolean(candidateEdits[candidate.id]?.dueDateTouched && candidate.dueDate.trim()),
             metric: candidate.metric,
@@ -534,7 +535,7 @@ export function EmployeeGrowthPage({ selectedPeriodId, selectedEmployee, onSelec
         headers: { "content-type": "application/json" },
         body: JSON.stringify({
           employeeName: employee.name,
-          employeeOpenId: employee.openId,
+          employeeUserId: employee.userId,
           candidate,
           question: text,
           messages: nextMessages,
@@ -700,10 +701,10 @@ export function EmployeeGrowthPage({ selectedPeriodId, selectedEmployee, onSelec
       <section className="v2-hero v3-summary-band">
         {employeeOptions.length > 1 ? (
           <div className="v2-hero-bar">
-            <select
+            <AppSelect
               className="v2-hero-select"
               value={employee.name}
-              onChange={(event) => onSelectEmployee(event.target.value)}
+              onValueChange={onSelectEmployee}
               aria-label="切换查看成员"
             >
               {employeeOptions.map((item) => (
@@ -711,7 +712,7 @@ export function EmployeeGrowthPage({ selectedPeriodId, selectedEmployee, onSelec
                   {item.name} · {item.department}
                 </option>
               ))}
-            </select>
+            </AppSelect>
           </div>
         ) : null}
         <div className="v2-hero-top">

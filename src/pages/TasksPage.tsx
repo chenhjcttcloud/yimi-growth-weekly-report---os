@@ -13,7 +13,7 @@ interface FeishuTaskRow {
   guid: string;
   candidateId?: string;
   summary: string;
-  assigneeOpenId?: string;
+  assigneeUserId?: string;
   dueDate?: string;
   url?: string;
   status: "created" | "updated" | "commented" | "completed" | "deleted" | string;
@@ -141,7 +141,7 @@ export function TasksPage({ selectedPeriodId, taskCreated, onCreateTasks }: Task
                 <div>
                   <span className={`task-status status-${task.status}`}>{statusLabel(task.status)}</span>
                   <strong>{task.summary}</strong>
-                  <p>{task.assigneeOpenId ? `负责人 open_id：${task.assigneeOpenId}` : "负责人待解析"} · {task.updatedAt || task.createdAt || "等待回传"}</p>
+                  <p>{task.assigneeUserId ? `负责人 user_id：${task.assigneeUserId}` : "负责人待解析"} · {task.updatedAt || task.createdAt || "等待回传"}</p>
                 </div>
                 {task.url ? (
                   <a href={task.url} target="_blank" rel="noreferrer">打开飞书任务</a>

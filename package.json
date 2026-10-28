@@ -28,7 +28,18 @@
     "db:seed": "node scripts/init-sqlite-db.mjs --seed",
     "server:dev": "AUTH_MODE=mock SERVER_PORT=5174 node server/index.mjs",
     "server:start": "node server/index.mjs",
-    "test:scoring360": "node scripts/test-scoring360-policy.mjs && node scripts/test-scoring360-api.mjs && node scripts/test-scoring360-admin-api.mjs"
+    "test:scoring360": "node scripts/test-scoring360-policy.mjs && node scripts/test-scoring360-api.mjs && node scripts/test-scoring360-admin-api.mjs",
+    "test:performance": "node scripts/test-performance-api.mjs",
+    "test:dev-views": "node scripts/test-dev-views.mjs",
+    "test:personal": "node scripts/test-personal-workspace.mjs",
+    "test:live-sync": "node scripts/test-live-report-sync.mjs",
+    "test:organization": "node scripts/test-departments.mjs && node scripts/test-organization-layout.mjs && node scripts/test-feishu-department-sync.mjs",
+    "test:organization:ui": "npm run build && node scripts/test-organization-ui.mjs",
+    "test:select": "node scripts/test-app-select.mjs",
+    "test:identity": "node scripts/test-user-id-migration.mjs && node scripts/test-sso-roster.mjs",
+    "test:feishu-leaders": "node scripts/test-feishu-leaders.mjs",
+    "test:navigation": "node scripts/test-navigation-refresh.mjs",
+    "test:weighted-monthly": "node scripts/test-weighted-monthly.mjs && node scripts/test-weighted-monthly-api.mjs"
   },
   "dependencies": {
     "@vitejs/plugin-react": "^5.1.1",

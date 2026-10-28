@@ -1,16 +1,19 @@
+import {DepartmentsPage} from './pages/DepartmentsPage';
 import { useEffect, useMemo, useState } from "react";
 import { AppHeader } from "./components/AppHeader";
 import { Sidebar } from "./components/Sidebar";
 import { appData } from "./lib/data";
 import type { PageKey } from "./lib/types";
 import { DashboardPage } from "./pages/DashboardPage";
-import { EmployeeGrowthPage } from "./pages/EmployeeGrowthPage";
 import { MonthlyMeetingPage } from "./pages/MonthlyMeetingPage";
-import { ScoresPage } from "./pages/ScoresPage";
+import { FinalResultsPage } from "./pages/FinalResultsPage";
+import { PerformanceManagementPage } from "./pages/PerformanceManagementPage";
+import { ScoringTasksPage } from "./pages/ScoringTasksPage";
 import { SettingsPage } from "./pages/SettingsPage";
 import { TasksPage } from "./pages/TasksPage";
 import { TrendsPage } from "./pages/TrendsPage";
 import type { UserAccess } from "./lib/types";
+import {canVisitPage,perspectiveAccess,rememberLocation,requestedPage,resolvePage} from './lib/navigation';
 
 const fallbackAccess: UserAccess = {
   role: "member",
@@ -23,27 +26,32 @@ const fallbackAccess: UserAccess = {
   currentEmployee: null,
   visibilityMode: "self_only",
   visibleEmployees: [],
-  visibleOpenIds: [],
+  visibleUserIds: [],
   visibleNames: [],
   visibleDepartments: [],
 };
 
 export function App() {
-  const [activePage, setActivePage] = useState<PageKey>("growth");
+  const [activePage, setActivePage] = useState<PageKey>(()=>requestedPage()||'growth');
+  useEffect(() => { document.querySelector('.content-shell')?.scrollTo({top:0}); }, [activePage]);
   const [selectedEmployee, setSelectedEmployee] = useState("");
   const [selectedPeriodId, setSelectedPeriodId] = useState(appData.currentWeekId || appData.periods.at(-1)?.id || "");
   const [taskCreated, setTaskCreated] = useState(false);
   const [summaryReady, setSummaryReady] = useState(false);
   const [access, setAccess] = useState<UserAccess | null>(null);
-  const currentAccess = access ?? fallbackAccess;
+  const [adminPerspective,setAdminPerspective]=useState<string>('management');
+  const previewEmployeeId=access?.role==='system_admin'&&adminPerspective.startsWith('employee:')?adminPerspective.slice(9):'';
+  const previewEmployee=access?.visibleEmployees.find(e=>e.userId===previewEmployeeId);
+  const personalMode=access?.role==='system_admin'&&(adminPerspective==='personal'||Boolean(previewEmployee));
+  const currentAccess = access?perspectiveAccess(access,adminPerspective):fallbackAccess;
+  function changePerspective(next:string){
+    if(!window.dispatchEvent(new Event('organization-before-leave',{cancelable:true})))return;
+    setAdminPerspective(next);setSelectedEmployee(access?.currentEmployee?.name||'');
+    setActivePage(next==='management'?'dashboard':'growth');
+    try{localStorage.setItem('admin-perspective:'+access?.currentEmployee?.userId,next);}catch{}
+  }
   const externalView = currentAccess.externalView;
-  const canOpenPage = (page: PageKey) => {
-    if (page === "dashboard") return currentAccess.canViewBossDashboard;
-    if (page === "monthly") return currentAccess.canViewBossDashboard;
-    if (page === "tasks") return currentAccess.canViewBossDashboard;
-    if (page === "settings") return currentAccess.canViewSettings;
-    return true;
-  };
+  const canOpenPage = (page: PageKey) => canVisitPage(page,currentAccess);
 
   useEffect(() => {
     async function loadMe() {
@@ -58,26 +66,44 @@ export function App() {
         const result = await response.json();
         const nextAccess = normalizeAccess(result.access, result.user);
         setAccess(nextAccess);
-        setActivePage((page) => {
-          if (page === "growth" && nextAccess.canViewBossDashboard) return "dashboard";
-          if (page === "dashboard" && !nextAccess.canViewBossDashboard) return "growth";
-          if (page === "monthly" && !nextAccess.canViewBossDashboard) return "growth";
-          if (page === "tasks" && !nextAccess.canViewBossDashboard) return "growth";
-          if (page === "settings" && !nextAccess.canViewSettings) return "growth";
-          return page;
-        });
+        let mode='management';
+        if(nextAccess.role==='system_admin'){
+          try{const saved=localStorage.getItem('admin-perspective:'+nextAccess.currentEmployee?.userId)||'';if(saved==='personal'||(saved.startsWith('employee:')&&nextAccess.visibleEmployees.some(e=>e.userId===saved.slice(9))))mode=saved;}catch{}
+          setAdminPerspective(mode);
+        }
+        const permitted=perspectiveAccess(nextAccess,mode);
+        setActivePage(page=>resolvePage(requestedPage()||(page!=='growth'?page:undefined),permitted));
         setSelectedEmployee((name) => {
           if (nextAccess.visibleEmployees.some((employee) => employee.name === name)) return name;
           return nextAccess.currentEmployee?.name || nextAccess.visibleEmployees[0]?.name || "";
         });
       } catch {
         setAccess(fallbackAccess);
+        setActivePage(page=>resolvePage(page,fallbackAccess));
       }
     }
     loadMe();
   }, []);
 
+  useEffect(()=>{
+    if(!access)return;
+    const allowed=resolvePage(activePage,currentAccess);
+    if(allowed!==activePage){setActivePage(allowed);return;}
+    rememberLocation('page',activePage);
+  },[access,activePage,adminPerspective]);
+
+  useEffect(()=>{
+    if(!access)return;
+    const restore=()=>{
+      if(!window.dispatchEvent(new Event('organization-before-leave',{cancelable:true}))){rememberLocation('page',activePage);return;}
+      setActivePage(resolvePage(requestedPage(),currentAccess));
+    };
+    window.addEventListener('popstate',restore);
+    return()=>window.removeEventListener('popstate',restore);
+  },[access,adminPerspective,activePage]);
+
   useEffect(() => {
+    if(!access)return;
     fetch("/api/usage/visit", {
       method: "POST",
       headers: { "content-type": "application/json" },
@@ -86,7 +112,7 @@ export function App() {
     }).catch(() => {
       // Static preview can run without the backend.
     });
-  }, [activePage]);
+  }, [access,activePage]);
 
   useEffect(() => {
     if (!access || externalView) return;
@@ -111,6 +137,7 @@ export function App() {
   }, [access, activePage, externalView]);
 
   const page = useMemo(() => {
+    if(activePage==="departments"&&currentAccess.canViewSettings)return <DepartmentsPage/>;
     if (activePage === "dashboard" && currentAccess.canViewBossDashboard) {
       return (
         <DashboardPage
@@ -118,14 +145,14 @@ export function App() {
           externalView={externalView}
           onOpenEmployee={(name) => {
             setSelectedEmployee(name);
-            setActivePage("growth");
+            setActivePage("scores");
           }}
         />
       );
     }
 
     if (activePage === "scores") {
-      return <ScoresPage visibleEmployees={currentAccess.visibleEmployees} access={currentAccess} />;
+      return currentAccess.canManageScoring360 ? <PerformanceManagementPage /> : <ScoringTasksPage key={previewEmployeeId} previewEmployeeId={previewEmployeeId}/>;
     }
 
     if (activePage === "monthly" && currentAccess.canViewBossDashboard) {
@@ -133,7 +160,7 @@ export function App() {
         <MonthlyMeetingPage
           onOpenEmployee={(name) => {
             setSelectedEmployee(name);
-            setActivePage("growth");
+            setActivePage("scores");
           }}
         />
       );
@@ -143,36 +170,48 @@ export function App() {
       return <TasksPage selectedPeriodId={selectedPeriodId} taskCreated={taskCreated} onCreateTasks={() => setTaskCreated(true)} />;
     }
 
+    if (activePage === "settings" && currentAccess.canViewSettings) {
+      return <SettingsPage access={currentAccess} />;
+    }
+
+    if (["reports", "coach", "actions", "timeline"].includes(activePage) && currentAccess.role !== "boss" && !externalView) {
+      return <FinalResultsPage previewEmployeeId={previewEmployeeId} key={activePage+previewEmployeeId} module={activePage as import("./lib/types").PersonalModule} onOpenModule={setActivePage} />;
+    }
+
+    if (!currentAccess.canViewBossDashboard) return <FinalResultsPage previewEmployeeId={previewEmployeeId} key={activePage+previewEmployeeId} onOpenModule={setActivePage} />;
+
     if (activePage === "growth") {
-      return <EmployeeGrowthPage selectedPeriodId={selectedPeriodId} selectedEmployee={selectedEmployee} onSelectEmployee={setSelectedEmployee} externalView={externalView} visibleEmployees={currentAccess.visibleEmployees} />;
+      return currentAccess.role !== "system_admin" && currentAccess.canViewBossDashboard ? <DashboardPage selectedPeriodId={selectedPeriodId} externalView={externalView} onOpenEmployee={(name)=>{setSelectedEmployee(name);setActivePage("scores");}}/> : <FinalResultsPage previewEmployeeId={previewEmployeeId} key={activePage+previewEmployeeId} onOpenModule={setActivePage} />;
     }
 
     if (activePage === "trends") {
       return <TrendsPage selectedPeriodId={selectedPeriodId} />;
     }
 
-    if (activePage === "settings" && currentAccess.canViewSettings) {
-      return <SettingsPage access={currentAccess} />;
-    }
 
-    return <EmployeeGrowthPage selectedPeriodId={selectedPeriodId} selectedEmployee={selectedEmployee} onSelectEmployee={setSelectedEmployee} externalView={externalView} visibleEmployees={currentAccess.visibleEmployees} />;
-  }, [activePage, selectedEmployee, selectedPeriodId, summaryReady, taskCreated, currentAccess, externalView]);
+    return <FinalResultsPage previewEmployeeId={previewEmployeeId} key={activePage+previewEmployeeId} onOpenModule={setActivePage} />;
+  }, [activePage, selectedEmployee, selectedPeriodId, summaryReady, taskCreated, currentAccess, externalView, previewEmployeeId]);
 
   return (
     <div className="app-shell">
       <Sidebar
         activePage={activePage}
         onChangePage={(page) => {
-          if (canOpenPage(page)) setActivePage(page);
+          if (canOpenPage(page) && (page===activePage||window.dispatchEvent(new Event('organization-before-leave',{cancelable:true})))) setActivePage(page);
         }}
         canViewBossDashboard={currentAccess.canViewBossDashboard}
         canViewSettings={currentAccess.canViewSettings}
+        showPersonalResults={currentAccess.role !== "boss" && !externalView && !(access?.role==="system_admin"&&!personalMode)}
         userName={currentAccess.currentEmployee?.name || ""}
         userDepartment={currentAccess.currentEmployee?.department || ""}
       />
       <main className="main-shell">
         <AppHeader
           activePage={activePage}
+          managementRole={currentAccess.role}
+          adminPerspective={access?.role==='system_admin'?adminPerspective:undefined}
+          onChangeAdminPerspective={changePerspective}
+          previewEmployees={access?.visibleEmployees||[]}
           externalView={externalView}
           canViewBossDashboard={currentAccess.canViewBossDashboard}
           summaryReady={summaryReady}
@@ -189,10 +228,11 @@ export function App() {
           }}
           onOpenNotificationTarget={(employeeName) => {
             setSelectedEmployee(employeeName);
-            setActivePage("growth");
+            setActivePage("scores");
           }}
         />
-        <div className="content-shell">{page}</div>
+        {previewEmployee&&<div className="employee-preview-banner" role="status"><span>只读预览 · {previewEmployee.name}（{previewEmployee.department}） · 当前登录：{access?.currentEmployee?.name}</span><button type="button" onClick={()=>changePerspective('management')}>退出预览</button></div>}
+        <div className={`content-shell ${activePage === "settings" ? "content-shell-settings" : ""}`}>{access?page:<p role="status">正在恢复页面…</p>}</div>
       </main>
     </div>
   );
@@ -212,7 +252,7 @@ function normalizeAccess(value: unknown, user: any): UserAccess {
     currentEmployee: record.currentEmployee || null,
     visibilityMode: String(record.visibilityMode || "self_department_and_reports"),
     visibleEmployees,
-    visibleOpenIds: Array.isArray(record.visibleOpenIds) ? record.visibleOpenIds : visibleEmployees.map((employee) => employee.openId).filter(Boolean),
+    visibleUserIds: Array.isArray(record.visibleUserIds) ? record.visibleUserIds : visibleEmployees.map((employee) => employee.userId).filter(Boolean),
     visibleNames: Array.isArray(record.visibleNames) ? record.visibleNames : visibleEmployees.map((employee) => employee.name).filter(Boolean),
     visibleDepartments: Array.isArray(record.visibleDepartments) ? record.visibleDepartments : Array.from(new Set(visibleEmployees.map((employee) => employee.department).filter(Boolean))),
   };

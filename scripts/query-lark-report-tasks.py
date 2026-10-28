@@ -103,7 +103,7 @@ def main() -> int:
     parser.add_argument("--timezone", default="Asia/Shanghai", help="Timezone for date-only inputs.")
     parser.add_argument("--rule-id", help="Report rule ID.")
     parser.add_argument("--user-id", help="Submitter user ID.")
-    parser.add_argument("--user-id-type", default="open_id", choices=["open_id", "union_id", "user_id"])
+    parser.add_argument("--user-id-type", default="user_id", choices=["user_id", "union_id", "user_id"])
     parser.add_argument("--page-size", type=int, default=20, help="Page size, 0-20.")
     parser.add_argument("--page-all", action="store_true", help="Follow page_token while has_more is true.")
     parser.add_argument("--as", dest="identity", default="user", choices=["user", "bot"])

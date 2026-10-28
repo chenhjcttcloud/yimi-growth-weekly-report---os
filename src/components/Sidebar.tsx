@@ -1,4 +1,9 @@
 import {
+  Building2,
+  BookOpen,
+  Brain,
+  History,
+  Target,
   CalendarClock,
   ClipboardCheck,
   Gauge,
@@ -18,13 +23,17 @@ const navGroups: NavGroup[] = [
   {
     label: "我的成长",
     items: [
-      { key: "growth", label: "成长首页", icon: Sprout },
-      { key: "scores", label: "成长评分", icon: Trophy },
+      { key: "growth", label: "个人最终结果", icon: Sprout },
+      { key: "reports", label: "周报与互动", icon: BookOpen },
+      { key: "coach", label: "AI 教练", icon: Brain },
+      { key: "actions", label: "行动任务", icon: Target },
+      { key: "timeline", label: "成长轨迹", icon: History },
+      { key: "scores", label: "评分工作台", icon: Trophy },
     ],
   },
   {
     label: "组织脉搏",
-    items: [{ key: "trends", label: "组织趋势", icon: LineChart }],
+    items: [{ key: "departments", label: "部门管理", icon: Building2 },{ key: "trends", label: "组织趋势", icon: LineChart }],
   },
   {
     label: "管理视角",
@@ -36,7 +45,7 @@ const navGroups: NavGroup[] = [
   },
   {
     label: "系统",
-    items: [{ key: "settings", label: "设置", icon: Settings }],
+    items: [{ key: "settings", label: "系统设置", icon: Settings }],
   },
 ];
 
@@ -45,18 +54,21 @@ interface SidebarProps {
   onChangePage: (page: PageKey) => void;
   canViewBossDashboard: boolean;
   canViewSettings: boolean;
+  showPersonalResults: boolean;
   userName?: string;
   userDepartment?: string;
 }
 
-export function Sidebar({ activePage, onChangePage, canViewBossDashboard, canViewSettings, userName, userDepartment }: SidebarProps) {
+export function Sidebar({ activePage, onChangePage, canViewBossDashboard, canViewSettings, showPersonalResults, userName, userDepartment }: SidebarProps) {
   const canOpen = (key: PageKey) => {
-    if (key === "dashboard" || key === "monthly" || key === "tasks") return canViewBossDashboard;
+    if (["growth", "reports", "coach", "actions", "timeline"].includes(key)) return showPersonalResults;
+    if(key === "departments")return canViewSettings;
+    if (key === "dashboard" || key === "monthly" || key === "tasks" || key === "trends") return canViewBossDashboard;
     if (key === "settings") return canViewSettings;
     return true;
   };
   const visibleGroups = navGroups
-    .map((group) => ({ ...group, items: group.items.filter((item) => canOpen(item.key)) }))
+    .map((group) => ({ ...group, label: group.label === "我的成长" && !showPersonalResults ? "评分管理" : group.label, items: group.items.filter((item) => canOpen(item.key)) }))
     .filter((group) => group.items.length > 0);
 
   return (
@@ -80,6 +92,8 @@ export function Sidebar({ activePage, onChangePage, canViewBossDashboard, canVie
               return (
                 <button
                   key={item.key}
+                  aria-label={item.label}
+                  title={item.label}
                   className={`nav-item ${activePage === item.key ? "is-active" : ""}`}
                   type="button"
                   onClick={() => onChangePage(item.key)}

@@ -29,7 +29,7 @@
       "title": "建立需求评审前置清单",
       "whyBoss": "需要确认产品和运营共同采用同一套评审输入标准。",
       "owner": "林清",
-      "ownerOpenId": "demo_open_id_001",
+      "ownerUserId": "demo_user_id_001",
       "dueDate": "2026-01-16",
       "evidence": "匿名演示：连续两周出现评审输入不完整。"
     }
@@ -76,7 +76,7 @@
           "source": "林清",
           "department": "产品部",
           "owner": "林清",
-          "ownerOpenId": "demo_open_id_001",
+          "ownerUserId": "demo_user_id_001",
           "title": "完成需求评审前置清单",
           "description": "整理评审所需的数据、假设、决策问题和责任人，并用于一次评审。",
           "dueDate": "2026-01-16",
@@ -103,7 +103,7 @@
           "source": "周远",
           "department": "运营部",
           "owner": "周远",
-          "ownerOpenId": "demo_open_id_002",
+          "ownerUserId": "demo_user_id_002",
           "title": "完成五位低活跃用户访谈",
           "description": "记录不复购原因，并基于真实反馈更新分层触达策略。",
           "dueDate": "2026-01-16",

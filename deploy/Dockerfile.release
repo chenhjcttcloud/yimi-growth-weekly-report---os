@@ -1,0 +1,12 @@
+# Stage only server/, scripts/, db/, src/data/, package.json and prebuilt web/.
+# Retain the previous image and its assets; no cleanup or container replacement.
+ARG BASE_IMAGE=emie-growth-os:production-20261026-userid
+FROM ${BASE_IMAGE}
+ARG RELEASE_ID
+LABEL cn.emie.growth.release=${RELEASE_ID}
+COPY --chown=node:node server /app/server
+COPY --chown=node:node scripts /app/scripts
+COPY --chown=node:node db /app/db
+COPY --chown=node:node src/data /app/src/data
+COPY --chown=node:node package.json /app/package.json
+COPY --chown=node:node web /app/dist

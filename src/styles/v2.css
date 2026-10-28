@@ -2171,3 +2171,56 @@ body {
     grid-template-columns: minmax(0, 1fr);
   }
 }
+
+/* Searchable administrator perspective menu. */
+.perspective-trigger { display:inline-flex; align-items:center; gap:9px; min-height:38px; max-width:240px; padding:5px 11px 5px 6px; border:1px solid var(--v2-line); border-radius:10px; background:#fff; color:var(--v2-ink-2); font-size:13px; font-weight:600; transition:background .15s,border-color .15s,box-shadow .15s; }
+.perspective-trigger:hover,.perspective-trigger.is-open { border-color:#a0cdbd; background:#f4faf7; box-shadow:0 0 0 3px #0b806b0a; }
+.perspective-trigger-icon { display:grid; place-items:center; width:26px; height:26px; border-radius:7px; color:var(--v2-brand); background:var(--v2-brand-soft); flex-shrink:0; }
+.perspective-trigger-label { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.perspective-chevron { color:#81938a; flex-shrink:0; transition:transform .15s; }
+.perspective-trigger.is-open .perspective-chevron { transform:rotate(180deg); }
+.perspective-panel { position:fixed; z-index:1000; display:flex; flex-direction:column; overflow:hidden; padding:0; border:1px solid var(--v2-line); border-radius:var(--v2-radius-sm); background:var(--v2-surface); color:var(--v2-ink); box-shadow:var(--v2-shadow-lift); font-size:13px; }
+.perspective-heading { display:flex; align-items:center; justify-content:space-between; padding:15px 16px 12px; flex-shrink:0; }
+.perspective-heading h2 { margin:0; color:var(--v2-ink); font-size:14px; line-height:1.4; font-weight:650; }
+.perspective-heading p { margin:4px 0 0; color:var(--v2-ink-3); font-size:12px; }
+.perspective-close,.perspective-search button { display:grid; place-items:center; width:28px; height:28px; padding:0; border:0; border-radius:7px; color:#8b9991; background:transparent; flex-shrink:0; }
+.perspective-close:hover,.perspective-search button:hover { background:#f0f5f2; color:#355c49; }
+.perspective-shortcuts { display:grid; grid-template-columns:1fr 1fr; gap:4px; margin:0 14px 12px; padding:4px; border:1px solid var(--v2-line-soft); border-radius:8px; background:var(--v2-bg-soft); flex-shrink:0; }
+.perspective-shortcut { display:flex; align-items:center; gap:8px; min-width:0; padding:9px 8px; border:1px solid transparent; border-radius:6px; background:transparent; color:#718479; text-align:left; }
+.perspective-shortcut > span { flex:1; min-width:0; }
+.perspective-shortcut strong,.perspective-shortcut small { display:block; }
+.perspective-shortcut strong { color:#42544a; font-size:12px; font-weight:600; }
+.perspective-shortcut small { margin-top:4px; color:#8f9b94; font-size:10px; white-space:nowrap; }
+.perspective-shortcut.is-selected { background:var(--v2-surface); border-color:var(--v2-line); color:var(--v2-brand); box-shadow:0 1px 3px #1d262208; }
+.perspective-shortcut.is-selected strong { color:var(--v2-brand-deep); }
+.perspective-shortcut:hover { border-color:#b4dac8; background:#f3f9f5; }
+.perspective-search { display:flex; align-items:center; gap:8px; margin:0 14px 14px; padding:5px 8px 5px 11px; border:1px solid var(--v2-line); border-radius:9px; background:var(--v2-bg-soft); color:#8b9c91; flex-shrink:0; }
+.perspective-search:focus-within { border-color:#9dceba; box-shadow:0 0 0 3px #0b806b09; background:#fff; }
+.perspective-search input { width:100%; min-width:0; height:26px; border:0; outline:none; background:transparent; color:var(--v2-ink); font-size:12px; }
+.perspective-search input::placeholder { color:#98a49d; }
+.perspective-search input::-webkit-search-cancel-button { display:none; }
+.perspective-section-heading { display:flex; align-items:center; justify-content:space-between; gap:8px; padding:0 18px 9px; color:#8b9991; font-size:11px; flex-shrink:0; }
+.perspective-section-heading > span { display:inline-flex; align-items:center; gap:6px; }
+.perspective-section-heading b { padding:1px 5px; border-radius:5px; background:#f0f4f1; color:#7c9083; font-weight:500; font-size:10px; }
+.perspective-readonly { display:inline-flex; align-items:center; gap:4px; padding:2px 6px; border:1px solid #e3e9e5; border-radius:5px; background:#f6f8f6; color:#8b978f; font-size:10px; font-weight:400; white-space:nowrap; }
+.perspective-employee-list { flex:1; min-height:0; overflow-y:auto; overscroll-behavior:contain; padding:0 8px 8px; scrollbar-width:thin; scrollbar-color:#d4e0d7 transparent; }
+.perspective-employee { display:flex; align-items:center; gap:10px; width:100%; min-height:48px; padding:7px 10px; border:0; border-radius:9px; background:transparent; color:var(--v2-brand); text-align:left; }
+.perspective-employee:hover { background:#f4f8f5; }
+.perspective-employee.is-selected { background:var(--v2-brand-soft); }
+.perspective-avatar { display:grid; place-items:center; flex-shrink:0; width:30px; height:30px; border:1px solid var(--v2-line-soft); border-radius:7px; background:#eff5f0; color:#63846e; font-size:12px; font-weight:600; }
+.perspective-employee.is-selected .perspective-avatar { border-color:#c4e0d1; background:#ddefe3; color:#188460; }
+.perspective-employee-info { flex:1; min-width:0; }
+.perspective-employee-info strong,.perspective-employee-info small { display:block; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.perspective-employee-info strong { color:var(--v2-ink); font-size:13px; font-weight:550; }
+.perspective-employee-info small { margin-top:2px; color:var(--v2-ink-3); font-size:11px; }
+.perspective-empty { display:flex; flex-direction:column; align-items:center; gap:8px; padding:32px 16px; color:#b5c3b8; text-align:center; }
+.perspective-empty strong { color:#7c8d80; font-size:12px; font-weight:500; }
+.perspective-empty span { color:#9eaaa1; font-size:11px; }
+.perspective-footer { display:flex; align-items:center; gap:6px; padding:11px 18px; border-top:1px solid var(--v2-line-soft); background:var(--v2-bg-soft); color:#9ca99f; font-size:10px; flex-shrink:0; }
+.perspective-trigger:focus-visible,.perspective-panel button:focus-visible { outline:2px solid #15866d; outline-offset:2px; }
+.perspective-panel .perspective-close:focus-visible { outline-offset:0; }
+@media (max-width:700px) { .perspective-trigger { grid-column:1 / -1; width:max-content; max-width:100%; } }
+@media (prefers-reduced-motion:reduce) { .perspective-trigger,.perspective-chevron { transition:none; } }
+
+.perspective-trigger-caption { padding-right:8px; border-right:1px solid var(--v2-line); color:var(--v2-ink-3); font-size:11px; font-weight:400; white-space:nowrap; }
+.perspective-trigger:disabled { opacity:.65; cursor:wait; }

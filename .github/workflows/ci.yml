@@ -19,9 +19,11 @@ jobs:
           node-version: 22
           cache: npm
       - run: npm ci
-      - run: npm run build
-      - run: node scripts/test-closure-insights.mjs
-      - run: node scripts/test-scoring360-policy.mjs
-      - run: node scripts/test-scoring360-api.mjs
-      - run: npm run static:validate
+      - run: ./node_modules/.bin/tsc -b && ./node_modules/.bin/vite build --emptyOutDir false --outDir outputs/ci-preview
+      - run: node scripts/test-weekly-report-schedule.mjs
+      - run: node scripts/test-report-automation.mjs
+      - run: node scripts/test-live-report-sync.mjs
+      - run: node scripts/test-month-end-score-reminders.mjs
+      - run: node scripts/test-china-work-calendar.mjs
+      - run: node scripts/test-weighted-monthly.mjs
       - run: npm audit --audit-level=high

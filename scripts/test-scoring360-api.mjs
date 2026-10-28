@@ -15,13 +15,13 @@ const managerName = String(fixture.assignments?.[0]?.evaluator || "Demo Manager"
 const child = spawn(process.execPath, ["server/index.mjs"], {
   cwd: rootDir,
   env: {
-    ...process.env,
+    ...process.env, APP_DATA_DIR: "src/data",
     AUTH_MODE: "mock",
     SERVER_PORT: String(port),
     BASE_URL: baseUrl,
     WEEKLY_REPORT_DB_PATH: dbPath,
     SCORING360_ACTIVE_DATE: "2099-08-25T10:00:00+08:00",
-    MOCK_USER_OPEN_ID: "mock_manager",
+    MOCK_USER_ID: "mock_manager",
     MOCK_USER_NAME: managerName,
     MOCK_USER_EMAIL: "manager@example.invalid",
     SCORING360_CONFIG_MANAGER_NAMES: managerName,
@@ -39,32 +39,32 @@ try {
 
   const me = await fetchJson(`${baseUrl}/api/me`);
   assert(me.user?.name === managerName, `expected mock manager user, got ${me.user?.name}`);
-  assert(me.access?.bossView === false, "scoring manager should not inherit boss view access");
+  assert(me.access?.bossView === true, "administrator shares boss management capabilities");
   assert(me.access?.canManageScoring360 === true, "configured manager should manage scoring360");
   assert(me.access?.canManagePersonnel === true, "configured manager should manage active personnel");
   assert(me.access?.canViewSettings === true, "configured manager should access relevant settings");
   assert(me.access?.currentEmployee?.name === managerName, "SSO identity should remain available outside static report data");
 
   await postJson(`${baseUrl}/api/employees/manage`, {
-    openId: "mock_manager",
+    userId: "mock_manager",
     name: managerName,
     department: "Management",
   });
   await postJson(`${baseUrl}/api/employees/manage`, {
-    openId: "departed_test",
+    userId: "departed_test",
     name: "Departed Test",
     department: "Management",
   });
   await postJson(`${baseUrl}/api/employees/manage/status`, {
-    openId: "departed_test",
+    userId: "departed_test",
     active: false,
   });
 
   const overview = await fetchJson(`${baseUrl}/api/scoring360`);
   const originalCycleId = overview.cycle?.id;
   assert(Boolean(originalCycleId), "expected an existing scoring cycle before preview");
-  assert(overview.evaluatorOptions.includes(managerName), "active manager should be available in evaluator options");
-  assert(!overview.evaluatorOptions.includes("Departed Test"), "inactive employees must be excluded from evaluator options");
+  assert(overview.evaluatorOptions.includes("mock_manager"), "active manager should be available in evaluator options");
+  assert(!overview.evaluatorOptions.includes("departed_test"), "inactive employees must be excluded from evaluator options");
 
   const preview = await postJson(`${baseUrl}/api/scoring360/reminders/send`, {
     kind: "launch",
@@ -83,10 +83,10 @@ try {
     cycleId: "2099-08-360",
     kind: "followup",
     dryRun: true,
-    evaluatorOpenId: target.evaluatorOpenId,
+    evaluatorUserId: target.evaluatorUserId,
   });
   assert(targetedPreview.count === 1, `targeted reminder must process exactly one evaluator, got ${targetedPreview.count}`);
-  assert(targetedPreview.results[0]?.recipient?.evaluatorOpenId === target.evaluatorOpenId, "targeted reminder must keep the requested evaluator");
+  assert(targetedPreview.results[0]?.recipient?.evaluatorUserId === target.evaluatorUserId, "targeted reminder must keep the requested evaluator");
 
   const overviewAfterPreview = await fetchJson(`${baseUrl}/api/scoring360`);
   assert(overviewAfterPreview.cycle?.id === originalCycleId, "dry run must not switch the current cycle");

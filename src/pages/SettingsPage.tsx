@@ -1,4 +1,11 @@
+import {useLocationSection} from '../lib/navigation';
+import { FeishuReportConfiguration } from '../components/FeishuReportConfiguration';
+import { AppSelect } from '../components/AppSelect';
+import { SystemConfiguration } from '../components/SystemConfiguration';
+import { DepartmentManagement } from '../components/DepartmentManagement';
 import { useEffect, useMemo, useRef, useState } from "react";
+import { Activity, CheckCheck, Database, Link2, Settings2, ShieldCheck, UsersRound } from "lucide-react";
+import { ResultEmpty } from "../components/PerformanceUI";
 import type { DragEvent } from "react";
 import { appData } from "../lib/data";
 import type { UserAccess } from "../lib/types";
@@ -35,17 +42,19 @@ interface ImportResult {
 }
 
 interface BossViewMember {
-  openId: string;
+  userId: string;
   name: string;
   department: string;
 }
 
 interface ManagedEmployee {
-  openId: string;
+  lastLoginAt?:string;
+  syncNote?:string;
+  userId: string;
   name: string;
   department: string;
   email?: string;
-  managerOpenId?: string;
+  managerUserId?: string;
   roleLevel?: string;
   active: boolean;
   source?: string;
@@ -102,6 +111,8 @@ interface Scoring360ConfigAssignment {
   cycleId: string;
   evalueeName: string;
   evaluatorName: string;
+  evalueeUserId: string;
+  evaluatorUserId: string;
   relationship?: string;
   response?: {
     score: number;
@@ -122,7 +133,7 @@ interface Scoring360Config {
   employees?: Array<{
     name: string;
     department?: string;
-    openId?: string;
+    userId?: string;
   }>;
   assignments: Scoring360ConfigAssignment[];
   diagnosis?: {
@@ -153,7 +164,7 @@ interface Scoring360ReminderStatus {
   } | null;
   pending?: Array<{
     evaluatorName: string;
-    evaluatorOpenId?: string;
+    evaluatorUserId?: string;
     department?: string;
     pendingCount: number;
     totalCount: number;
@@ -188,17 +199,17 @@ interface RosterAuditStatus {
     latestReports: number;
     newInReports: number;
     missingLatestReport: number;
-    missingOpenId: number;
+    missingUserId: number;
   };
-  newInReports?: Array<{ name: string; department?: string; openId?: string }>;
-  missingLatestReport?: Array<{ name: string; department?: string; openId?: string }>;
-  missingOpenId?: Array<{ name: string; department?: string; openId?: string }>;
+  newInReports?: Array<{ name: string; department?: string; userId?: string }>;
+  missingLatestReport?: Array<{ name: string; department?: string; userId?: string }>;
+  missingUserId?: Array<{ name: string; department?: string; userId?: string }>;
   exemptNames?: string[];
   note?: string;
 }
 
 interface AccountActivityRow {
-  openId?: string;
+  userId?: string;
   name: string;
   department?: string;
   isReminderRecipient?: boolean;
@@ -244,15 +255,32 @@ interface SettingsPageProps {
 }
 
 export function SettingsPage({ access }: SettingsPageProps) {
+  const bossView = access ? Boolean(access.bossView) : true;
+  const canManageScoring360 = access ? Boolean(access.bossView || access.canManageScoring360) : true;
+  const canManagePersonnel = access ? Boolean(access.bossView || access.canManagePersonnel) : true;
+  const sections=['overview',...(canManagePersonnel?['organization','people']:[]),...(canManageScoring360?['rules','scoring','cycles']:[]),...(bossView?['permissions','ai','integrations','logs','activity']:[])];
+  const [settingsTab, setSettingsTabState] = useLocationSection('settingsTab',sections,'overview');
+  const setSettingsTab=(next:string)=>{if(next===settingsTab||window.dispatchEvent(new Event('organization-before-leave',{cancelable:true})))setSettingsTabState(next);};
+  useEffect(() => { document.querySelector('.settings-content')?.scrollTo({top:0}); }, [settingsTab]);
+  const [runtimeStatus, setRuntimeStatus] = useState<any>(null);
+  const [runtimeError, setRuntimeError] = useState('');
+  async function loadRuntimeStatus() {
+    try {
+      const response = await fetch('/api/settings/status');
+      if (!response.ok) throw Error('运行状态加载失败，请重试');
+      setRuntimeStatus(await response.json()); setRuntimeError('');
+    } catch (error) { setRuntimeError(error instanceof Error ? error.message : '加载失败'); }
+  }
+  useEffect(() => { void loadRuntimeStatus(); }, []);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const [externalLinks, setExternalLinks] = useState<ExternalLink[]>([]);
+  const [adminMembers,setAdminMembers]=useState<BossViewMember[]>([]);
+  const [adminState,setAdminState]=useState("idle");
   const [bossViewMembers, setBossViewMembers] = useState<BossViewMember[]>([]);
   const [bossViewState, setBossViewState] = useState<"idle" | "saving" | "saved" | "error">("idle");
-  const [scoring360AdminMembers, setScoring360AdminMembers] = useState<BossViewMember[]>([]);
-  const [scoring360AdminState, setScoring360AdminState] = useState<"idle" | "saving" | "saved" | "error">("idle");
   const [managedEmployees, setManagedEmployees] = useState<ManagedEmployee[]>([]);
   const [managedEmployeeState, setManagedEmployeeState] = useState<"idle" | "saving" | "saved" | "error">("idle");
-  const [employeeDraft, setEmployeeDraft] = useState({ openId: "", name: "", department: "", email: "" });
+  const [employeeMessage,setEmployeeMessage]=useState("");
   const [externalName, setExternalName] = useState("外部顾问临时访问");
   const [ttlHours, setTtlHours] = useState("72");
   const [generatedUrl, setGeneratedUrl] = useState("");
@@ -265,16 +293,11 @@ export function SettingsPage({ access }: SettingsPageProps) {
   const [syncError, setSyncError] = useState("");
   const [weeklyReminderStatus, setWeeklyReminderStatus] = useState<WeeklyReminderStatus | null>(null);
   const [scoring360Config, setScoring360Config] = useState<Scoring360Config | null>(null);
-  const employeeOptions = useMemo(() => {
-    const names = [
-      ...appData.employeeSummary.map((employee) => employee.name),
-      ...(scoring360Config?.employees || []).map((employee) => employee.name),
-      ...(scoring360Config?.assignments || []).flatMap((assignment) => [assignment.evalueeName, assignment.evaluatorName]),
-    ];
-    return Array.from(new Set(names.map((name) => String(name || "").trim()).filter(Boolean)));
-  }, [scoring360Config]);
+  const employeeChoices = scoring360Config?.employees || [];
+  const employeeOptions = useMemo(() => (scoring360Config?.employees || []).map(e=>e.userId).filter(Boolean), [scoring360Config]);
   const [scoring360State, setScoring360State] = useState<"idle" | "saving" | "saved" | "error">("idle");
   const [scoring360Error, setScoring360Error] = useState("");
+  const [assignmentMessage,setAssignmentMessage]=useState("");
   const [scoring360Evaluee, setScoring360Evaluee] = useState(employeeOptions[0] || "");
   const [scoring360Evaluator, setScoring360Evaluator] = useState(employeeOptions[1] || employeeOptions[0] || "");
   const [scoring360ReminderStatus, setScoring360ReminderStatus] = useState<Scoring360ReminderStatus | null>(null);
@@ -283,18 +306,13 @@ export function SettingsPage({ access }: SettingsPageProps) {
   const [scoring360ReminderResult, setScoring360ReminderResult] = useState<Scoring360ReminderResult | null>(null);
   const [rosterAudit, setRosterAudit] = useState<RosterAuditStatus | null>(null);
   const [accountActivity, setAccountActivity] = useState<AccountActivityStatus | null>(null);
-  const bossView = access ? Boolean(access.bossView) : true;
-  const canManageScoring360 = access ? Boolean(access.bossView || access.canManageScoring360) : true;
-  const canManagePersonnel = access ? Boolean(access.bossView || access.canManagePersonnel) : true;
-  const scoring360ScheduleDays = scoring360ReminderStatus?.schedule?.daysOfMonth?.length
-    ? scoring360ReminderStatus.schedule.daysOfMonth.join(" / ")
-    : String(scoring360ReminderStatus?.schedule?.dayOfMonth || 15);
+
 
   useEffect(() => {
     if (bossView) {
       loadExternalLinks();
       loadBossViewMembers();
-      loadScoring360AdminMembers();
+      void fetch("/api/scoring360-admin-members").then(r=>r.json()).then(j=>setAdminMembers(j.members||[]));
       loadLarkReportSyncStatus();
       loadWeeklyReminderStatus();
       loadRosterAudit();
@@ -312,7 +330,7 @@ export function SettingsPage({ access }: SettingsPageProps) {
       setScoring360Evaluee(employeeOptions[0]);
     }
     if (!scoring360Evaluator && (employeeOptions[1] || employeeOptions[0])) {
-      setScoring360Evaluator(employeeOptions[1] || employeeOptions[0]);
+      setScoring360Evaluator(employeeOptions[1] || employeeOptions[0] || "");
     }
   }, [employeeOptions, scoring360Evaluee, scoring360Evaluator]);
 
@@ -324,6 +342,10 @@ export function SettingsPage({ access }: SettingsPageProps) {
     return () => window.clearInterval(timer);
   }, [syncStatus?.running]);
 
+  async function saveAdminMembers(){
+    setAdminState('saving');
+    try{const r=await fetch('/api/scoring360-admin-members',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({members:adminMembers})});if(!r.ok)throw Error();setAdminState('saved');}catch{setAdminState('error');}
+  }
   async function loadBossViewMembers() {
     try {
       const response = await fetch("/api/boss-view-members");
@@ -338,8 +360,8 @@ export function SettingsPage({ access }: SettingsPageProps) {
   function toggleBossViewMember(member: BossViewMember) {
     setBossViewState("idle");
     setBossViewMembers((current) => {
-      const exists = current.some((item) => item.openId === member.openId);
-      if (exists) return current.filter((item) => item.openId !== member.openId);
+      const exists = current.some((item) => item.userId === member.userId);
+      if (exists) return current.filter((item) => item.userId !== member.userId);
       return [...current, member];
     });
   }
@@ -361,41 +383,6 @@ export function SettingsPage({ access }: SettingsPageProps) {
     }
   }
 
-  async function loadScoring360AdminMembers() {
-    try {
-      const response = await fetch("/api/scoring360-admin-members");
-      if (!response.ok) return;
-      const result = await response.json();
-      setScoring360AdminMembers(Array.isArray(result.members) ? result.members : []);
-    } catch {
-      // Static preview keeps the persisted role list unavailable.
-    }
-  }
-
-  function toggleScoring360AdminMember(member: BossViewMember) {
-    setScoring360AdminState("idle");
-    setScoring360AdminMembers((current) => current.some((item) => item.openId === member.openId)
-      ? current.filter((item) => item.openId !== member.openId)
-      : [...current, member]);
-  }
-
-  async function saveScoring360AdminMembers() {
-    setScoring360AdminState("saving");
-    try {
-      const response = await fetch("/api/scoring360-admin-members", {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({ members: scoring360AdminMembers }),
-      });
-      const result = await response.json();
-      if (!response.ok || !result.ok) throw new Error(result.error || "save_scoring360_admin_failed");
-      setScoring360AdminMembers(Array.isArray(result.members) ? result.members : scoring360AdminMembers);
-      setScoring360AdminState("saved");
-    } catch {
-      setScoring360AdminState("error");
-    }
-  }
-
   async function loadManagedEmployees() {
     try {
       const response = await fetch("/api/employees/manage");
@@ -407,42 +394,26 @@ export function SettingsPage({ access }: SettingsPageProps) {
     }
   }
 
-  async function addManagedEmployee() {
-    if (!employeeDraft.openId.trim() || !employeeDraft.name.trim()) return;
-    setManagedEmployeeState("saving");
-    try {
-      const response = await fetch("/api/employees/manage", {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify(employeeDraft),
-      });
-      const result = await response.json();
-      if (!response.ok || !result.ok) throw new Error(result.error || "save_employee_failed");
-      setEmployeeDraft({ openId: "", name: "", department: "", email: "" });
-      await loadManagedEmployees();
-      await loadScoring360Config();
-      setManagedEmployeeState("saved");
-    } catch {
-      setManagedEmployeeState("error");
-    }
-  }
-
   async function setManagedEmployeeActive(employee: ManagedEmployee, active: boolean) {
     if (!active && !window.confirm(`确认停用 ${employee.name}？历史评分会保留，但不会进入新周期或提醒。`)) return;
+    setEmployeeMessage("");
     setManagedEmployeeState("saving");
     try {
       const response = await fetch("/api/employees/manage/status", {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({ openId: employee.openId, active }),
+        body: JSON.stringify({ userId: employee.userId, active }),
       });
       const result = await response.json();
       if (!response.ok || !result.ok) throw new Error(result.error || "update_employee_status_failed");
       await loadManagedEmployees();
       await loadScoring360Config();
       await loadScoring360ReminderStatus();
+      setEmployeeMessage(`${employee.name}已${active?"恢复在职":"停用"}。`);
       setManagedEmployeeState("saved");
-    } catch {
+    } catch(error) {
+      const code=error instanceof Error?error.message:'';
+      setEmployeeMessage(code==='employee_user_id_and_name_required'?'请填写员工姓名和飞书 user_id。':code==='scoring360_config_manager_only'||code==='manager_only'?'当前账号没有人员管理权限，请切换到管理视角。':'保存失败，请检查网络后重试。');
       setManagedEmployeeState("error");
     }
   }
@@ -569,7 +540,7 @@ export function SettingsPage({ access }: SettingsPageProps) {
           cycleId: scoring360ReminderStatus?.cycle?.id,
           kind,
           dryRun,
-          evaluatorOpenId: target?.evaluatorOpenId || "",
+          evaluatorUserId: target?.evaluatorUserId || "",
         }),
       });
       const result = await response.json();
@@ -583,23 +554,28 @@ export function SettingsPage({ access }: SettingsPageProps) {
     }
   }
 
+  async function prepareScoringCycle(action:'prepare'|'open'){
+    setScoring360State('saving');setScoring360Error('');setAssignmentMessage('');
+    try{const response=await fetch('/api/scoring360/cycle',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({action})});const result=await response.json();if(!response.ok)throw Error(result.error==='scoring_assignments_required'?'请先手动添加评分关系，再开放本月评分。':result.error==='scoring_cycle_closed'?'该周期已关闭，不能重新开放。':'评分周期操作失败，请重试');await loadScoring360Config();await loadScoring360ReminderStatus();setAssignmentMessage(action==='prepare'?'本月评分周期已准备，请手动选择谁给谁评分；没有自动添加关系或发送消息。':'本月评分已开放；没有发送飞书消息。');setScoring360State('saved');}catch(error){setScoring360Error(error instanceof Error?error.message:'操作失败');setScoring360State('error');}
+  }
   async function addScoring360Assignment() {
     if (!scoring360Evaluee || !scoring360Evaluator) return;
     setScoring360State("saving");
-    setScoring360Error("");
+    setScoring360Error("");setAssignmentMessage("");
     try {
       const response = await fetch("/api/scoring360/assignments", {
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({
           cycleId: scoring360Config?.cycle?.id,
-          evalueeName: scoring360Evaluee,
-          evaluatorName: scoring360Evaluator,
+          evalueeUserId: scoring360Evaluee,
+          evaluatorUserId: scoring360Evaluator,
         }),
       });
       const result = await response.json();
-      if (!response.ok || !result.ok) throw new Error(result.error || "add_assignment_failed");
+      if (!response.ok || !result.ok) throw new Error(({self_scoring_forbidden:"同事互评不能给自己评分。",result_locked:"该员工当月协作结果已确认锁定，不能新增或恢复评分关系。请在新评分周期配置。",inactive_or_unknown_employee:"请选择在职员工。",invalid_assignment:"请选择被评分人和评分人。"} as Record<string,string>)[result.error]||"添加失败，请稍后重试");
       await loadScoring360Config();
+      setAssignmentMessage(result.alreadyExists?"这条评分关系已存在，无需重复添加。":"评分关系已更新。");
       setScoring360State("saved");
     } catch (error) {
       setScoring360Error(error instanceof Error ? error.message : "添加评分关系失败");
@@ -609,7 +585,7 @@ export function SettingsPage({ access }: SettingsPageProps) {
 
   async function removeScoring360Assignment(assignmentId: string) {
     setScoring360State("saving");
-    setScoring360Error("");
+    setScoring360Error("");setAssignmentMessage("");
     try {
       const response = await fetch("/api/scoring360/assignments", {
         method: "DELETE",
@@ -617,8 +593,9 @@ export function SettingsPage({ access }: SettingsPageProps) {
         body: JSON.stringify({ assignmentId }),
       });
       const result = await response.json();
-      if (!response.ok || !result.ok) throw new Error(result.error || "delete_assignment_failed");
+      if (!response.ok || !result.ok) throw new Error(result.error==='result_locked'?"该员工当月协作结果已确认锁定，不能删除评分关系。":"删除失败，请稍后重试");
       await loadScoring360Config();
+      setAssignmentMessage(result.alreadyExists?"这条评分关系已存在，无需重复添加。":"评分关系已更新。");
       setScoring360State("saved");
     } catch (error) {
       setScoring360Error(error instanceof Error ? error.message : "删除评分关系失败");
@@ -684,10 +661,34 @@ export function SettingsPage({ access }: SettingsPageProps) {
   }
 
   return (
-    <section className="settings-grid">
+    <div className="v2-page v2-page-wide settings-page">
+      <section className="pf-intro"><div><span className="v2-eyebrow"><Settings2 size={14}/>系统设置</span><h2>团队的规则与连接，都在这里。</h2><p>管理组织、配置评分规则，连接 AI 与飞书服务。</p></div><span className="pf-subtle-tag">{runtimeStatus?.authMode === 'mock' ? '开发演示环境' : runtimeStatus ? '正式认证环境' : '正在读取环境状态'}</span></section>
+      <div className="settings-layout">
+      <nav className="settings-module-nav" aria-label="设置分类">
+      {[
+       {label:'工作空间',items:[{id:'overview',label:'运行概览',description:'服务状态与常用操作',icon:Settings2,visible:true}]},
+       {label:'组织与人员',items:[{id:'organization',label:'组织与部门',description:'部门层级与负责人',icon:UsersRound,visible:canManagePersonnel},{id:'people',label:'员工管理',description:'飞书同步与在职状态',icon:UsersRound,visible:canManagePersonnel},{id:'permissions',label:'角色与权限',description:'老板、管理员与员工',icon:ShieldCheck,visible:bossView}]},
+       {label:'评分与成长',items:[{id:'rules',label:'评分规则',description:'权重与规则版本',icon:CheckCheck,visible:canManageScoring360},{id:'scoring',label:'协作评分关系',description:'配置谁给谁评分',icon:UsersRound,visible:canManageScoring360},{id:'cycles',label:'周期与提醒',description:'截止时间与催评频率',icon:Settings2,visible:canManageScoring360}]},
+       {label:'服务与记录',items:[{id:'ai',label:'AI 配置',description:'模型服务与密钥',icon:Database,visible:bossView},{id:'integrations',label:'飞书与数据集成',description:'连接、同步与导入',icon:Link2,visible:bossView},{id:'logs',label:'操作日志',description:'配置变更与操作记录',icon:Activity,visible:bossView},{id:'activity',label:'访问统计',description:'团队使用情况',icon:Activity,visible:bossView}]},
+      ].filter(group=>group.items.some(item=>item.visible)).map(group=><div className="settings-nav-group" key={group.label}><span className="settings-nav-group-label">{group.label}</span>{group.items.filter(item=>item.visible).map(({id,label,description,icon:Icon})=><button type="button" key={id} className={settingsTab===id?'is-active':''} aria-current={settingsTab===id?'page':undefined} onClick={()=>setSettingsTab(id)}><Icon size={17}/><span><strong>{label}</strong><small>{description}</small></span><span className="settings-nav-arrow">›</span></button>)}</div>)}
+      </nav>
+      <div className="settings-content">
+      {settingsTab==='overview'&&<div className="settings-overview"><section className="settings-quick-actions" aria-label="常用设置">{[{id:'organization',title:'管理组织',text:'设置部门与负责人',icon:UsersRound},{id:'rules',title:'调整评分规则',text:'配置下个周期的权重',icon:CheckCheck},{id:'ai',title:'接入 AI',text:'配置模型与服务密钥',icon:Database}].map(({id,title,text,icon:Icon})=><button key={id} type="button" onClick={()=>setSettingsTab(id)}><span className="settings-quick-icon"><Icon size={20}/></span><strong>{title}</strong><small>{text}</small><span className="settings-quick-arrow">↗</span></button>)}</section>
+        <section className="settings-summary-grid">{[
+          ['在职员工',managedEmployees.filter(e=>e.active).length,'员工管理','people'],
+          ['协作评分关系',scoring360Config?.assignments.length??'—','管理评分任务','scoring'],
+          ['待完成评分人员',scoring360ReminderStatus?.pending?.length??'—','跟进本轮进度','scoring'],
+        ].map(([label,value,caption,target])=><button className="v2-card settings-summary" type="button" key={label} onClick={()=>setSettingsTab(String(target))}><span>{label}</span><strong>{value}<small>{label==='协作评分关系'?'条':'人'}</small></strong><p>{caption} →</p></button>)}</section>
+        <section className="v2-card"><div className="v2-card-head"><div><span className="v2-eyebrow"><Database size={14}/>当前环境</span><h3 className="v2-card-title">运行状态与服务连接</h3><p className="v2-card-sub">展示真实配置状态。未接入的服务会明确标记，不会伪造连接或发送记录。</p></div><button type="button" className="secondary-button" onClick={()=>void loadRuntimeStatus()}>刷新状态</button></div>
+        {runtimeError?<div className="pf-error" role="alert">{runtimeError}</div>:runtimeStatus?<><div className="settings-status-list">{runtimeStatus.services.map((service:any)=><div key={service.name}><span className={`settings-status-dot ${service.ready?'is-ready':''}`}/><div><strong>{service.name}</strong><p>{service.description}</p></div><span className={`pf-status ${service.ready?'is-confirmed':''}`}>{service.label}</span></div>)}</div><p className="settings-environment-note">{runtimeStatus.demoData?'当前为虚构开发数据，可切换老板、管理员和员工视角验证流程。':'当前使用已配置的数据源。'} 负责人或老板30%与同事互评70%全部完成后自动发布；周报及时率独立统计。</p></>:<ResultEmpty title="正在读取运行状态" description="服务连接与当前数据来源将在这里显示。"/>}
+        </section>
+        <section className="v2-card settings-guide"><h3 className="v2-card-title">从这里开始</h3><div><p><strong>01 · 确认团队</strong><span>在「组织与部门」同步飞书负责人，在「员工管理」检查在职人员。</span></p><p><strong>02 · 检查评分关系</strong><span>在「协作评分关系」配置谁给谁评分，并查看未完成任务。</span></p><p><strong>03 · 查看结果</strong><span>负责人或老板30%与同事互评70%全部完成后自动发布；周报质量与及时性异常在评分工作台核实。</span></p></div></section>
+      </div>}
+      <section className="settings-grid" data-settings-tab={settingsTab}>
+      {["rules","ai","cycles","logs"].includes(settingsTab)&&<SystemConfiguration section={settingsTab as "rules"|"ai"|"cycles"|"logs"}/>}
       {bossView ? (
         <>
-      <article className="panel">
+      <article className="panel" data-settings-group="permissions" hidden={settingsTab !== "permissions"}>
         <div className="panel-heading compact">
           <div>
             <span className="section-label">SSO</span>
@@ -695,13 +696,14 @@ export function SettingsPage({ access }: SettingsPageProps) {
           </div>
         </div>
         <div className="permission-list">
-          <div><strong>员工</strong><span>查看自己的周报、成长报告和个人任务。</span></div>
-          <div><strong>同部门成员</strong><span>查看部门内公开摘要、优秀范例和质量排行。</span></div>
-          <div><strong>Leader</strong><span>查看自己、平级汇总和下属明细。</span></div>
-          <div><strong>老板视角</strong><span>查看全公司组织雷达、P0/P1 队列、必读周报、外部链接和系统设置。</span></div>
+          <div><strong>员工</strong><span>查看本人自动生成的周报质量分、提交统计，以及全部评分完成后发布的月度综合分。</span></div>
+
+          <div><strong>管理员</strong><span>拥有与老板相同的管理功能，额外查看本人的分数、周报和成长记录。</span></div>
+          <div><strong>评分人</strong><span>仅在评分工作台完成本人分配到的评分任务。</span></div>
+          <div><strong>老板视角</strong><span>查看全公司经营看板、组织趋势、任务和月度会议，并管理角色授权。</span></div>
         </div>
       </article>
-      <article className="panel boss-access-panel">
+      <article className="panel boss-access-panel" data-settings-group="permissions" hidden={settingsTab !== "permissions"}>
         <div className="panel-heading compact">
           <div>
             <span className="section-label">Boss View</span>
@@ -709,12 +711,12 @@ export function SettingsPage({ access }: SettingsPageProps) {
           </div>
           <span className="boss-access-count">已授权 {bossViewMembers.length} 人</span>
         </div>
-        <p className="boss-access-copy">勾选后，该同事在成长 OS 内获得与老板等同的内容视角。当前不做更细的内容权限切分，适合管理岗和后备合伙人共用完整经营上下文。</p>
+        <p className="boss-access-copy">勾选后授予老板视角，可查看公司经营看板并维护角色授权。管理员请在下方单独授权。</p>
         <div className="boss-member-grid">
           {bossViewCandidates().map((member) => {
-            const checked = bossViewMembers.some((item) => item.openId === member.openId);
+            const checked = bossViewMembers.some((item) => item.userId === member.userId);
             return (
-              <label className={`boss-member-option ${checked ? "is-selected" : ""}`} key={member.openId}>
+              <label className={`boss-member-option ${checked ? "is-selected" : ""}`} key={member.userId}>
                 <input
                   type="checkbox"
                   checked={checked}
@@ -733,73 +735,46 @@ export function SettingsPage({ access }: SettingsPageProps) {
             {bossViewState === "saving" ? "保存中" : "保存老板视角名单"}
           </button>
           {bossViewState === "saved" ? <span className="settings-success">已保存，刷新页面后角色会同步为老板视角。</span> : null}
-          {bossViewState === "error" ? <span className="settings-error">保存失败，请确认当前账号有老板视角权限。</span> : null}
+          {bossViewState === "error" ? <span className="settings-error">保存失败，请确认当前账号有管理视角权限。</span> : null}
         </div>
       </article>
-      <article className="panel boss-access-panel">
-        <div className="panel-heading compact">
-          <div>
-            <span className="section-label">Admin Roles</span>
-            <h2>协同360与人员管理员</h2>
-          </div>
-          <span className="boss-access-count">已授权 {scoring360AdminMembers.length} 人</span>
-        </div>
-        <p className="boss-access-copy">该角色可以维护在职花名册、评分关系并发送评分提醒，但不会因此获得老板驾驶舱或全公司周报视角。</p>
-        <div className="boss-member-grid">
-          {(managedEmployees.length ? managedEmployees.filter((employee) => employee.active) : bossViewCandidates()).map((member) => {
-            const candidate = { openId: member.openId, name: member.name, department: member.department };
-            const checked = scoring360AdminMembers.some((item) => item.openId === candidate.openId);
-            return (
-              <label className={`boss-member-option ${checked ? "is-selected" : ""}`} key={candidate.openId}>
-                <input type="checkbox" checked={checked} onChange={() => toggleScoring360AdminMember(candidate)} />
-                <span><strong>{candidate.name}</strong><small>{candidate.department || "未填部门"}</small></span>
-              </label>
-            );
-          })}
-        </div>
-        <div className="boss-access-actions">
-          <button className="primary-button" type="button" onClick={saveScoring360AdminMembers} disabled={scoring360AdminState === "saving"}>
-            {scoring360AdminState === "saving" ? "保存中" : "保存管理员名单"}
-          </button>
-          {scoring360AdminState === "saved" ? <span className="settings-success">管理员权限已保存。</span> : null}
-          {scoring360AdminState === "error" ? <span className="settings-error">保存失败，请确认当前账号拥有老板视角。</span> : null}
-        </div>
+      <article className="panel boss-access-panel" data-settings-group="permissions" hidden={settingsTab!=="permissions"}>
+       <div className="panel-heading compact"><div><span className="section-label">Administrator</span><h2>管理员授权名单</h2></div><span>已授权 {adminMembers.length} 人</span></div>
+       <p className="boss-access-copy">管理员使用自己的飞书员工身份，拥有完整管理功能，并额外保留个人分数、周报和评分任务。</p>
+       <div className="boss-member-grid">{bossViewCandidates().map(member=><label className="boss-member-option" key={member.userId}><input type="checkbox" checked={adminMembers.some(m=>m.userId===member.userId)} onChange={()=>{setAdminState('idle');setAdminMembers(ms=>ms.some(m=>m.userId===member.userId)?ms.filter(m=>m.userId!==member.userId):[...ms,member]);}}/><span><strong>{member.name}</strong><small>{member.department}</small></span></label>)}</div>
+       <div className="boss-access-actions"><button className="primary-button" disabled={adminState==='saving'} onClick={()=>void saveAdminMembers()}>保存管理员名单</button>{adminState==='saved'&&<span className="settings-success">管理员权限已保存。</span>}{adminState==='error'&&<span className="settings-error">保存失败，请重试。</span>}</div>
       </article>
+
+
         </>
       ) : null}
+      {canManagePersonnel && settingsTab === "organization" && <DepartmentManagement/>}
       {canManagePersonnel ? (
-      <article className="panel personnel-admin-panel">
+      <article className="panel personnel-admin-panel" data-settings-group="people" hidden={settingsTab !== "people"}>
         <div className="panel-heading compact">
           <div>
             <span className="section-label">Active Roster</span>
-            <h2>协同360在职花名册</h2>
+            <h2>飞书 SSO 员工花名册</h2>
           </div>
           <span className="scoring360-live-badge">在职 {managedEmployees.filter((employee) => employee.active).length} 人</span>
         </div>
-        <p className="boss-access-copy">停用人员不再进入新评分周期和提醒；既有评分与历史结果继续保留。新增人员需要填写飞书 open_id，避免同名误配。</p>
-        <div className="personnel-admin-form">
-          <input value={employeeDraft.name} onChange={(event) => setEmployeeDraft((current) => ({ ...current, name: event.target.value }))} placeholder="姓名" />
-          <input value={employeeDraft.openId} onChange={(event) => setEmployeeDraft((current) => ({ ...current, openId: event.target.value }))} placeholder="飞书 open_id" />
-          <input value={employeeDraft.department} onChange={(event) => setEmployeeDraft((current) => ({ ...current, department: event.target.value }))} placeholder="部门" />
-          <button className="primary-button" type="button" onClick={addManagedEmployee} disabled={managedEmployeeState === "saving"}>新增/恢复在职</button>
-        </div>
+        <p className="boss-access-copy">新员工首次通过飞书 SSO 登录后自动加入花名册；后续登录同步姓名、邮箱和可读取的部门信息。管理员只需停用账号，历史周报和评分继续保留，停用后登录不会自动恢复。</p>
+        {employeeMessage&&<p role={managedEmployeeState === "error"?"alert":"status"} className={managedEmployeeState === "error"?"settings-error":"settings-success"}>{employeeMessage}</p>}
         <div className="personnel-admin-list">
           {managedEmployees.map((employee) => (
-            <div className={employee.active ? "" : "is-inactive"} key={employee.openId}>
-              <span><strong>{employee.name}</strong><small>{employee.department || "未填部门"} · {employee.openId}</small></span>
-              <button className="secondary-button" type="button" onClick={() => setManagedEmployeeActive(employee, !employee.active)} disabled={managedEmployeeState === "saving"}>
-                {employee.active ? "停用" : "恢复"}
+            <div className={employee.active ? "" : "is-inactive"} key={employee.userId}>
+              <span><strong>{employee.name}</strong><small>{employee.department || "部门待同步"} · user_id：{employee.userId}</small>{employee.lastLoginAt?<small>最近 SSO 登录：{employee.lastLoginAt}</small>:<small>现有导入记录 · 首次 SSO 登录后同步</small>}{employee.syncNote&&<small>{employee.syncNote}</small>}</span>
+              <button className="secondary-button" type="button" onClick={() => setManagedEmployeeActive(employee, false)} disabled={managedEmployeeState === "saving" || !employee.active}>
+                {employee.active ? "停用" : "已停用"}
               </button>
             </div>
           ))}
         </div>
-        {managedEmployeeState === "saved" ? <p className="settings-success">花名册已更新，并同步影响当前评分关系和提醒对象。</p> : null}
-        {managedEmployeeState === "error" ? <p className="settings-error">花名册更新失败。</p> : null}
       </article>
       ) : null}
       {canManageScoring360 ? (
         <>
-      <article className="panel scoring360-config-panel">
+      <article className="panel scoring360-config-panel" data-settings-group="scoring" hidden={settingsTab !== "scoring"}>
         <div className="panel-heading compact">
           <div>
             <span className="section-label">Collaboration 360</span>
@@ -811,29 +786,28 @@ export function SettingsPage({ access }: SettingsPageProps) {
         </div>
         <div className="scoring360-config-copy">
           <strong>{scoring360Config?.cycle?.label || "当前评分周期"}</strong>
-          <span>{scoring360Config?.diagnosis?.note || "当前页面用于维护谁给谁打分；老板视角或协同360管理员可见。"}</span>
+          <span>{scoring360Config?.diagnosis?.note || "当前页面用于维护谁给谁打分；管理视角或协同360管理员可见。"}</span>
         </div>
-        <div className="scoring360-config-form">
-          <datalist id="scoring360-employee-options">
-            {employeeOptions.map((name) => <option value={name} key={name} />)}
-          </datalist>
+        <div className="scoring360-reminder-actions"><button type="button" className="secondary-button" disabled={scoring360State==='saving'} onClick={()=>void prepareScoringCycle('prepare')}>创建/切换本月评分周期</button><button type="button" className="primary-button" disabled={scoring360State==='saving'} onClick={()=>void prepareScoringCycle('open')}>开放本月评分（不发消息）</button></div><p className="pf-caption">同事互评占70%，评分关系由管理者手动指定；负责人或老板评分占30%。先创建周期、配置关系，再开放评分。</p><div className="scoring360-config-form">
           <label>
             <span>被评分人</span>
-            <input
-              list="scoring360-employee-options"
+            <AppSelect
+              aria-label="被评分人"
               value={scoring360Evaluee}
-              onChange={(event) => setScoring360Evaluee(event.target.value)}
+              onValueChange={setScoring360Evaluee}
               placeholder="输入或选择姓名"
-            />
+              searchable searchPlaceholder="搜索姓名…"
+            >{employeeChoices.map(e=><option key={e.userId} value={e.userId}>{e.name} · {e.department}</option>)}</AppSelect>
           </label>
           <label>
             <span>评分人</span>
-            <input
-              list="scoring360-employee-options"
+            <AppSelect
+              aria-label="评分人"
               value={scoring360Evaluator}
-              onChange={(event) => setScoring360Evaluator(event.target.value)}
+              onValueChange={setScoring360Evaluator}
               placeholder="输入或选择姓名"
-            />
+              searchable searchPlaceholder="搜索姓名…"
+            >{employeeChoices.map(e=><option key={e.userId} value={e.userId}>{e.name} · {e.department}</option>)}</AppSelect>
           </label>
           <button className="primary-button" type="button" onClick={addScoring360Assignment} disabled={scoring360State === "saving"}>
             添加评分关系
@@ -844,8 +818,9 @@ export function SettingsPage({ access }: SettingsPageProps) {
           <button className="secondary-button" type="button" onClick={loadScoring360Config}>刷新</button>
         </div>
         <div className="scoring360-assignment-groups">
+          {!scoring360Config?.assignments.length ? <p className="settings-hint">暂无评分关系。请先确认在职花名册，再添加评分人与被评分人。</p> : null}
           {groupScoring360Assignments(scoring360Config?.assignments || []).slice(0, 30).map((group) => (
-            <div className="scoring360-assignment-group" key={group.evalueeName}>
+            <div className="scoring360-assignment-group" key={group.evalueeUserId}>
               <div>
                 <strong>{group.evalueeName}</strong>
                 <span>{group.assignments.length} 位评分人</span>
@@ -868,37 +843,37 @@ export function SettingsPage({ access }: SettingsPageProps) {
             </div>
           ))}
         </div>
-        {scoring360State === "saved" ? <p className="settings-success">评分关系已更新，会立即影响“我要评分”的任务列表。</p> : null}
-        {scoring360Error ? <p className="settings-error">协同360配置失败：{scoring360Error}</p> : null}
+        {scoring360Error ? <p role="alert" className="settings-error">{scoring360Error}</p> : null}
+        {assignmentMessage ? <p role="status" className="settings-success">{assignmentMessage}</p> : null}
       </article>
-      <article className="panel scoring360-reminder-panel">
+      <article className="panel scoring360-reminder-panel" data-settings-group="scoring" hidden={settingsTab !== "scoring"}>
         <div className="panel-heading compact">
           <div>
             <span className="section-label">360 Cycle</span>
             <h2>协同360评分任务提醒</h2>
           </div>
           <span className="scoring360-live-badge">
-            {scoring360ReminderStatus?.launchMode === "scheduled" && scoring360ReminderStatus?.enabled ? "定时自动" : "管理员手动"}
+            管理员手动通知
           </span>
         </div>
         <div className="scoring360-config-copy">
           <strong>{scoring360ReminderStatus?.cycle?.label || "当前周期"}</strong>
           <span>
-            计划每月 {scoring360ScheduleDays} 日开启；发起后立即通知，24 小时仍未完成则补提醒，48 小时截止。当前模式：{scoring360ReminderStatus?.launchMode === "scheduled" ? "服务器定时" : "管理员确认后手动发送"}。
+            本区用于手动预览和发送同事互评通知。每月最后两个工作日的自动提醒，请前往「周期与提醒」配置；自动提醒同时覆盖负责人月评与老板评分。
           </span>
         </div>
         <div className="scoring360-reminder-actions">
           <button className="secondary-button" type="button" onClick={() => sendScoring360Reminder("launch", true)} disabled={scoring360ReminderState === "running"}>
-            dry-run 预览首轮提醒
+            预览首轮提醒（不发送）
           </button>
           <button className="secondary-button" type="button" onClick={() => sendScoring360Reminder("followup", true)} disabled={scoring360ReminderState === "running"}>
-            dry-run 预览24小时补提醒
+            预览补提醒（不发送）
           </button>
           <button className="primary-button" type="button" onClick={() => sendScoring360Reminder("launch", false)} disabled={scoring360ReminderState === "running"}>
             发起本月评分并发送首轮提醒
           </button>
           <button className="primary-button" type="button" onClick={() => sendScoring360Reminder("followup", false)} disabled={scoring360ReminderState === "running"}>
-            批量发送24小时补提醒
+            手动发送未评分提醒
           </button>
           <button className="secondary-button" type="button" onClick={loadScoring360ReminderStatus}>
             刷新
@@ -909,7 +884,7 @@ export function SettingsPage({ access }: SettingsPageProps) {
             <div className={item.deliverable ? "" : "is-warning"} key={item.evaluatorName}>
               <strong>{item.evaluatorName}</strong>
               <span>{item.pendingCount}/{item.totalCount} 未评 · {item.department || "未填部门"}</span>
-              <small>{item.deliverable ? item.pendingNames.join("、") : "缺少 open_id，暂不能飞书提醒"}</small>
+              <small>{item.deliverable ? item.pendingNames.join("、") : "缺少 user_id，暂不能飞书提醒"}</small>
               <button
                 className="secondary-button scoring360-person-reminder"
                 type="button"
@@ -937,7 +912,7 @@ export function SettingsPage({ access }: SettingsPageProps) {
       ) : null}
       {bossView ? (
         <>
-      <article className="panel roster-audit-panel">
+      <article className="panel roster-audit-panel" data-settings-group="people" hidden={settingsTab !== "people"}>
         <div className="panel-heading compact">
           <div>
             <span className="section-label">Roster Audit</span>
@@ -949,7 +924,7 @@ export function SettingsPage({ access }: SettingsPageProps) {
           <div><strong>{rosterAudit?.counts?.latestReports ?? "-"}</strong><span>最近周报人数</span></div>
           <div><strong>{rosterAudit?.counts?.newInReports ?? "-"}</strong><span>周报新人</span></div>
           <div><strong>{rosterAudit?.counts?.missingLatestReport ?? "-"}</strong><span>活跃但缺周报</span></div>
-          <div><strong>{rosterAudit?.counts?.missingOpenId ?? "-"}</strong><span>缺 open_id</span></div>
+          <div><strong>{rosterAudit?.counts?.missingUserId ?? "-"}</strong><span>缺 user_id</span></div>
         </div>
         <div className="roster-audit-columns">
           <div>
@@ -965,7 +940,7 @@ export function SettingsPage({ access }: SettingsPageProps) {
         </div>
         <p className="settings-hint">{rosterAudit?.note || "后续每周一同步后会检查花名册变化，避免离职同事继续进提醒列表，也避免新入职人员漏进成长 OS。"}</p>
       </article>
-      <article className="panel account-activity-panel">
+      <article className="panel account-activity-panel" data-settings-group="activity" hidden={settingsTab !== "activity"}>
         <div className="panel-heading compact">
           <div>
             <span className="section-label">Account Activity</span>
@@ -987,7 +962,7 @@ export function SettingsPage({ access }: SettingsPageProps) {
         </div>
         <div className="activity-analysis-copy">
           <strong>管理解释</strong>
-          <span>没有访问记录不直接等于工作差，但如果长期无活跃、无互动、无追问，再叠加周报质量和实际产出偏弱，就应视为对复盘成长的形式化倾向。</span>
+          <span>这里只记录实际访问与互动，随机周报不会自动生成登录记录。访问次数不直接等同工作表现，也不自动决定绩效或奖惩。</span>
         </div>
         <div className="activity-table-wrap">
           <table className="activity-table">
@@ -1006,7 +981,7 @@ export function SettingsPage({ access }: SettingsPageProps) {
                 .filter((row) => row.isReminderRecipient)
                 .slice(0, 32)
                 .map((row) => (
-                  <tr className={row.status === "no_record" ? "is-silent" : row.status === "engaged" ? "is-engaged" : ""} key={row.openId || row.name}>
+                  <tr className={row.status === "no_record" ? "is-silent" : row.status === "engaged" ? "is-engaged" : ""} key={row.userId || row.name}>
                     <td>
                       <strong>{row.name}</strong>
                       <span>{row.department || "未填部门"}</span>
@@ -1023,7 +998,7 @@ export function SettingsPage({ access }: SettingsPageProps) {
         </div>
         <p className="settings-hint">口径：登录=SSO成功次数；会话=已有登录态打开成长OS；心跳=页面可见时的持续活跃；访问=栏目切换或页面打开；互动=评论、点赞、追问。</p>
       </article>
-      <article className="panel external-access-panel">
+      <article className="panel external-access-panel" data-settings-group="permissions" hidden={settingsTab !== "permissions"}>
         <div className="panel-heading compact">
           <div>
             <span className="section-label">External Access</span>
@@ -1032,7 +1007,7 @@ export function SettingsPage({ access }: SettingsPageProps) {
         </div>
         <div className="external-access-copy">
           <strong>绕过 SSO，但不绕过过期控制</strong>
-          <span>用于公司教练、外部顾问临时查看老板视角。链接按 token 访问，服务器只保存 hash，到期后自动失效。</span>
+          <span>用于公司教练、外部顾问临时查看管理视角。链接按 token 访问，服务器只保存 hash，到期后自动失效。</span>
         </div>
         <div className="external-link-form">
           <label>
@@ -1041,12 +1016,12 @@ export function SettingsPage({ access }: SettingsPageProps) {
           </label>
           <label>
             <span>有效期</span>
-            <select value={ttlHours} onChange={(event) => setTtlHours(event.target.value)}>
+            <AppSelect value={ttlHours} onValueChange={setTtlHours} aria-label="链接有效期">
               <option value="24">24 小时</option>
               <option value="72">3 天</option>
               <option value="168">7 天</option>
               <option value="720">30 天</option>
-            </select>
+            </AppSelect>
           </label>
           <button className="primary-button" type="button" onClick={createExternalLink} disabled={externalLinkState === "creating"}>
             {externalLinkState === "creating" ? "生成中" : "生成访问链接"}
@@ -1075,7 +1050,8 @@ export function SettingsPage({ access }: SettingsPageProps) {
           )}
         </div>
       </article>
-      <article className="panel">
+      {settingsTab === "integrations" && <FeishuReportConfiguration />}
+      <article className="panel" data-settings-group="integrations" hidden={settingsTab !== "integrations"}>
         <div className="panel-heading compact">
           <div>
             <span className="section-label">Data Ingest</span>
@@ -1083,13 +1059,13 @@ export function SettingsPage({ access }: SettingsPageProps) {
           </div>
         </div>
         <div className="pipeline-list">
-          <div><span>1</span><strong>飞书汇报导出 Excel</strong><p>当前 MVP 入口，稳定可控。</p></div>
-          <div><span>2</span><strong>Chrome 自动导出</strong><p>在汇报 API 不成熟时作为过渡自动化。</p></div>
-          <div><span>3</span><strong>飞书汇报接口</strong><p>接口可用后直接同步，保留导入兜底。</p></div>
-          <div><span>4</span><strong>飞书任务回写</strong><p>任务状态进入下周分析，形成跨周闭环。</p></div>
+          <div><span>1</span><strong>飞书汇报导出 Excel</strong><p>保留 Excel / CSV 导入作为补交入口。</p></div>
+          <div><span>2</span><strong>应用身份读取</strong><p>使用已授权的飞书汇报查询接口，自动翻页。</p></div>
+          <div><span>3</span><strong>飞书汇报接口</strong><p>匹配指定模板与规则，按员工和周次幂等更新。</p></div>
+          <div><span>4</span><strong>Kimi 周报分析</strong><p>候选质量分、点评、风险和行动建议持久化，供个人和管理页面使用。</p></div>
         </div>
       </article>
-      <article className="panel lark-sync-panel">
+      <article className="panel lark-sync-panel" data-settings-group="integrations" hidden={settingsTab !== "integrations"}>
         <div className="panel-heading compact">
           <div>
             <span className="section-label">Lark Report Sync</span>
@@ -1100,14 +1076,14 @@ export function SettingsPage({ access }: SettingsPageProps) {
           </span>
         </div>
         <div className="sync-flow-copy">
-          <strong>一键完成：拉取汇报 → 合并历史 → Kimi 预处理 → 生成页面</strong>
-          <span>远端服务器需要完成 lark-cli 的 report:task:readonly 授权。手动未同步时，可开启每周一早上兜底自动同步。</span>
+          <strong>完整流程：读取飞书汇报 → 保存原文 → Kimi 评分 → 自动更新月度结果</strong>
+          <span>自动收集频率由上方设置管理，也可以立即手动同步。首次手动同步按配置日期读取；未填写则读取本月。未变化的 AI 分析会复用，失败记录下一轮自动重试。</span>
         </div>
         <div className="sync-status-box">
           <div>
             <strong>{syncStatus?.message || "尚未运行飞书汇报同步"}</strong>
             <span>
-              {syncStatus?.period?.label ? `${syncStatus.period.label} ${syncStatus.period.range || ""}` : "默认同步上一工作周"}
+              {syncStatus?.period?.label ? `${syncStatus.period.label} ${syncStatus.period.range || ""}` : "按已配置的首次同步日期至今天"}
               {syncStatus?.rowCount ? ` · ${syncStatus.rowCount} 条` : ""}
             </span>
           </div>
@@ -1129,7 +1105,7 @@ export function SettingsPage({ access }: SettingsPageProps) {
         {syncError ? <p className="settings-error">同步启动失败：{syncError}</p> : null}
         {syncStatus?.ok === false ? <p className="settings-error">最近一次同步失败：{syncStatus.message}</p> : null}
       </article>
-      <article className="panel reminder-outbox-panel">
+      <article className="panel reminder-outbox-panel" data-settings-group="integrations" hidden={settingsTab !== "integrations"}>
         <div className="panel-heading compact">
           <div>
             <span className="section-label">Message Outbox</span>
@@ -1143,7 +1119,7 @@ export function SettingsPage({ access }: SettingsPageProps) {
         </div>
         <div className="reminder-outbox-list">
           {(weeklyReminderStatus?.outbox?.items || []).length === 0 ? (
-            <p>暂无预生成文案。每次飞书汇报同步完成后，系统会自动生成周五提醒和周一更新通知 outbox。</p>
+            <p>暂无预生成文案。当前周报同步不会自动向员工发送消息。</p>
           ) : (
             (weeklyReminderStatus?.outbox?.items || []).map((item) => (
               <article className="reminder-outbox-row" key={item.id}>
@@ -1159,7 +1135,7 @@ export function SettingsPage({ access }: SettingsPageProps) {
           )}
         </div>
       </article>
-      <article className="panel import-mode-panel">
+      <article className="panel import-mode-panel" data-settings-group="integrations" hidden={settingsTab !== "integrations"}>
         <div className="panel-heading compact">
           <div>
             <span className="section-label">Late Submission</span>
@@ -1222,7 +1198,7 @@ export function SettingsPage({ access }: SettingsPageProps) {
         ) : null}
         {importError ? <p className="settings-error">导入失败：{importError}</p> : null}
       </article>
-      <article className="panel storage-panel">
+      <article className="panel storage-panel" data-settings-group="integrations" hidden={settingsTab !== "integrations"}>
         <div className="panel-heading compact">
           <div>
             <span className="section-label">Storage</span>
@@ -1230,14 +1206,14 @@ export function SettingsPage({ access }: SettingsPageProps) {
           </div>
         </div>
         <div className="storage-list">
-          <div><strong>当前 ECS 状态</strong><span>已只读检查：没有 Postgres/MySQL 服务与 5432/3306 监听，现有服务器主要是 Nginx + PM2 + Node。</span></div>
+          <div><strong>当前部署</strong><span>本机 OrbStack 容器运行 Node API；SQLite 数据库和上传文件使用持久化数据卷。</span></div>
           <div><strong>SQL 必须要</strong><span>周报、评论、点赞、任务、贡献度排行、权限和幂等导入都需要结构化事务。</span></div>
           <div><strong>推荐 RDS PostgreSQL</strong><span>生产环境优先用阿里云 RDS 自动备份；预算敏感时再自建 Postgres，并把备份推到 OSS。</span></div>
           <div><strong>对象存储</strong><span>原始 Excel、导出 HTML、附件、分析报告快照放 OSS，不直接塞进数据库。</span></div>
           <div><strong>向量/全文检索</strong><span>后续用 pgvector 或独立向量库保存周报片段 embedding，供 AI 上下文召回。</span></div>
         </div>
       </article>
-      <article className="panel storage-panel">
+      <article className="panel storage-panel" data-settings-group="integrations" hidden={settingsTab !== "integrations"}>
         <div className="panel-heading compact">
           <div>
             <span className="section-label">Feishu Task</span>
@@ -1246,12 +1222,12 @@ export function SettingsPage({ access }: SettingsPageProps) {
         </div>
         <div className="storage-list">
           <div><strong>最小闭环权限</strong><span>task:task:write、task:task:read、task:tasklist:write、task:tasklist:read。</span></div>
-          <div><strong>人员分配</strong><span>需要通讯录 open_id 映射；如果要按姓名分配，需读取联系人/组织架构权限。</span></div>
+          <div><strong>人员分配</strong><span>需要通讯录 user_id 映射；如果要按姓名分配，需读取联系人/组织架构权限。</span></div>
           <div><strong>创建策略</strong><span>AI 只生成候选任务，老板或员工勾选后再批量创建，避免把噪声写入飞书。</span></div>
-          <div><strong>幂等保护</strong><span>每条任务使用 report_week + employee_open_id + task_id 作为幂等 key，重复导入不会重复建任务。</span></div>
+          <div><strong>幂等保护</strong><span>每条任务使用 report_week + employee_user_id + task_id 作为幂等 key，重复导入不会重复建任务。</span></div>
         </div>
       </article>
-      <article className="panel">
+      <article className="panel" data-settings-group="integrations" hidden={settingsTab !== "integrations"}>
         <div className="panel-heading compact">
           <div>
             <span className="section-label">Model Routing</span>
@@ -1264,7 +1240,7 @@ export function SettingsPage({ access }: SettingsPageProps) {
           <div><strong>Gemini</strong><span>可选备份：后续只在网络与合规稳定时用于交叉评审。</span></div>
         </div>
       </article>
-      <article className="panel memory-panel">
+      <article className="panel memory-panel" data-settings-group="integrations" hidden={settingsTab !== "integrations"}>
         <div className="panel-heading compact">
           <div>
             <span className="section-label">AI Memory Pipeline</span>
@@ -1299,6 +1275,8 @@ export function SettingsPage({ access }: SettingsPageProps) {
         </>
       ) : null}
     </section>
+      </div></div>
+    </div>
   );
 }
 
@@ -1317,9 +1295,9 @@ function formatDateTime(value?: string) {
 function bossViewCandidates(): BossViewMember[] {
   const priority = new Map<string, number>();
   return appData.employeeSummary
-    .filter((employee) => employee.openId)
+    .filter((employee) => employee.userId)
     .map((employee) => ({
-      openId: employee.openId,
+      userId: employee.userId,
       name: employee.name,
       department: employee.department,
     }))
@@ -1334,11 +1312,11 @@ function bossViewCandidates(): BossViewMember[] {
 function groupScoring360Assignments(assignments: Scoring360ConfigAssignment[]) {
   const groups = new Map<string, Scoring360ConfigAssignment[]>();
   for (const assignment of assignments) {
-    if (!groups.has(assignment.evalueeName)) groups.set(assignment.evalueeName, []);
-    groups.get(assignment.evalueeName)!.push(assignment);
+    if (!groups.has(assignment.evalueeUserId)) groups.set(assignment.evalueeUserId, []);
+    groups.get(assignment.evalueeUserId)!.push(assignment);
   }
-  return Array.from(groups.entries()).map(([evalueeName, groupAssignments]) => ({
-    evalueeName,
+  return Array.from(groups.entries()).map(([evalueeUserId, groupAssignments]) => ({
+    evalueeUserId, evalueeName:groupAssignments[0].evalueeName,
     assignments: groupAssignments,
   }));
 }

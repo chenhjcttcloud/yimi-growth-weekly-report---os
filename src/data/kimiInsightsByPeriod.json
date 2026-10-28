@@ -43,7 +43,7 @@
         "title": "建立需求评审前置清单",
         "whyBoss": "需要产品和运营共同采用。",
         "owner": "林清",
-        "ownerOpenId": "demo_open_id_001",
+        "ownerUserId": "demo_user_id_001",
         "dueDate": "2026-01-16",
         "evidence": "匿名演示周报。"
       }

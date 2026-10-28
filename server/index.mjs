@@ -1,7 +1,21 @@
+import {createEmployeeIdentity,resolveFeishuLogin} from './employee-identity.mjs';
+import {createFeishuDepartmentSync} from './feishu-department-sync.mjs';
+import {createLiveReportSync} from './live-report-sync.mjs';
+import { createSystemSettings } from './system-settings.mjs';
+import { createDepartments } from './departments.mjs';
+import { createPersonalScoringReminders } from './personal-scoring-reminders.mjs';
+import { createSsoRoster } from './sso-roster.mjs';
+import { createPersonalWorkspace } from "./personal-workspace.mjs";
+import {createManagerReviews} from './manager-reviews.mjs';
+import {createMonthEndScoreReminders} from './month-end-score-reminders.mjs';
+import {createChinaWorkCalendar} from './china-work-calendar.mjs';
+import {createReportAutomation} from './report-automation.mjs';
+import {weeklyReportSchedule,fridayOfWeek} from './weekly-report-schedule.mjs';
+import { createPerformance } from "./performance.mjs";
 import { createDecipheriv, createHash, createHmac, randomBytes, randomUUID } from "node:crypto";
 import { spawn, spawnSync } from "node:child_process";
 import { createReadStream, existsSync, readFileSync } from "node:fs";
-import { mkdir, readFile, stat, writeFile } from "node:fs/promises";
+import { mkdir, readFile, rename, stat, writeFile } from "node:fs/promises";
 import http from "node:http";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -22,8 +36,10 @@ const config = {
   port: Number(process.env.SERVER_PORT || process.env.PORT || 5174),
   baseUrl: (process.env.BASE_URL || `http://localhost:${process.env.SERVER_PORT || 5174}`).replace(/\/$/, ""),
   authMode: process.env.AUTH_MODE || "feishu",
+  devViewSwitchEnabled: process.env.AUTH_MODE === "mock" && process.env.DEV_VIEW_SWITCH_ENABLED === "true",
   sessionSecret: process.env.SESSION_SECRET || "dev-only-change-me",
   staticDir: path.resolve(rootDir, process.env.STATIC_DIR || "dist"),
+  dataDir: path.resolve(rootDir, process.env.APP_DATA_DIR || "src/data"),
   dbPath: path.resolve(rootDir, process.env.WEEKLY_REPORT_DB_PATH || "outputs/demo/weekly-report-os.sqlite"),
   uploadDir: path.resolve(rootDir, process.env.WEEKLY_REPORT_UPLOAD_DIR || "outputs/uploads"),
   feishuAppId: process.env.FEISHU_APP_ID || "",
@@ -34,7 +50,7 @@ const config = {
   taskDueMode: process.env.FEISHU_TASK_DUE_MODE || "none",
   companyChatId: process.env.FEISHU_COMPANY_CHAT_ID || "",
   companyChatName: process.env.FEISHU_COMPANY_CHAT_NAME || "公司全员群",
-  bossViewOpenIds: process.env.BOSS_VIEW_OPEN_IDS || "",
+  bossViewUserIds: process.env.BOSS_VIEW_USER_IDS || "",
   bossViewNames: process.env.BOSS_VIEW_NAMES || "",
   moonshotApiKey: process.env.MOONSHOT_API_KEY || process.env.KIMI_API_KEY || "",
   moonshotBaseUrl: stripTrailingSlash(process.env.MOONSHOT_BASE_URL || process.env.KIMI_BASE_URL || "https://api.moonshot.cn/v1"),
@@ -68,7 +84,7 @@ const config = {
   scoring360CurrentWeight: Number(process.env.SCORING360_CURRENT_WEIGHT || 0.7),
   scoring360ReminderIdentity: process.env.SCORING360_REMINDER_FEISHU_IDENTITY || "bot",
   scoring360ActiveDate: process.env.SCORING360_ACTIVE_DATE || "",
-  scoring360ConfigManagerOpenIds: process.env.SCORING360_CONFIG_MANAGER_OPEN_IDS || "",
+  scoring360ConfigManagerUserIds: process.env.SCORING360_CONFIG_MANAGER_USER_IDS || "",
   scoring360ConfigManagerNames: process.env.SCORING360_CONFIG_MANAGER_NAMES || "",
   scoring360LaunchMode: process.env.SCORING360_LAUNCH_MODE === "scheduled" ? "scheduled" : "manual",
   scoring360RosterExempt: process.env.SCORING360_ROSTER_EXEMPT || process.env.LARK_REPORT_AUTO_SYNC_EXEMPT || "",
@@ -85,27 +101,62 @@ const defaultBossViewMembers = [];
 
 const employeeDirectory = loadEmployeeDirectory();
 const larkReportSyncStatusPath = path.join(rootDir, "outputs/lark-report-sync-status.json");
-const scoring360DataPath = path.join(rootDir, "src", "data", "scoring360.json");
-const chinaWorkCalendar = loadChinaWorkCalendar();
+const scoring360DataPath = path.join(config.dataDir, "scoring360.json");
+let chinaWorkCalendar = loadChinaWorkCalendar();
 let larkReportSyncProcess = null;
 let lastAutoSyncKey = "";
 
 const bossAccessState = {
-  openIds: new Set(parseCsvList(config.bossViewOpenIds)),
+  userIds: new Set(parseCsvList(config.bossViewUserIds)),
   names: new Set(parseCsvList(config.bossViewNames)),
   members: [],
 };
 
 const scoring360AdminState = {
-  openIds: new Set(),
+  userIds: new Set(),
   names: new Set(),
   members: [],
 };
 
+const employeeIdentity=createEmployeeIdentity({query:querySqlRows,exec:execSql,sql:sqlValue,strict:config.authMode!=='mock'});
 await ensureDatabase();
+await employeeIdentity.load();
 await loadBossAccessState();
 await loadScoring360AdminState();
 await ensureScoring360SeedData();
+await refreshEmployeeDirectory();
+const syncSsoLogin=createSsoRoster({query:querySqlRows,exec:execSql,sql:sqlValue,getJson:feishuJson,registerIdentity:employeeIdentity.register});
+
+const systemSettings=createSystemSettings({query:querySqlRows,exec:execSql,sql:sqlValue,config});
+await systemSettings.initialize();
+const calendarUpdates=createChinaWorkCalendar({query:querySqlRows,exec:execSql,sql:sqlValue,bundled:loadChinaWorkCalendar(),onChange:value=>{chinaWorkCalendar=value;},enabled:process.env.CHINA_CALENDAR_AUTO_UPDATE_ENABLED!=='false'});
+await calendarUpdates.initialize();
+const liveReportSync=createLiveReportSync({query:querySqlRows,exec:execSql,sql:sqlValue,config,settings:systemSettings,calendar:()=>chinaWorkCalendar,refreshDirectory:refreshEmployeeDirectory,writeStatus:writeLarkReportSyncStatus,onComplete:()=>performance.overview()});
+if((await readLarkReportSyncStatus()).running)await writeLarkReportSyncStatus({ok:false,running:false,phase:'interrupted',message:'上次同步因服务重启中断，可点击同步继续；已保存的分析将复用。'});
+const feishuDepartmentSync=createFeishuDepartmentSync({query:querySqlRows,exec:execSql,sql:sqlValue,config});
+const departments=createDepartments({query:querySqlRows,exec:execSql,sql:sqlValue,employees:()=>loadManagedEmployees()});
+let organizationMutationRunning=false;
+const managerReviews=createManagerReviews({query:querySqlRows,exec:execSql,sql:sqlValue,organization:departments.overview,reports:()=>performance.reports(),isBossUserId:id=>bossAccessState.userIds.has(id)||(config.authMode==='mock'&&id==='mock_owner')});
+const performance = createPerformance({managerReviews,calendar:()=>chinaWorkCalendar,policyFor:systemSettings.policyFor,query: querySqlRows, exec: execSql, sql: sqlValue, readData: name => JSON.parse(readFileSync(path.join(config.dataDir, `${name}.json`), 'utf8'))});
+const reportAutomation=createReportAutomation({query:querySqlRows,exec:execSql,sql:sqlValue,getConfig:systemSettings.reportAutomationConfig,isRunning:()=>liveReportSync.isRunning(),start:options=>liveReportSync.start(options)});
+const personalScoringReminders=createPersonalScoringReminders({managerReviews,bossUserIds:()=>[...bossAccessState.userIds],policyFor:systemSettings.policyFor,query:querySqlRows,exec:execSql,sql:sqlValue,
+ enabled:Boolean(config.scoring360ReminderEnabled&&config.feishuAppId&&config.feishuAppSecret),
+ deliver:async(userId,text,id)=>{
+  const response=await feishuJson('/open-apis/im/v1/messages?receive_id_type=user_id',{method:'POST',token:await getFeishuTenantAccessToken(),body:{receive_id:userId,msg_type:'text',content:JSON.stringify({text}),uuid:id}});
+  if(!response.data?.message_id)throw Error('missing_message_id');
+  return response.data.message_id;
+ }});
+
+
+const monthEndScoreReminders=createMonthEndScoreReminders({query:querySqlRows,exec:execSql,sql:sqlValue,managerReviews,
+ bossMembers:()=>[...bossAccessState.userIds].map(userId=>({userId,name:bossAccessState.members.find(m=>m.userId===userId)?.name||userId})),
+ getSettings:systemSettings.monthlyReminderConfig,calendar:()=>chinaWorkCalendar,baseUrl:config.baseUrl,
+ deliver:async(userId,text,uuid)=>{
+  const response=await feishuJson('/open-apis/im/v1/messages?receive_id_type=user_id',{method:'POST',token:await getFeishuTenantAccessToken(),body:{receive_id:userId,msg_type:'text',content:JSON.stringify({text}),uuid}});
+  return response.data?.message_id;
+ }});
+
+const personalWorkspace = createPersonalWorkspace({calendar:()=>chinaWorkCalendar,policyFor:systemSettings.policyFor,performance,readData:name=>JSON.parse(readFileSync(path.join(config.dataDir,`${name}.json`),'utf8')),query:querySqlRows,exec:execSql,sql:sqlValue,config,askAi:callKimiFollowup,createTask:(task,user,session)=>createFeishuTask(normalizeTaskCandidate({...task,useDueDate:true},user),session)});
 
 const server = http.createServer(async (req, res) => {
   try {
@@ -120,14 +171,219 @@ server.listen(config.port, () => {
   console.log(`weekly-report-os server listening on ${config.port}`);
 });
 
-scheduleWeeklyLarkReportSync();
+scheduleAutomaticReportCollection();
 scheduleWeeklyGrowthReminder();
 scheduleWeeklyUpdateReminder();
-if (config.scoring360LaunchMode === "scheduled") scheduleScoring360Reminder();
+scheduleMonthEndScoreReminders();
 scheduleLarkAuthMonitor();
 
 async function route(req, res) {
   const url = new URL(req.url || "/", config.baseUrl);
+
+  if (url.pathname === '/api/dev/views') {
+    res.setHeader('cache-control', 'no-store');
+    if (!config.devViewSwitchEnabled) return sendJson(res,404,{ok:false,error:'not_found'});
+    const views = developmentViews(getSession(req)?.user);
+    if (req.method === 'GET') {
+      const session=getSession(req);
+      return sendJson(res,200,{ok:true,activeId:session?.devView?.id || 'boss',views:views.map(({user,...view})=>view)});
+    }
+    if (req.method === 'POST') {
+      const origin = req.headers.origin;
+      if (origin && new URL(origin).host !== req.headers.host) return sendJson(res,403,{ok:false,error:'invalid_origin'});
+      if (!String(req.headers['content-type']||'').startsWith('application/json')) return sendJson(res,415,{ok:false,error:'json_required'});
+      const body=await readJsonBody(req,{limitBytes:4096});
+      const view=views.find(v=>v.id===body.id);
+      if (!view) return sendJson(res,400,{ok:false,error:'invalid_view'});
+      setSession(res,{user:view.user,devView:{id:view.id,role:view.role},issuedAt:Date.now(),expiresAt:new Date(Date.now()+86400000).toISOString()},{maxAge:86400});
+      return sendJson(res,200,{ok:true});
+    }
+    return sendJson(res,405,{ok:false,error:'method_not_allowed'});
+  }
+
+  const sessionForPolicy = getSession(req);
+  // Normal logins have no server-side deadline. Renew the persistent browser
+  // cookie on activity, including usage heartbeats, and migrate old 7-day cookies.
+  if (sessionForPolicy && !isExternalSession(sessionForPolicy) && !sessionForPolicy.devView && url.pathname !== "/auth/logout") {
+    setSession(res, sessionForPolicy);
+    res.setHeader("Cache-Control", "private, no-store");
+  }
+  const userForPolicy = sessionForPolicy?.user || (config.authMode === 'mock' ? mockUser() : null);
+  if(url.pathname.startsWith('/api/') && userForPolicy && !isExternalSession(sessionForPolicy)) {
+    const employee=(await querySqlRows(`SELECT is_active FROM employees WHERE user_id=${sqlValue(userForPolicy.userId)} LIMIT 1;`))[0];
+    if(employee && Number(employee.is_active)===0) return sendJson(res,403,{ok:false,error:'account_inactive'});
+  }
+  const managerForPolicy = Boolean(userForPolicy && !isExternalSession(sessionForPolicy) && isScoring360ConfigManagerSession(sessionForPolicy));
+  if(url.pathname.startsWith('/api/system-settings')) {
+    if(!managerForPolicy)return sendJson(res,403,{ok:false,error:'manager_only'});
+    res.setHeader('cache-control','no-store');
+    if(req.method==='GET'&&url.pathname==='/api/system-settings')return sendJson(res,200,{ok:true,...await systemSettings.overview()});
+    if(req.method==='GET'&&url.pathname==='/api/system-settings/logs')return sendJson(res,200,{ok:true,logs:await systemSettings.logs()});
+    if(req.method==='GET'&&url.pathname==='/api/system-settings/report-automation')return sendJson(res,200,{ok:true,...await reportAutomation.overview()});
+    if(req.method==='GET'&&url.pathname==='/api/system-settings/monthly-reminders'){
+      try{return sendJson(res,200,{ok:true,...await monthEndScoreReminders.preview(url.searchParams.get('month')||undefined)});}
+      catch(error){if(error.message==='invalid_month')return sendJson(res,400,{ok:false,error:'invalid_month'});throw error;}
+    }
+    if(req.method==='POST'){
+      if(req.headers.origin&&new URL(req.headers.origin).host!==req.headers.host)return sendJson(res,403,{ok:false,error:'invalid_origin'});
+      const body=await readJsonBody(req,{limitBytes:15000});
+      try{
+        if(url.pathname==='/api/system-settings/policy')await systemSettings.savePolicy(body,userForPolicy);
+        else if(url.pathname==='/api/system-settings/feishu-report')await systemSettings.saveReport(body,userForPolicy);
+        else if(url.pathname==='/api/system-settings/ai')await systemSettings.saveAI(body,userForPolicy);
+        else if(url.pathname==='/api/system-settings/monthly-reminders')await systemSettings.saveMonthlyReminders(body,userForPolicy);
+        else if(url.pathname==='/api/system-settings/report-automation')await systemSettings.saveReportAutomation(body,userForPolicy);
+        else return sendJson(res,404,{ok:false,error:'not_found'});
+        return sendJson(res,200,{ok:true});
+      }catch(error){return sendJson(res,400,{ok:false,error:['invalid_report_config','report_secret_required','future_cycle_required','invalid_weights','invalid_deadline','invalid_reminder_hours','policy_version_exists','invalid_ai_url','invalid_ai_model','invalid_monthly_reminders','feishu_required','invalid_report_automation','ai_required'].includes(error.message)?error.message:'settings_save_failed'});}
+    }
+    return sendJson(res,404,{ok:false,error:'not_found'});
+  }
+  if(url.pathname==='/api/scoring360/cycle'&&req.method==='POST'){
+    if(!managerForPolicy)return sendJson(res,403,{ok:false,error:'manager_only'});
+    if(req.headers.origin&&new URL(req.headers.origin).host!==req.headers.host)return sendJson(res,403,{ok:false,error:'invalid_origin'});
+    const body=await readJsonBody(req);if(!['prepare','open'].includes(body.action))return sendJson(res,400,{ok:false,error:'invalid_cycle_action'});
+    const cycleId=await ensureScoring360CycleForLaunchDate(scoring360ActiveDate(),{copyAssignments:false});
+    const cycle=await loadScoring360Cycle(cycleId);
+    if(body.action==='open'){
+      if(!['draft','open','active'].includes(cycle.status))return sendJson(res,409,{ok:false,error:'scoring_cycle_closed'});
+      const assignments=await querySqlRows(`SELECT COUNT(*) AS count FROM scoring360_assignments WHERE cycle_id=${sqlValue(cycleId)} AND status='active';`);
+      if(!Number(assignments[0]?.count))return sendJson(res,409,{ok:false,error:'scoring_assignments_required'});
+      if(!cycle.launchAt)await ensureScoring360CycleSchedule(cycleId);
+    }
+    await systemSettings.audit(userForPolicy,body.action==='open'?'月度互评已开放（未发送通知）':'月度互评周期已准备（手动配置关系）',{cycleId});
+    return sendJson(res,200,{ok:true,cycle:await loadScoring360Cycle(cycleId),messagesSent:0});
+  }
+  if(url.pathname==='/api/manager-reviews'){
+    if(!userForPolicy||isExternalSession(sessionForPolicy))return sendJson(res,401,{ok:false,error:'unauthorized'});
+    res.setHeader('cache-control','no-store');
+    try{
+      if(req.method==='GET')return sendJson(res,200,{ok:true,...await managerReviews.tasks(userForPolicy,url.searchParams.get('month'))});
+      if(req.method==='POST'){
+        if(req.headers.origin&&new URL(req.headers.origin).host!==req.headers.host)return sendJson(res,403,{ok:false,error:'invalid_origin'});
+        await managerReviews.submit(userForPolicy,await readJsonBody(req));await performance.overview();
+        return sendJson(res,200,{ok:true});
+      }
+      return sendJson(res,405,{ok:false,error:'method_not_allowed'});
+    }catch(error){const known=['invalid_month','score_and_comment_required','self_scoring_forbidden','not_your_subordinate','result_locked'];return sendJson(res,error.message==='not_your_subordinate'?403:409,{ok:false,error:error.message.includes('UNIQUE')?'result_locked':known.includes(error.message)?error.message:'manager_review_failed'});}
+  }
+  if(url.pathname.startsWith('/api/departments')) {
+    if(!managerForPolicy)return sendJson(res,403,{ok:false,error:'manager_only'});
+    res.setHeader('cache-control','no-store');
+    if(req.method==='GET'&&url.pathname==='/api/departments/dashboard'){try{return sendJson(res,200,{ok:true,...await departments.dashboard(url.searchParams.get('month'),await performance.overview()),canScore:isBossIdentity(sessionForPolicy),currentUserId:userForPolicy.userId});}catch{return sendJson(res,400,{ok:false,error:'invalid_department_month'});}}
+    if(req.method==='GET'&&url.pathname==='/api/departments')return sendJson(res,200,{ok:true,...await departments.overview(),canScore:isBossIdentity(sessionForPolicy),currentUserId:userForPolicy.userId});
+    if(req.method==='POST'){
+      if(req.headers.origin&&new URL(req.headers.origin).host!==req.headers.host)return sendJson(res,403,{ok:false,error:'invalid_origin'});
+      const body=await readJsonBody(req);
+      const organizationMutation=['/api/departments/layout','/api/departments/save','/api/departments/sync-feishu'].includes(url.pathname);
+      if(organizationMutation&&organizationMutationRunning)return sendJson(res,409,{ok:false,error:'department_layout_conflict'});
+      if(organizationMutation)organizationMutationRunning=true;
+      try{
+        if(url.pathname==='/api/departments/sync-feishu'){const result=await feishuDepartmentSync.sync();await systemSettings.audit(userForPolicy,'飞书部门已同步',result);return sendJson(res,200,{ok:true,...result});}
+        else if(url.pathname==='/api/departments/layout'){await departments.saveLayout(body);await systemSettings.audit(userForPolicy,'组织架构已更新',{departmentCount:body.departments.length});}
+        else if(url.pathname==='/api/departments/save'){await departments.save(body);await systemSettings.audit(userForPolicy,'部门配置已更新',{department:body.name,leaderUserId:body.leaderUserId});}
+        else if(url.pathname==='/api/departments/score'){
+          if(!isBossIdentity(sessionForPolicy))return sendJson(res,403,{ok:false,error:'boss_only'});
+          if((await querySqlRows(`SELECT leader_user_id FROM organization_departments WHERE id=${sqlValue(body.departmentId)};`))[0]?.leader_user_id===userForPolicy.userId)return sendJson(res,409,{ok:false,error:'self_scoring_forbidden'});
+          await departments.score(body,userForPolicy);await performance.overview();await systemSettings.audit(userForPolicy,'老板负责人评分已发布',{departmentId:body.departmentId,month:body.month});
+        }else return sendJson(res,404,{ok:false,error:'not_found'});
+        return sendJson(res,200,{ok:true});
+      }catch(error){const known=['department_layout_conflict','department_not_empty','department_inactive','department_sync_running','feishu_not_configured','department_permission_required','department_scope_required','department_scope_empty','department_names_permission_required','department_leader_user_id_required','department_leader_managed_by_feishu','department_ambiguous_names','department_incomplete_tree','department_invalid_pagination','department_upstream_failed','department_hierarchy_cycle','invalid_parent_department','invalid_department','leader_must_be_department_member','department_not_found','invalid_month','score_and_comment_required','department_leader_required','leader_inactive','leader_not_registered','result_locked'];return sendJson(res,409,{ok:false,error:error.message.includes('UNIQUE')?'department_exists':known.includes(error.message)?error.message:'department_save_failed'});}finally{if(organizationMutation)organizationMutationRunning=false;}
+    }
+    return sendJson(res,405,{ok:false,error:'method_not_allowed'});
+  }
+  if(url.pathname.startsWith('/api/admin/employee-preview')){
+    res.setHeader('cache-control','no-store');
+    if(!managerForPolicy)return sendJson(res,403,{ok:false,error:'manager_only'});
+    if(req.method!=='GET')return sendJson(res,405,{ok:false,error:'preview_readonly'});
+    const rows=await querySqlRows(`SELECT user_id,name,department FROM employees WHERE user_id=${sqlValue(url.searchParams.get('employeeId'))} LIMIT 1;`);
+    const directoryEntry=employeeDirectory.find(e=>e.userId===url.searchParams.get('employeeId'));
+    const employee=rows[0]||(directoryEntry?{user_id:directoryEntry.userId,name:directoryEntry.name}:null);if(!employee)return sendJson(res,404,{ok:false,error:'employee_not_found'});
+    const user={userId:employee.user_id,name:employee.name};
+    if(url.pathname==='/api/admin/employee-preview/workspace'){
+      try{const workspace=await personalWorkspace.workspace(user,url.searchParams.get('month'),url.searchParams.get('weekId'));return sendJson(res,200,{ok:true,...workspace,collaborationProgress:await personalScoringReminders.status(user,workspace.month),preview:{readOnly:true,employeeId:user.userId,employeeName:user.name}});}catch{return sendJson(res,400,{ok:false,error:'invalid_preview_request'});}
+    }
+    if(url.pathname==='/api/admin/employee-preview/manager-reviews'){try{return sendJson(res,200,{ok:true,...await managerReviews.tasks(user,url.searchParams.get('month')),readOnly:true});}catch{return sendJson(res,400,{ok:false,error:'invalid_month'});}}
+    if(url.pathname==='/api/admin/employee-preview/scoring-tasks'){
+      const cycleId=await resolveScoring360CycleId(url.searchParams.get('cycleId'),{ensureCurrentRound:false});
+      const cycle=cycleId?await loadScoring360Cycle(cycleId):null;
+      if(!cycle?.launchAt||!['open','active'].includes(cycle.status))return sendJson(res,200,{ok:true,cycleId,tasks:[],readOnly:true});
+      const tasks=await querySqlRows(`SELECT a.id,a.evaluee_name,r.id AS response_id,r.score,r.comment,r.submitted_at FROM scoring360_assignments a LEFT JOIN scoring360_responses r ON r.assignment_id=a.id WHERE a.cycle_id=${sqlValue(cycleId)} AND a.evaluator_user_id=${sqlValue(user.userId)} AND COALESCE(a.status,'active')='active' ORDER BY a.evaluee_name;`);
+      return sendJson(res,200,{ok:true,cycleId,readOnly:true,tasks:tasks.map(r=>({id:r.id,evaluee:r.evaluee_name,score:r.score===''?null:Number(r.score),comment:r.comment||'',submitted:Boolean(r.response_id),locked:isScoring360Locked(r.submitted_at)}))});
+    }
+    return sendJson(res,404,{ok:false,error:'not_found'});
+  }
+  if (url.pathname.startsWith('/api/personal/')) {
+    res.setHeader('cache-control','no-store');
+    if(!userForPolicy) return sendJson(res,401,{ok:false,error:'unauthorized'});
+    if(isExternalSession(sessionForPolicy)) return sendJson(res,403,{ok:false,error:'external_readonly'});
+    const identity=employeeDirectory.find(e=>e.userId===userForPolicy.userId);
+    // Workspace access is bound to directory identity, never to a name supplied by the client.
+    const user={...userForPolicy,name:identity?.name||userForPolicy.name,userId:identity?.userId||userForPolicy.userId};
+    if(url.searchParams.has('employeeId')&&url.searchParams.get('employeeId')!==user.userId) return sendJson(res,403,{ok:false,error:'self_only'});
+    try {
+      if(req.method==='GET'&&url.pathname==='/api/personal/workspace') {
+        const workspace=await personalWorkspace.workspace(user,url.searchParams.get('month'),url.searchParams.get('weekId'));
+        return sendJson(res,200,{ok:true,...workspace,collaborationProgress:await personalScoringReminders.status(user,workspace.month)});
+      }
+      if(req.method!=='POST')return sendJson(res,404,{ok:false,error:'not_found'});
+      if(req.headers.origin&&new URL(req.headers.origin).host!==req.headers.host)return sendJson(res,403,{ok:false,error:'invalid_origin'});
+      if(!String(req.headers['content-type']||'').startsWith('application/json'))return sendJson(res,415,{ok:false,error:'json_required'});
+      const body=await readJsonBody(req,{limitBytes:50000});
+      if(body.employeeId&&body.employeeId!==user.userId)return sendJson(res,403,{ok:false,error:'self_only'});
+      if(url.pathname==='/api/personal/collaboration/remind') return sendJson(res,200,{ok:true,...await personalScoringReminders.send(user,body.month)});
+
+      if(url.pathname==='/api/personal/tasks/save')return sendJson(res,200,await personalWorkspace.saveTask(user,body));
+      if(url.pathname==='/api/personal/tasks/create')return sendJson(res,200,await personalWorkspace.createTasks(user,sessionForPolicy,body));
+      if(url.pathname==='/api/personal/comment')return sendJson(res,200,await personalWorkspace.interact(user,body,'comment'));
+      if(url.pathname==='/api/personal/like')return sendJson(res,200,await personalWorkspace.interact(user,body,'like'));
+      if(url.pathname==='/api/personal/coach')return sendJson(res,200,await personalWorkspace.chat(user,body));
+      return sendJson(res,404,{ok:false,error:'not_found'});
+    }catch(error){
+      const known=['reminder_in_progress','reminder_not_due','invalid_month','future_month','week_not_found','task_not_found','task_already_created','task_content_required','invalid_due_date','report_not_submitted','invalid_comment','ai_not_configured','invalid_question','invalid_tasks','task_creation_in_progress','task_create_failed'];
+      console.error('Personal workspace:',error.message);
+      return sendJson(res,error.message==='ai_not_configured'?503:known.includes(error.message)?400:502,{ok:false,error:known.includes(error.message)?error.message:'personal_service_failed'});
+    }
+  }
+
+  if (url.pathname.startsWith('/api/performance') || url.pathname === '/api/management-data') {
+    if (!userForPolicy) return sendJson(res, 401, {ok:false,error:'unauthorized'});
+    res.setHeader('cache-control', 'no-store');
+    if (url.pathname === '/api/performance/me' && req.method === 'GET') {
+      const identity=employeeDirectory.find(e=>e.userId===userForPolicy.userId);
+      return sendJson(res,200,{ok:true,...await performance.personal(identity?.name||normalizeUserName(userForPolicy.name),identity?.userId||userForPolicy.userId)});
+    }
+    if (!managerForPolicy) return sendJson(res,403,{ok:false,error:'manager_only'});
+    if (url.pathname === '/api/management-data' && req.method === 'GET') {
+      const names=['prototypeData','kimiInsights','kimiInsightsByPeriod','monthlyMeetingInsights','scoring360'];
+      return sendJson(res,200,Object.fromEntries(names.map(name=>[name,JSON.parse(readFileSync(path.join(config.dataDir,`${name}.json`),'utf8'))])));
+    }
+    if (url.pathname === '/api/performance/manage' && req.method === 'GET') return sendJson(res,200,{ok:true,...await performance.overview()});
+    if (url.pathname === '/api/performance/confirm' && req.method === 'POST') {
+      return sendJson(res,409,{ok:false,error:'results_auto_published'});
+    }
+    return sendJson(res,404,{ok:false,error:'not_found'});
+  }
+  // The personal workspace above enforces self-only access; legacy process APIs remain manager-only.
+  const employeeApis = ['/api/me','/api/performance/me','/api/scoring360/my-tasks','/api/scoring360/submit','/api/usage/visit','/api/usage/heartbeat','/api/feishu/events'];
+  if (url.pathname.startsWith('/api/') && !managerForPolicy && !employeeApis.includes(url.pathname)) {
+    if (url.pathname === '/api/scoring360' && req.method === 'GET' && userForPolicy) return sendJson(res,200,{ok:true,results:[],cycles:[],evaluatorOptions:[]});
+    return sendJson(res,userForPolicy?403:401,{ok:false,error:'manager_only'});
+  }
+
+  if (req.method === 'GET' && url.pathname === '/api/settings/status') {
+    res.setHeader('cache-control','no-store');
+    const demoData=JSON.parse(readFileSync(path.join(config.dataDir,'prototypeData.json'),'utf8')).meta?.source_xlsx === 'RANDOM_DEVELOPMENT_FIXTURE';
+    const feishuReady=Boolean(config.feishuAppId && config.feishuAppSecret);
+    const aiReady=Boolean(config.moonshotApiKey);
+    return sendJson(res,200,{ok:true,authMode:config.authMode,demoData,services:[
+      {name:'登录与身份',ready:true,label:config.authMode==='mock'?'开发演示':'飞书认证',description:config.authMode==='mock'?'使用开发身份，可切换老板、管理员与员工视角。':'使用已配置的飞书身份认证。'},
+      {name:'本地数据与存储',ready:true,label:'运行中',description:demoData?'虚构开发数据已载入；数据库与上传文件持久化保存。':'SQLite 数据库已连接，运行数据持久化保存。'},
+      {name:'飞书服务',ready:feishuReady,label:feishuReady?'已配置':'未配置',description:feishuReady?'已提供应用凭据；实际可用范围以应用授权为准。':'尚未提供飞书应用凭据，本地人员、评分和审核功能可以继续使用。'},
+      {name:'AI 分析服务',ready:aiReady,label:aiReady?'已配置':'未配置',description:aiReady?'已提供模型服务凭据；AI 只生成候选分析。':'当前展示已载入的候选分析，暂不执行实时 AI 调用。'},
+      {name:'周报与协作提醒',ready:config.weeklyReminderEnabled||config.scoring360ReminderEnabled,label:config.weeklyReminderEnabled||config.scoring360ReminderEnabled?'已启用':'未开启',description:'周报提醒与评分提醒各自控制；开启外发前需配置并授权飞书服务。'},
+    ]});
+  }
 
   if (req.method === "GET" && url.pathname === "/health") {
     sendJson(res, 200, {
@@ -160,6 +416,7 @@ async function route(req, res) {
     sendJson(res, 200, {
       ok: true,
       authenticated: true,
+      devView: config.devViewSwitchEnabled ? (session?.devView || {id:"boss",role:"boss"}) : null,
       user: {
         ...user,
         role: access.role,
@@ -390,7 +647,7 @@ async function route(req, res) {
 }
 
 async function startLogin(_req, res, url) {
-  if (config.authMode === "mock") {
+  if (config.authMode === "mock" && url.searchParams.get("provider") !== "feishu") {
     setSession(res, { user: mockUser(), issuedAt: Date.now() });
     redirect(res, url.searchParams.get("next") || "/");
     return;
@@ -437,13 +694,13 @@ async function finishFeishuLogin(req, res, url) {
     token: userAccessToken,
   });
   const data = userInfo.data || {};
-  const user = {
-    openId: data.open_id,
-    unionId: data.union_id,
-    name: data.name || data.en_name || "Feishu User",
-    email: data.email || "",
-    avatarUrl: data.avatar_url || "",
-  };
+  const user=await resolveFeishuLogin(data,async openId=>{const result=await feishuJson(`/open-apis/contact/v3/users/${encodeURIComponent(openId)}?user_id_type=open_id`,{method:'GET',token:await getFeishuTenantAccessToken()});return result.data?.user||{};});
+  const roster=await syncSsoLogin(user,userAccessToken);
+  await refreshEmployeeDirectory();
+  if(!roster.active) {
+    clearCookie(res,"wos_session");clearCookie(res,"wos_oauth_state");
+    return send(res,403,{"content-type":"text/html; charset=utf-8"},"<h2>账号已停用</h2><p>请联系公司管理员。重新通过飞书登录不会自动恢复账号。</p>");
+  }
   setSession(res, {
     user,
     issuedAt: Date.now(),
@@ -534,11 +791,11 @@ async function sendCompanyMessage(req, res) {
   await execSql(`
     INSERT INTO company_message_sends
       (id, period_id, period_label, chat_id, chat_name, original_draft, final_message,
-       sent_by_open_id, sent_by_name, feishu_message_id, idempotency_key, status, raw_response_json)
+       sent_by_user_id, sent_by_name, feishu_message_id, idempotency_key, status, raw_response_json)
     VALUES
       (${sqlValue(recordId)}, ${sqlValue(periodId)}, ${sqlValue(periodLabel)}, ${sqlValue(config.companyChatId)},
        ${sqlValue(config.companyChatName)}, ${sqlValue(originalDraft || finalMessage)}, ${sqlValue(finalMessage)},
-       ${sqlValue(user.openId)}, ${sqlValue(user.name)}, ${sqlValue(feishuMessageId)}, ${sqlValue(idempotencyKey)},
+       ${sqlValue(user.userId)}, ${sqlValue(user.name)}, ${sqlValue(feishuMessageId)}, ${sqlValue(idempotencyKey)},
        ${sqlValue(sendResult.ok ? "sent" : "failed")}, ${sqlValue(JSON.stringify(responsePayload))});
   `);
 
@@ -652,7 +909,7 @@ async function getWeeklyReminderStatus(req, res) {
     period: context.period,
     exemptPeople: context.exemptPeople,
     recipients: context.recipients.map((recipient) => ({
-      openId: recipient.openId,
+      userId: recipient.userId,
       name: recipient.name,
       department: recipient.department,
     })),
@@ -712,15 +969,15 @@ async function createAiFollowup(req, res) {
     const userMessage = await persistAiFollowupMessage({
       candidateId,
       role: "user",
-      authorOpenId: user.openId,
+      authorUserId: user.userId,
       authorName: user.name,
       body: question,
       metadata: { employeeName: body.employeeName || "", candidateTitle: body.candidate?.title || "" },
     });
     await createNotification({
-      recipientOpenId: String(body.employeeOpenId || ""),
+      recipientUserId: String(body.employeeUserId || ""),
       recipientName: String(body.employeeName || ""),
-      actorOpenId: user.openId,
+      actorUserId: user.userId,
       actorName: user.name,
       eventType: "ai_followup",
       targetType: "task_candidate",
@@ -744,7 +1001,7 @@ async function createAiFollowup(req, res) {
     const assistantMessage = await persistAiFollowupMessage({
       candidateId,
       role: "assistant",
-      authorOpenId: "kimi",
+      authorUserId: "kimi",
       authorName: "Kimi",
       body: answer,
       provider: "kimi",
@@ -774,7 +1031,7 @@ async function listNotifications(req, res) {
   const bossView = isBossSession(session);
   const where = bossView
     ? "1 = 1"
-    : `(recipient_open_id = ${sqlValue(user.openId)} OR recipient_name = ${sqlValue(user.name)})`;
+    : `(recipient_user_id = ${sqlValue(user.userId)} OR recipient_name = ${sqlValue(user.name)})`;
   const rows = await querySqlRows(`
     SELECT id, event_type, target_type, target_id, target_employee_name, recipient_name, actor_name, title, body, read_at, created_at
     FROM notifications
@@ -825,7 +1082,7 @@ async function markNotificationsRead(req, res) {
   const ids = Array.isArray(body.ids) ? body.ids.map((id) => String(id).trim()).filter(Boolean).slice(0, 100) : [];
   const allowed = isBossSession(session)
     ? "1 = 1"
-    : `(recipient_open_id = ${sqlValue(user.openId)} OR recipient_name = ${sqlValue(user.name)})`;
+    : `(recipient_user_id = ${sqlValue(user.userId)} OR recipient_name = ${sqlValue(user.name)})`;
   const target = ids.length > 0
     ? `id IN (${ids.map(sqlValue).join(", ")})`
     : "read_at IS NULL";
@@ -859,13 +1116,13 @@ async function createSocialComment(req, res) {
   const targetId = String(body.targetId || body.employeeName || "unknown");
   const employeeName = String(body.employeeName || "");
   await execSql(`
-    INSERT INTO comments (id, target_type, target_id, author_open_id, author_name, body, visibility)
-    VALUES (${sqlValue(id)}, ${sqlValue(targetType)}, ${sqlValue(targetId)}, ${sqlValue(user.openId)}, ${sqlValue(user.name)}, ${sqlValue(text)}, 'department');
+    INSERT INTO comments (id, target_type, target_id, author_user_id, author_name, body, visibility)
+    VALUES (${sqlValue(id)}, ${sqlValue(targetType)}, ${sqlValue(targetId)}, ${sqlValue(user.userId)}, ${sqlValue(user.name)}, ${sqlValue(text)}, 'department');
   `);
   await createNotification({
-    recipientOpenId: String(body.employeeOpenId || ""),
+    recipientUserId: String(body.employeeUserId || ""),
     recipientName: employeeName,
-    actorOpenId: user.openId,
+    actorUserId: user.userId,
     actorName: user.name,
     eventType: "comment",
     targetType,
@@ -895,13 +1152,13 @@ async function createSocialReaction(req, res) {
   const reactionType = String(body.reactionType || "like");
   const employeeName = String(body.employeeName || "");
   await execSql(`
-    INSERT OR IGNORE INTO reactions (id, target_type, target_id, actor_open_id, reaction_type)
-    VALUES (${sqlValue(randomUUID())}, ${sqlValue(targetType)}, ${sqlValue(targetId)}, ${sqlValue(user.openId)}, ${sqlValue(reactionType)});
+    INSERT OR IGNORE INTO reactions (id, target_type, target_id, actor_user_id, reaction_type)
+    VALUES (${sqlValue(randomUUID())}, ${sqlValue(targetType)}, ${sqlValue(targetId)}, ${sqlValue(user.userId)}, ${sqlValue(reactionType)});
   `);
   await createNotification({
-    recipientOpenId: String(body.employeeOpenId || ""),
+    recipientUserId: String(body.employeeUserId || ""),
     recipientName: employeeName,
-    actorOpenId: user.openId,
+    actorUserId: user.userId,
     actorName: user.name,
     eventType: "reaction",
     targetType,
@@ -915,9 +1172,9 @@ async function createSocialReaction(req, res) {
 }
 
 async function createNotification({
-  recipientOpenId = "",
+  recipientUserId = "",
   recipientName = "",
-  actorOpenId = "",
+  actorUserId = "",
   actorName = "",
   eventType,
   targetType = "",
@@ -927,14 +1184,14 @@ async function createNotification({
   body = "",
   payload = {},
 }) {
-  if (!recipientOpenId && !recipientName) return null;
+  if (!recipientUserId && !recipientName) return null;
   const id = randomUUID();
   await execSql(`
     INSERT INTO notifications
-      (id, recipient_open_id, recipient_name, actor_open_id, actor_name, event_type, target_type, target_id,
+      (id, recipient_user_id, recipient_name, actor_user_id, actor_name, event_type, target_type, target_id,
        target_employee_name, title, body, payload_json)
     VALUES
-      (${sqlValue(id)}, ${sqlValue(recipientOpenId)}, ${sqlValue(recipientName)}, ${sqlValue(actorOpenId)}, ${sqlValue(actorName)},
+      (${sqlValue(id)}, ${sqlValue(recipientUserId)}, ${sqlValue(recipientName)}, ${sqlValue(actorUserId)}, ${sqlValue(actorName)},
        ${sqlValue(eventType)}, ${sqlValue(targetType)}, ${sqlValue(targetId)}, ${sqlValue(targetEmployeeName)},
        ${sqlValue(title)}, ${sqlValue(body)}, ${sqlValue(JSON.stringify(payload))});
   `);
@@ -953,7 +1210,7 @@ async function listAiFollowups(req, res, url) {
     return;
   }
   const rows = await querySqlRows(`
-    SELECT id, candidate_id, role, author_open_id, author_name, hex(body) AS body_hex, provider, model, created_at
+    SELECT id, candidate_id, role, author_user_id, author_name, hex(body) AS body_hex, provider, model, created_at
     FROM ai_followup_messages
     WHERE candidate_id = ${sqlValue(candidateId)}
     ORDER BY datetime(created_at) ASC, id ASC
@@ -962,20 +1219,20 @@ async function listAiFollowups(req, res, url) {
   sendJson(res, 200, { ok: true, messages: rows.map(aiFollowupRowToMessage) });
 }
 
-async function persistAiFollowupMessage({ candidateId, role, authorOpenId, authorName, body, provider = "", model = "", metadata = {} }) {
+async function persistAiFollowupMessage({ candidateId, role, authorUserId, authorName, body, provider = "", model = "", metadata = {} }) {
   const id = randomUUID();
   await execSql(`
     INSERT INTO ai_followup_messages
-      (id, candidate_id, role, author_open_id, author_name, body, provider, model, metadata_json)
+      (id, candidate_id, role, author_user_id, author_name, body, provider, model, metadata_json)
     VALUES
-      (${sqlValue(id)}, ${sqlValue(candidateId)}, ${sqlValue(role)}, ${sqlValue(authorOpenId)}, ${sqlValue(authorName)},
+      (${sqlValue(id)}, ${sqlValue(candidateId)}, ${sqlValue(role)}, ${sqlValue(authorUserId)}, ${sqlValue(authorName)},
        ${sqlValue(body)}, ${sqlValue(provider)}, ${sqlValue(model)}, ${sqlValue(JSON.stringify(metadata))});
   `);
   return {
     id,
     candidateId,
     role,
-    authorOpenId,
+    authorUserId,
     authorName,
     body,
     provider,
@@ -989,7 +1246,7 @@ function aiFollowupRowToMessage(row) {
     id: row.id,
     candidateId: row.candidate_id,
     role: row.role,
-    authorOpenId: row.author_open_id,
+    authorUserId: row.author_user_id,
     authorName: row.author_name,
     body: row.body_hex ? Buffer.from(row.body_hex, "hex").toString("utf8") : "",
     provider: row.provider,
@@ -1043,7 +1300,6 @@ async function callKimiFollowup({ candidate, question, messages, employeeName, u
           content: `请基于以下上下文回答最后的追问：\n${JSON.stringify(contextPack, null, 2)}`,
         },
       ],
-      temperature: 0.6,
       max_completion_tokens: 1200,
       thinking: { type: "disabled" },
     }),
@@ -1085,7 +1341,7 @@ async function handleFeishuEvent(req, res) {
   const eventType = body.header?.event_type || body.type || "feishu_event";
   await updateFeishuTaskFromEvent(body, eventType);
   await execSql(`
-    INSERT INTO contribution_events (id, actor_open_id, actor_name, event_type, target_type, target_id, points, payload_json)
+    INSERT INTO contribution_events (id, actor_user_id, actor_name, event_type, target_type, target_id, points, payload_json)
     VALUES (${sqlValue(randomUUID())}, ${sqlValue("system")}, ${sqlValue("Feishu Event")}, ${sqlValue(eventType)},
             ${sqlValue("feishu_event")}, ${sqlValue(extractTaskGuid(body) || body.header?.event_id || body.uuid || randomUUID())}, 0, ${sqlValue(JSON.stringify(body))});
   `);
@@ -1098,12 +1354,12 @@ async function listTasks(req, res) {
     sendJson(res, 401, { ok: false, error: "unauthorized" });
     return;
   }
-  if (!isBossSession(session) && !isExternalSession(session)) {
+  if (!isScoring360ConfigManagerSession(session) && !isExternalSession(session)) {
     sendJson(res, 403, { ok: false, error: "boss_only" });
     return;
   }
   const rows = await querySqlRows(`
-    SELECT guid, candidate_id, summary, assignee_open_id, due_date, url, status, created_at, updated_at
+    SELECT guid, candidate_id, summary, assignee_user_id, due_date, url, status, created_at, updated_at
     FROM feishu_tasks
     ORDER BY datetime(updated_at) DESC, datetime(created_at) DESC
     LIMIT 200;
@@ -1112,7 +1368,7 @@ async function listTasks(req, res) {
     guid: row.guid,
     candidateId: row.candidate_id,
     summary: row.summary,
-    assigneeOpenId: row.assignee_open_id,
+    assigneeUserId: row.assignee_user_id,
     dueDate: row.due_date,
     url: row.url,
     status: row.status,
@@ -1131,8 +1387,8 @@ async function getScoring360(req, res, url) {
   const user = session?.user || mockUser();
   const access = buildAccessProfile(session, user);
   const evaluatorOptions = access.bossView || access.canManageScoring360
-    ? (await loadManagedEmployees()).map((employee) => employee.name).filter(Boolean)
-    : [normalizeUserName(user.name)].filter(Boolean);
+    ? (await loadManagedEmployees()).map((employee) => employee.userId).filter(Boolean)
+    : [user.userId].filter(Boolean);
   const cycleId = await resolveScoring360CycleId(url.searchParams.get("cycleId"), { ensureCurrentRound: true });
   if (!cycleId) {
     sendJson(res, 200, { ok: true, cycles: [], results: [], stats: null, evaluatorOptions });
@@ -1150,7 +1406,7 @@ async function getScoring360(req, res, url) {
   const previousScores = cycleRow ? await loadPreviousScoring360Scores(cycleRow) : new Map();
   const resultRows = await querySqlRows(`
     SELECT
-      a.evaluee_name AS name,
+      a.evaluee_name AS name, a.evaluee_user_id AS user_id,
       COUNT(a.id) AS expected,
       COUNT(r.id) AS submitted,
       ROUND(CASE WHEN COUNT(a.id) = 0 THEN 0 ELSE COUNT(r.id) * 100.0 / COUNT(a.id) END, 1) AS completion_rate,
@@ -1162,14 +1418,14 @@ async function getScoring360(req, res, url) {
     LEFT JOIN scoring360_responses r ON r.assignment_id = a.id
     WHERE a.cycle_id = ${sqlValue(cycleId)}
       AND (COALESCE(a.status, 'active') = 'active' OR r.id IS NOT NULL)
-    GROUP BY a.evaluee_name
+    GROUP BY a.evaluee_user_id
     ORDER BY average_score DESC, completion_rate DESC, name ASC;
   `);
   const visibleNames = new Set(access.visibleNames);
   const results = resultRows
-    .filter((row) => access.bossView || access.externalView || visibleNames.has(row.name))
+    .filter((row) => access.bossView || access.canManageScoring360 || row.user_id===user.userId)
     .map((row) => formatScoring360Result(row, {
-      previousScore: previousScores.get(row.name),
+      previousScore: previousScores.get(row.user_id),
       historicalWeight: cycleRow?.historical_weight,
       currentWeight: cycleRow?.current_weight,
     }));
@@ -1217,16 +1473,17 @@ async function getMyScoring360Tasks(req, res, url) {
   const evaluator = canSelectEvaluator && url.searchParams.get("evaluator")
     ? normalizeUserName(url.searchParams.get("evaluator"))
     : normalizeUserName(user.name);
+  const selectedEvaluator = canSelectEvaluator && (url.searchParams.get("evaluatorUserId") || url.searchParams.get("evaluator")) ? await findActiveManagedEmployee(url.searchParams.get("evaluatorUserId") || evaluator) : user;
+  const evaluatorUserId = selectedEvaluator?.userId || "";
   const cycleId = await resolveScoring360CycleId(url.searchParams.get("cycleId"), { ensureCurrentRound: true });
-  if (!cycleId || !evaluator) {
+  if (!cycleId || !evaluatorUserId) {
     sendJson(res, 200, { ok: true, cycleId, evaluator, tasks: [] });
     return;
   }
   const cycle = await loadScoring360Cycle(cycleId);
   const cycleOpen = Boolean(
     cycle?.launchAt
-      && ["open", "active"].includes(cycle.status)
-      && !isScoring360CycleDeadlinePassed(cycle),
+      && ["open", "active"].includes(cycle.status),
   );
   if (!cycleOpen && !canSelectEvaluator) {
     sendJson(res, 200, { ok: true, cycleId, evaluator, tasks: [] });
@@ -1240,7 +1497,7 @@ async function getMyScoring360Tasks(req, res, url) {
     FROM scoring360_assignments a
     LEFT JOIN scoring360_responses r ON r.assignment_id = a.id
     WHERE a.cycle_id = ${sqlValue(cycleId)}
-      AND a.evaluator_name = ${sqlValue(evaluator)}
+      AND a.evaluator_user_id = ${sqlValue(evaluatorUserId)}
       AND COALESCE(a.status, 'active') = 'active'
     ORDER BY a.evaluee_name ASC;
   `);
@@ -1274,6 +1531,7 @@ async function submitScoring360(req, res) {
   }
   const user = session?.user || mockUser();
   const evaluator = normalizeUserName(user.name);
+  const evaluatorUserId = user.userId;
   const body = await readJsonBody(req, { limitBytes: 100_000 });
   const cycleId = await resolveScoring360CycleId(body.cycleId, { ensureCurrentRound: true });
   const scores = Array.isArray(body.scores) ? body.scores : [];
@@ -1282,12 +1540,10 @@ async function submitScoring360(req, res) {
     return;
   }
   const cycle = await loadScoring360Cycle(cycleId);
+  const published = await querySqlRows(`SELECT employee_user_id FROM performance_results WHERE kind='collaboration' AND month=${sqlValue(String(cycle?.startDate || '').slice(0,7))} UNION SELECT employee_user_id FROM monthly_weighted_results WHERE month=${sqlValue(String(cycle?.startDate || '').slice(0,7))};`);
+  const publishedNames = new Set(published.map(row=>row.employee_user_id));
   if (!cycle?.launchAt || !["open", "active"].includes(cycle.status)) {
     sendJson(res, 409, { ok: false, error: "scoring_cycle_not_open" });
-    return;
-  }
-  if (isScoring360CycleDeadlinePassed(cycle)) {
-    sendJson(res, 409, { ok: false, error: "scoring_cycle_deadline_passed" });
     return;
   }
 
@@ -1297,17 +1553,17 @@ async function submitScoring360(req, res) {
     const assignmentId = String(item?.assignmentId || "").trim();
     const score = Number(item?.score);
     const comment = String(item?.comment || "").trim().slice(0, 1000);
-    if (!assignmentId || Number.isNaN(score) || score < 0 || score > 100) {
+    if (!assignmentId || !comment || !Number.isFinite(score) || score < 0 || score > 100) {
       skipped.push({ assignmentId, reason: "invalid_score" });
       continue;
     }
     const assignmentRows = await querySqlRows(`
-      SELECT a.id, a.evaluee_name, a.evaluator_name, r.submitted_at
+      SELECT a.id, a.evaluee_name, a.evaluee_user_id, a.evaluator_name, r.submitted_at
       FROM scoring360_assignments a
       LEFT JOIN scoring360_responses r ON r.assignment_id = a.id
       WHERE a.id = ${sqlValue(assignmentId)}
         AND a.cycle_id = ${sqlValue(cycleId)}
-        AND a.evaluator_name = ${sqlValue(evaluator)}
+        AND a.evaluator_user_id = ${sqlValue(evaluatorUserId)}
         AND COALESCE(a.status, 'active') = 'active'
       LIMIT 1;
     `);
@@ -1315,6 +1571,9 @@ async function submitScoring360(req, res) {
     if (!assignment) {
       skipped.push({ assignmentId, reason: "assignment_not_found" });
       continue;
+    }
+    if (publishedNames.has(assignment.evaluee_user_id)) {
+      skipped.push({assignmentId,reason:'result_locked'});continue;
     }
     if (isScoring360Locked(assignment.submitted_at)) {
       skipped.push({ assignmentId, reason: "locked" });
@@ -1331,6 +1590,7 @@ async function submitScoring360(req, res) {
     `);
     saved += 1;
   }
+  await performance.overview();
   sendJson(res, 200, { ok: true, saved, skipped });
 }
 
@@ -1348,7 +1608,9 @@ async function getScoring360Config(req, res, url) {
     sendJson(res, 403, { ok: false, error: "scoring360_config_manager_only" });
     return;
   }
-  const cycleId = await resolveScoring360CycleId(url.searchParams.get("cycleId"), { ensureCurrentRound: true });
+  const currentId=url.searchParams.get("cycleId")||scoring360CycleForLaunchDate(scoring360ActiveDate()).id;
+  const current=(await querySqlRows(`SELECT id FROM scoring360_cycles WHERE id=${sqlValue(currentId)};`))[0];
+  const cycleId = current?.id||await resolveScoring360CycleId(url.searchParams.get("cycleId"));
   const employees = await loadManagedEmployees();
   if (!cycleId) {
     sendJson(res, 200, { ok: true, cycle: null, employees, assignments: [], diagnosis: scoring360Diagnosis() });
@@ -1364,7 +1626,7 @@ async function getScoring360Config(req, res, url) {
   `);
   const assignmentRows = await querySqlRows(`
     SELECT
-      a.id, a.cycle_id, a.evaluee_name, a.evaluator_name, a.evaluee_open_id, a.evaluator_open_id,
+      a.id, a.cycle_id, a.evaluee_name, a.evaluator_name, a.evaluee_user_id, a.evaluator_user_id,
       a.relationship, a.status, a.created_at, a.updated_at,
       r.id AS response_id, r.score, r.comment, r.submitted_at
     FROM scoring360_assignments a
@@ -1400,7 +1662,7 @@ async function getScoring360ReminderStatus(req, res, url) {
   const cycle = cycleId ? await loadScoring360Cycle(cycleId) : null;
   const pending = cycleId ? await loadScoring360PendingRecipients(cycleId) : [];
   const sends = cycleId ? await querySqlRows(`
-    SELECT cycle_id, cycle_label, evaluator_open_id, evaluator_name, pending_count, kind, source,
+    SELECT cycle_id, cycle_label, evaluator_user_id, evaluator_name, pending_count, kind, source,
            identity, feishu_message_id, idempotency_key, status, created_at
     FROM scoring360_reminder_sends
     WHERE cycle_id = ${sqlValue(cycleId)}
@@ -1429,7 +1691,7 @@ async function getScoring360ReminderStatus(req, res, url) {
     sends: sends.map((row) => ({
       cycleId: row.cycle_id,
       cycleLabel: row.cycle_label,
-      evaluatorOpenId: row.evaluator_open_id,
+      evaluatorUserId: row.evaluator_user_id,
       evaluatorName: row.evaluator_name,
       pendingCount: Number(row.pending_count || 0),
       kind: row.kind,
@@ -1459,7 +1721,7 @@ async function sendScoring360Reminder(req, res) {
   }
   const body = await readJsonBody(req, { limitBytes: 30_000 });
   const kind = body.kind === "followup" ? "followup" : "launch";
-  const evaluatorOpenId = String(body.evaluatorOpenId || "").trim();
+  const evaluatorUserId = String(body.evaluatorUserId || "").trim();
   const requestedCycleId = String(body.cycleId || "").trim();
   const cycleId = requestedCycleId
     ? await resolveScoring360CycleId(requestedCycleId)
@@ -1471,7 +1733,7 @@ async function sendScoring360Reminder(req, res) {
     kind,
     dryRun: body.dryRun !== false,
     force: Boolean(body.force),
-    evaluatorOpenId,
+    evaluatorUserId,
     source: "manual",
     actor: session?.user || mockUser(),
   });
@@ -1494,37 +1756,29 @@ async function getRosterAudit(req, res) {
   }
   const exemptNames = new Set(toSimpleList(config.scoring360RosterExempt).map(normalizeUserName));
   const employeeRows = await querySqlRows(`
-    SELECT open_id, name, department, email, is_active, updated_at
+    SELECT user_id, name, department, email, is_active, updated_at
     FROM employees
     ORDER BY name ASC;
   `).catch(() => []);
-  const latestWeekRows = await querySqlRows(`
-    SELECT week_label, week_start, week_end
-    FROM weekly_reports
-    ORDER BY date(week_start) DESC, datetime(updated_at) DESC
-    LIMIT 1;
-  `).catch(() => []);
-  const latestWeek = latestWeekRows[0] || null;
-  const reportRows = latestWeek ? await querySqlRows(`
-    SELECT employee_open_id, employee_name, department, week_label, submitted_at
-    FROM weekly_reports
-    WHERE week_label = ${sqlValue(latestWeek.week_label)}
-    ORDER BY employee_name ASC;
-  `).catch(() => []) : [];
+  // Read the same merged report source as the performance workbench.
+  const mergedReports = await performance.reports();
+  const latest = [...mergedReports].sort((a,b)=>String(b.end).localeCompare(String(a.end)))[0];
+  const latestWeek = latest ? {week_label:latest.content?.['周次'] || `${latest.start} — ${latest.end}`,week_start:latest.start,week_end:latest.end} : null;
+  const reportRows = latest ? mergedReports.filter(r=>r.end===latest.end && r.submitted).map(r=>({employee_user_id:r.employeeUserId,employee_name:r.name,department:r.department,week_label:latestWeek.week_label,submitted_at:r.submittedAt})) : [];
   const employeeNames = new Set(employeeRows.filter((row) => Number(row.is_active || 1) === 1).map((row) => normalizeUserName(row.name)));
   const directoryNames = new Set(employeeDirectory.map((employee) => normalizeUserName(employee.name)).filter(Boolean));
   const reportNames = new Set(reportRows.map((row) => normalizeUserName(row.employee_name)).filter(Boolean));
   const newInReports = reportRows
     .filter((row) => !employeeNames.has(normalizeUserName(row.employee_name)) && !directoryNames.has(normalizeUserName(row.employee_name)) && !exemptNames.has(normalizeUserName(row.employee_name)))
-    .map((row) => ({ name: row.employee_name, department: row.department || "", openId: row.employee_open_id || "" }));
+    .map((row) => ({ name: row.employee_name, department: row.department || "", userId: row.employee_user_id || "" }));
   const missingLatestReport = employeeRows
     .filter((row) => Number(row.is_active || 1) === 1)
     .filter((row) => !reportNames.has(normalizeUserName(row.name)) && !exemptNames.has(normalizeUserName(row.name)))
-    .map((row) => ({ name: row.name, department: row.department || "", openId: row.open_id || "" }));
-  const missingOpenId = [
-    ...employeeRows.map((row) => ({ name: row.name, department: row.department || "", openId: row.open_id || "" })),
-    ...employeeDirectory.map((employee) => ({ name: employee.name, department: employee.department || "", openId: employee.openId || "" })),
-  ].filter((employee) => employee.name && !employee.openId && !exemptNames.has(normalizeUserName(employee.name)));
+    .map((row) => ({ name: row.name, department: row.department || "", userId: row.user_id || "" }));
+  const missingUserId = [
+    ...employeeRows.map((row) => ({ name: row.name, department: row.department || "", userId: row.user_id || "" })),
+    ...employeeDirectory.map((employee) => ({ name: employee.name, department: employee.department || "", userId: employee.userId || "" })),
+  ].filter((employee) => employee.name && !employee.userId && !exemptNames.has(normalizeUserName(employee.name)));
   const knownDepartedStillConfigured = [...new Set([...employeeNames, ...directoryNames])]
     .filter((name) => exemptNames.has(name))
     .map((name) => ({ name }));
@@ -1543,13 +1797,13 @@ async function getRosterAudit(req, res) {
       latestReports: reportNames.size,
       newInReports: newInReports.length,
       missingLatestReport: missingLatestReport.length,
-      missingOpenId: missingOpenId.length,
+      missingUserId: missingUserId.length,
     },
     newInReports,
     missingLatestReport,
-    missingOpenId,
+    missingUserId,
     knownDepartedStillConfigured,
-    note: "这里只做花名册健康检查，不自动删除或新增评分关系；新入职人员需要确认 open_id 后再进入提醒和评分对象池。",
+    note: "这里只做花名册健康检查，不自动删除或新增评分关系；新入职人员需要确认 user_id 后再进入提醒和评分对象池。",
   });
 }
 
@@ -1566,7 +1820,7 @@ async function loadScoring360Cycle(cycleId) {
 
 async function loadScoring360PendingRecipients(cycleId) {
   const rows = await querySqlRows(`
-    SELECT a.evaluator_name, a.evaluator_open_id, a.evaluee_name, a.evaluee_open_id, r.id AS response_id
+    SELECT a.evaluator_name, a.evaluator_user_id, a.evaluee_name, a.evaluee_user_id, r.id AS response_id
     FROM scoring360_assignments a
     LEFT JOIN scoring360_responses r ON r.assignment_id = a.id
     WHERE a.cycle_id = ${sqlValue(cycleId)}
@@ -1574,23 +1828,23 @@ async function loadScoring360PendingRecipients(cycleId) {
     ORDER BY a.evaluator_name ASC, a.evaluee_name ASC;
   `);
   const employees = await loadManagedEmployees();
-  const activeByOpenId = new Map(employees.filter((item) => item.openId).map((item) => [item.openId, item]));
+  const activeByUserId = new Map(employees.filter((item) => item.userId).map((item) => [item.userId, item]));
   const activeByName = new Map(employees.map((item) => [normalizeUserName(item.name), item]));
   const grouped = new Map();
   for (const row of rows) {
-    const evaluator = activeByOpenId.get(String(row.evaluator_open_id || "")) || activeByName.get(normalizeUserName(row.evaluator_name));
-    const evaluee = activeByOpenId.get(String(row.evaluee_open_id || "")) || activeByName.get(normalizeUserName(row.evaluee_name));
+    const evaluator = activeByUserId.get(String(row.evaluator_user_id || ""));
+    const evaluee = activeByUserId.get(String(row.evaluee_user_id || ""));
     if (!evaluator || !evaluee) continue;
-    const key = evaluator.openId || evaluator.name;
+    const key = evaluator.userId || evaluator.name;
     if (!grouped.has(key)) {
       grouped.set(key, {
         evaluatorName: evaluator.name,
-        evaluatorOpenId: evaluator.openId || "",
+        evaluatorUserId: evaluator.userId || "",
         department: evaluator.department || "",
         pendingCount: 0,
         totalCount: 0,
         pendingNames: [],
-        deliverable: Boolean(evaluator.openId),
+        deliverable: Boolean(evaluator.userId),
       });
     }
     const item = grouped.get(key);
@@ -1605,7 +1859,7 @@ async function loadScoring360PendingRecipients(cycleId) {
     .sort((left, right) => right.pendingCount - left.pendingCount || left.evaluatorName.localeCompare(right.evaluatorName, "zh-CN"));
 }
 
-async function runScoring360Reminder({ cycleId, kind = "launch", dryRun = true, force = false, evaluatorOpenId = "", source = "manual", actor = null } = {}) {
+async function runScoring360Reminder({ cycleId, kind = "launch", dryRun = true, force = false, evaluatorUserId = "", source = "manual", actor = null } = {}) {
   cycleId = cycleId || (kind === "launch"
     ? await ensureScoring360CycleForLaunchDate(scoring360ActiveDate())
     : await resolveScoring360CycleId(""));
@@ -1614,15 +1868,15 @@ async function runScoring360Reminder({ cycleId, kind = "launch", dryRun = true, 
   let cycle = await loadScoring360Cycle(cycleId);
   if (!cycle) return { ok: false, error: "cycle_not_found" };
   const pending = await loadScoring360PendingRecipients(cycleId);
-  const recipients = evaluatorOpenId
-    ? pending.filter((recipient) => recipient.evaluatorOpenId === evaluatorOpenId)
+  const recipients = evaluatorUserId
+    ? pending.filter((recipient) => recipient.evaluatorUserId === evaluatorUserId)
     : pending;
-  if (evaluatorOpenId && recipients.length === 0) {
+  if (evaluatorUserId && recipients.length === 0) {
     return { ok: false, error: "target_evaluator_not_pending" };
   }
   const results = [];
   for (const recipient of recipients) {
-    const idempotencyKey = buildScoring360ReminderIdempotencyKey(cycle.id, recipient.evaluatorOpenId || recipient.evaluatorName, kind);
+    const idempotencyKey = buildScoring360ReminderIdempotencyKey(cycle.id, recipient.evaluatorUserId || recipient.evaluatorName, kind);
     const existing = await querySqlRows(`
       SELECT status, feishu_message_id, created_at
       FROM scoring360_reminder_sends
@@ -1634,7 +1888,7 @@ async function runScoring360Reminder({ cycleId, kind = "launch", dryRun = true, 
       continue;
     }
     const message = buildScoring360ReminderMessage({ cycle, recipient, kind });
-    if (dryRun || !recipient.evaluatorOpenId) {
+    if (dryRun || !recipient.evaluatorUserId) {
       await persistScoring360ReminderSend({
         cycle,
         recipient,
@@ -1643,15 +1897,15 @@ async function runScoring360Reminder({ cycleId, kind = "launch", dryRun = true, 
         source,
         identity: config.scoring360ReminderIdentity,
         idempotencyKey,
-        status: recipient.evaluatorOpenId ? "dry_run" : "missing_open_id",
+        status: recipient.evaluatorUserId ? "dry_run" : "missing_user_id",
         feishuMessageId: "",
-        rawResponse: { dryRun, actorName: actor?.name || "", missingOpenId: !recipient.evaluatorOpenId },
+        rawResponse: { dryRun, actorName: actor?.name || "", missingUserId: !recipient.evaluatorUserId },
       });
-      results.push({ ok: Boolean(recipient.evaluatorOpenId), dryRun, recipient, message, idempotencyKey, error: recipient.evaluatorOpenId ? "" : "missing_open_id" });
+      results.push({ ok: Boolean(recipient.evaluatorUserId), dryRun, recipient, message, idempotencyKey, error: recipient.evaluatorUserId ? "" : "missing_user_id" });
       continue;
     }
     const sendResult = sendFeishuDirectMessage(
-      recipient.evaluatorOpenId,
+      recipient.evaluatorUserId,
       message,
       idempotencyKey,
       config.scoring360ReminderIdentity,
@@ -1758,7 +2012,7 @@ function buildScoring360ReminderMessage({ cycle, recipient, kind }) {
 你这轮需要评价 ${recipient.pendingCount} 个对象：${pendingNames}${more}。
 ${dueText}
 
-计算方式会在成长 OS 中透明展示：当期协同分 = 本轮收到的评分平均值；滚动协同分 = 上期/历史分 × ${Math.round(weights.historicalWeight * 100)}% + 当期分 × ${Math.round(weights.currentWeight * 100)}%。如果 24 小时后仍有未完成项，系统会再提醒一次；48 小时为本轮截止时间。
+月度最终分 = 负责人或老板评分 × 30% + 本月全部同事互评均分 × 70%。两部分都完成后自动发布，无需人工确认。开启月末自动提醒后，每月最后两个工作日会分别提醒仍未完成的评分人员。
 
 入口：${config.baseUrl}/scores?tab=my360
 
@@ -1798,16 +2052,20 @@ async function persistScoring360ReminderSend({
 }) {
   await execSql(`
     INSERT OR REPLACE INTO scoring360_reminder_sends
-      (id, cycle_id, cycle_label, evaluator_open_id, evaluator_name, pending_count, message,
+      (id, cycle_id, cycle_label, evaluator_user_id, evaluator_name, pending_count, message,
        kind, source, identity, feishu_message_id, idempotency_key, status, raw_response_json, created_at)
     VALUES
       (${sqlValue(randomUUID())}, ${sqlValue(cycle.id)}, ${sqlValue(cycle.label)},
-       ${sqlValue(recipient.evaluatorOpenId || "")}, ${sqlValue(recipient.evaluatorName)},
+       ${sqlValue(recipient.evaluatorUserId || "")}, ${sqlValue(recipient.evaluatorName)},
        ${sqlValue(recipient.pendingCount)}, ${sqlValue(message)}, ${sqlValue(kind)},
        ${sqlValue(source)}, ${sqlValue(identity)}, ${sqlValue(feishuMessageId)},
        ${sqlValue(idempotencyKey)}, ${sqlValue(status)}, ${sqlValue(JSON.stringify(rawResponse || {}))},
        datetime('now'));
   `);
+}
+
+async function collaborationResultPublished(cycleId,userId) {
+  return (await querySqlRows(`SELECT 1 AS locked FROM performance_results p JOIN scoring360_cycles c ON p.month=substr(c.start_date,1,7) WHERE c.id=${sqlValue(cycleId)} AND p.employee_user_id=${sqlValue(userId)} AND p.kind='collaboration' UNION SELECT 1 AS locked FROM monthly_weighted_results p JOIN scoring360_cycles c ON p.month=substr(c.start_date,1,7) WHERE c.id=${sqlValue(cycleId)} AND p.employee_user_id=${sqlValue(userId)} LIMIT 1;`)).length>0;
 }
 
 async function createScoring360Assignment(req, res) {
@@ -1826,30 +2084,34 @@ async function createScoring360Assignment(req, res) {
   }
   const body = await readJsonBody(req, { limitBytes: 30_000 });
   const cycleId = await resolveScoring360CycleId(body.cycleId, { ensureCurrentRound: true });
-  const evalueeName = normalizeUserName(body.evalueeName || body.evaluee);
-  const evaluatorName = normalizeUserName(body.evaluatorName || body.evaluator);
+  const evalueeName = normalizeUserName(body.evalueeName || body.evaluee || body.evalueeUserId);
+  const evaluatorName = normalizeUserName(body.evaluatorName || body.evaluator || body.evaluatorUserId);
   if (!cycleId || !evalueeName || !evaluatorName) {
     sendJson(res, 400, { ok: false, error: "invalid_assignment" });
     return;
   }
-  const evaluee = await findActiveManagedEmployee(evalueeName);
-  const evaluator = await findActiveManagedEmployee(evaluatorName);
+  const evaluee = await findActiveManagedEmployee(body.evalueeUserId || evalueeName);
+  const evaluator = await findActiveManagedEmployee(body.evaluatorUserId || evaluatorName);
   if (!evaluee || !evaluator) {
     sendJson(res, 409, { ok: false, error: "inactive_or_unknown_employee" });
     return;
   }
-  const assignmentId = `sc360-${createHash("sha1").update(`${cycleId}:${evalueeName}:${evaluatorName}`).digest("hex").slice(0, 20)}`;
+  if(evaluee.userId===evaluator.userId)return sendJson(res,409,{ok:false,error:'self_scoring_forbidden'});
+  const existing = (await querySqlRows(`SELECT id,status FROM scoring360_assignments WHERE cycle_id=${sqlValue(cycleId)} AND evaluee_user_id=${sqlValue(evaluee.userId)} AND evaluator_user_id=${sqlValue(evaluator.userId)} LIMIT 1;`))[0];
+  if(existing && existing.status === 'active') return sendJson(res,200,{ok:true,alreadyExists:true,assignment:{id:existing.id,cycleId,evalueeName,evaluatorName}});
+  if(await collaborationResultPublished(cycleId,evaluee.userId)) return sendJson(res,409,{ok:false,error:'result_locked'});
+  const assignmentId = `sc360-${createHash("sha1").update(`${cycleId}:${evaluee.userId}:${evaluator.userId}`).digest("hex").slice(0, 20)}`;
   await execSql(`
     INSERT INTO scoring360_assignments (
-      id, cycle_id, evaluee_name, evaluator_name, evaluee_open_id, evaluator_open_id, relationship, status, created_at, updated_at
+      id, cycle_id, evaluee_name, evaluator_name, evaluee_user_id, evaluator_user_id, relationship, status, created_at, updated_at
     ) VALUES (
-      ${sqlValue(assignmentId)}, ${sqlValue(cycleId)}, ${sqlValue(evalueeName)}, ${sqlValue(evaluatorName)},
-      ${sqlValue(evaluee.openId || "")}, ${sqlValue(evaluator.openId || "")}, ${sqlValue(body.relationship || "")},
+      ${sqlValue(assignmentId)}, ${sqlValue(cycleId)}, ${sqlValue(evaluee.name)}, ${sqlValue(evaluator.name)},
+      ${sqlValue(evaluee.userId || "")}, ${sqlValue(evaluator.userId || "")}, ${sqlValue(body.relationship || "")},
       'active', datetime('now'), datetime('now')
     )
-    ON CONFLICT(cycle_id, evaluee_name, evaluator_name) DO UPDATE SET
-      evaluee_open_id = excluded.evaluee_open_id,
-      evaluator_open_id = excluded.evaluator_open_id,
+    ON CONFLICT(cycle_id, evaluee_user_id, evaluator_user_id) DO UPDATE SET
+      evaluee_user_id = excluded.evaluee_user_id,
+      evaluator_user_id = excluded.evaluator_user_id,
       relationship = excluded.relationship,
       status = 'active',
       updated_at = datetime('now');
@@ -1875,8 +2137,8 @@ async function deleteScoring360Assignment(req, res) {
   const body = await readJsonBody(req, { limitBytes: 30_000 });
   const assignmentId = String(body.assignmentId || body.id || "").trim();
   const cycleId = await resolveScoring360CycleId(body.cycleId, { ensureCurrentRound: true });
-  const evalueeName = normalizeUserName(body.evalueeName || body.evaluee);
-  const evaluatorName = normalizeUserName(body.evaluatorName || body.evaluator);
+  const evalueeName = normalizeUserName(body.evalueeName || body.evaluee || body.evalueeUserId);
+  const evaluatorName = normalizeUserName(body.evaluatorName || body.evaluator || body.evaluatorUserId);
   const where = assignmentId
     ? `id = ${sqlValue(assignmentId)}`
     : `cycle_id = ${sqlValue(cycleId)} AND evaluee_name = ${sqlValue(evalueeName)} AND evaluator_name = ${sqlValue(evaluatorName)}`;
@@ -1885,7 +2147,7 @@ async function deleteScoring360Assignment(req, res) {
     return;
   }
   const rows = await querySqlRows(`
-    SELECT id, cycle_id FROM scoring360_assignments
+    SELECT id, cycle_id, evaluee_name, evaluee_user_id FROM scoring360_assignments
     WHERE ${where}
     LIMIT 1;
   `);
@@ -1894,6 +2156,7 @@ async function deleteScoring360Assignment(req, res) {
     sendJson(res, 404, { ok: false, error: "assignment_not_found" });
     return;
   }
+  if(await collaborationResultPublished(assignment.cycle_id,assignment.evaluee_user_id)) return sendJson(res,409,{ok:false,error:'result_locked'});
   await execSql(`
     UPDATE scoring360_assignments
     SET status = 'inactive', updated_at = datetime('now')
@@ -1953,14 +2216,14 @@ async function recordUsageHeartbeat(req, res) {
 }
 
 async function recordAccountEvent(user, eventType, options = {}) {
-  if (!user?.openId || !eventType) return;
+  if (!user?.userId || !eventType) return;
   const targetType = options.targetType || "account";
   const targetId = options.targetId || "";
   const points = Number.isFinite(Number(options.points)) ? Number(options.points) : 0;
   const payload = options.payload || {};
   await execSql(`
-    INSERT INTO contribution_events (id, actor_open_id, actor_name, event_type, target_type, target_id, points, payload_json)
-    VALUES (${sqlValue(randomUUID())}, ${sqlValue(user.openId)}, ${sqlValue(user.name || "")}, ${sqlValue(eventType)},
+    INSERT INTO contribution_events (id, actor_user_id, actor_name, event_type, target_type, target_id, points, payload_json)
+    VALUES (${sqlValue(randomUUID())}, ${sqlValue(user.userId)}, ${sqlValue(user.name || "")}, ${sqlValue(eventType)},
             ${sqlValue(targetType)}, ${sqlValue(targetId)}, ${points}, ${sqlValue(JSON.stringify(payload))});
   `);
 }
@@ -1973,11 +2236,11 @@ async function listContributionActivity(req, res) {
   }
 
   const activity = new Map();
-  const ensure = (openId, name = "") => {
-    const key = openId || name || "unknown";
+  const ensure = (userId, name = "") => {
+    const key = userId || name || "unknown";
     if (!activity.has(key)) {
       activity.set(key, {
-        openId,
+        userId,
         name,
         visits: 0,
         comments: 0,
@@ -1998,56 +2261,56 @@ async function listContributionActivity(req, res) {
   };
 
   const visitRows = await querySqlRows(`
-    SELECT actor_open_id, actor_name, COUNT(*) AS count, SUM(points) AS points, MAX(created_at) AS last_at
+    SELECT actor_user_id, actor_name, COUNT(*) AS count, SUM(points) AS points, MAX(created_at) AS last_at
     FROM contribution_events
     WHERE event_type = 'page_visit'
-    GROUP BY actor_open_id, actor_name;
+    GROUP BY actor_user_id, actor_name;
   `);
   for (const row of visitRows) {
-    const item = ensure(row.actor_open_id, row.actor_name);
+    const item = ensure(row.actor_user_id, row.actor_name);
     item.visits += Number(row.count || 0);
     item.eventPoints += Number(row.points || 0);
     touch(item, row.last_at);
   }
 
   const commentRows = await querySqlRows(`
-    SELECT author_open_id, author_name, COUNT(*) AS count, MAX(created_at) AS last_at
+    SELECT author_user_id, author_name, COUNT(*) AS count, MAX(created_at) AS last_at
     FROM comments
     WHERE deleted_at IS NULL
-    GROUP BY author_open_id, author_name;
+    GROUP BY author_user_id, author_name;
   `);
   for (const row of commentRows) {
-    const item = ensure(row.author_open_id, row.author_name);
+    const item = ensure(row.author_user_id, row.author_name);
     item.comments += Number(row.count || 0);
     touch(item, row.last_at);
   }
 
   const reactionRows = await querySqlRows(`
-    SELECT actor_open_id, COUNT(*) AS count, MAX(created_at) AS last_at
+    SELECT actor_user_id, COUNT(*) AS count, MAX(created_at) AS last_at
     FROM reactions
-    GROUP BY actor_open_id;
+    GROUP BY actor_user_id;
   `);
   for (const row of reactionRows) {
-    const item = ensure(row.actor_open_id);
+    const item = ensure(row.actor_user_id);
     item.likes += Number(row.count || 0);
     touch(item, row.last_at);
   }
 
   const followupRows = await querySqlRows(`
-    SELECT author_open_id, author_name, COUNT(*) AS count, MAX(created_at) AS last_at
+    SELECT author_user_id, author_name, COUNT(*) AS count, MAX(created_at) AS last_at
     FROM ai_followup_messages
     WHERE role = 'user'
-    GROUP BY author_open_id, author_name;
+    GROUP BY author_user_id, author_name;
   `);
   for (const row of followupRows) {
-    const item = ensure(row.author_open_id, row.author_name);
+    const item = ensure(row.author_user_id, row.author_name);
     item.followups += Number(row.count || 0);
     touch(item, row.last_at);
   }
 
   sendJson(res, 200, {
     ok: true,
-    activity: Array.from(activity.values()).filter((item) => item.openId || item.name),
+    activity: Array.from(activity.values()).filter((item) => item.userId || item.name),
   });
 }
 
@@ -2082,28 +2345,28 @@ async function listAccountActivity(req, res, url) {
 
   const recipientRows = periodId
     ? await querySqlRows(`
-        SELECT recipient_open_id, recipient_name, department, MIN(created_at) AS sent_at
+        SELECT recipient_user_id, recipient_name, department, MIN(created_at) AS sent_at
         FROM weekly_reminder_sends
         WHERE period_id = ${sqlValue(periodId)}
           AND source = 'auto_monday_update'
           AND status = 'sent'
-        GROUP BY recipient_open_id, recipient_name, department
+        GROUP BY recipient_user_id, recipient_name, department
         ORDER BY recipient_name;
       `)
     : await querySqlRows(`
-        SELECT open_id AS recipient_open_id, name AS recipient_name, department, updated_at AS sent_at
+        SELECT user_id AS recipient_user_id, name AS recipient_name, department, updated_at AS sent_at
         FROM employees
         WHERE is_active = 1
         ORDER BY name;
       `);
 
-  const rowsByOpenId = new Map();
-  const ensure = (openId, name = "", department = "") => {
-    const key = openId || name;
+  const rowsByUserId = new Map();
+  const ensure = (userId, name = "", department = "") => {
+    const key = userId || name;
     if (!key) return null;
-    if (!rowsByOpenId.has(key)) {
-      rowsByOpenId.set(key, {
-        openId,
+    if (!rowsByUserId.has(key)) {
+      rowsByUserId.set(key, {
+        userId,
         name,
         department,
         sentAt: "",
@@ -2118,7 +2381,7 @@ async function listAccountActivity(req, res, url) {
         lastActiveAt: "",
       });
     }
-    const item = rowsByOpenId.get(key);
+    const item = rowsByUserId.get(key);
     if (!item.name && name) item.name = name;
     if (!item.department && department) item.department = department;
     return item;
@@ -2130,12 +2393,12 @@ async function listAccountActivity(req, res, url) {
   };
 
   for (const row of recipientRows) {
-    const item = ensure(row.recipient_open_id, row.recipient_name, row.department);
+    const item = ensure(row.recipient_user_id, row.recipient_name, row.department);
     if (item) item.sentAt = row.sent_at || "";
   }
 
   const eventRows = await querySqlRows(`
-    SELECT actor_open_id, actor_name,
+    SELECT actor_user_id, actor_name,
       SUM(CASE WHEN event_type = 'login_success' THEN 1 ELSE 0 END) AS login_count,
       SUM(CASE WHEN event_type = 'session_resume' THEN 1 ELSE 0 END) AS session_count,
       SUM(CASE WHEN event_type = 'heartbeat' THEN 1 ELSE 0 END) AS heartbeat_count,
@@ -2145,10 +2408,10 @@ async function listAccountActivity(req, res, url) {
     FROM contribution_events
     WHERE created_at >= ${sqlValue(windowStart)}
       AND event_type IN ('login_success', 'session_resume', 'heartbeat', 'page_visit')
-    GROUP BY actor_open_id, actor_name;
+    GROUP BY actor_user_id, actor_name;
   `);
   for (const row of eventRows) {
-    const item = ensure(row.actor_open_id, row.actor_name);
+    const item = ensure(row.actor_user_id, row.actor_name);
     if (!item) continue;
     item.loginCount += Number(row.login_count || 0);
     item.sessionCount += Number(row.session_count || 0);
@@ -2158,46 +2421,46 @@ async function listAccountActivity(req, res, url) {
   }
 
   const commentRows = await querySqlRows(`
-    SELECT author_open_id, author_name, COUNT(*) AS count, MIN(created_at) AS first_at, MAX(created_at) AS last_at
+    SELECT author_user_id, author_name, COUNT(*) AS count, MIN(created_at) AS first_at, MAX(created_at) AS last_at
     FROM comments
     WHERE deleted_at IS NULL AND created_at >= ${sqlValue(windowStart)}
-    GROUP BY author_open_id, author_name;
+    GROUP BY author_user_id, author_name;
   `);
   for (const row of commentRows) {
-    const item = ensure(row.author_open_id, row.author_name);
+    const item = ensure(row.author_user_id, row.author_name);
     if (!item) continue;
     item.commentCount += Number(row.count || 0);
     touch(item, row.first_at, row.last_at);
   }
 
   const reactionRows = await querySqlRows(`
-    SELECT actor_open_id, COUNT(*) AS count, MIN(created_at) AS first_at, MAX(created_at) AS last_at
+    SELECT actor_user_id, COUNT(*) AS count, MIN(created_at) AS first_at, MAX(created_at) AS last_at
     FROM reactions
     WHERE created_at >= ${sqlValue(windowStart)}
-    GROUP BY actor_open_id;
+    GROUP BY actor_user_id;
   `);
   for (const row of reactionRows) {
-    const item = ensure(row.actor_open_id);
+    const item = ensure(row.actor_user_id);
     if (!item) continue;
     item.reactionCount += Number(row.count || 0);
     touch(item, row.first_at, row.last_at);
   }
 
   const followupRows = await querySqlRows(`
-    SELECT author_open_id, author_name, COUNT(*) AS count, MIN(created_at) AS first_at, MAX(created_at) AS last_at
+    SELECT author_user_id, author_name, COUNT(*) AS count, MIN(created_at) AS first_at, MAX(created_at) AS last_at
     FROM ai_followup_messages
     WHERE role = 'user' AND created_at >= ${sqlValue(windowStart)}
-    GROUP BY author_open_id, author_name;
+    GROUP BY author_user_id, author_name;
   `);
   for (const row of followupRows) {
-    const item = ensure(row.author_open_id, row.author_name);
+    const item = ensure(row.author_user_id, row.author_name);
     if (!item) continue;
     item.followupCount += Number(row.count || 0);
     touch(item, row.first_at, row.last_at);
   }
 
-  const recipientOpenIds = new Set(recipientRows.map((row) => row.recipient_open_id).filter(Boolean));
-  const rows = Array.from(rowsByOpenId.values()).map((item) => {
+  const recipientUserIds = new Set(recipientRows.map((row) => row.recipient_user_id).filter(Boolean));
+  const rows = Array.from(rowsByUserId.values()).map((item) => {
     const activeSignals = item.loginCount + item.sessionCount + item.heartbeatCount + item.pageVisitCount;
     const interactionSignals = item.commentCount + item.reactionCount + item.followupCount;
     const attentionScore = activeSignals + interactionSignals * 3;
@@ -2208,7 +2471,7 @@ async function listAccountActivity(req, res, url) {
         : "active";
     return {
       ...item,
-      isReminderRecipient: recipientOpenIds.has(item.openId),
+      isReminderRecipient: recipientUserIds.has(item.userId),
       activeSignals,
       interactionSignals,
       attentionScore,
@@ -2312,10 +2575,10 @@ async function createExternalLink(req, res) {
   const expiresAt = new Date(Date.now() + ttlHours * 60 * 60 * 1000).toISOString();
   await execSql(`
     INSERT INTO external_share_links
-      (id, token_hash, name, scope, created_by_open_id, created_by_name, expires_at)
+      (id, token_hash, name, scope, created_by_user_id, created_by_name, expires_at)
     VALUES
       (${sqlValue(id)}, ${sqlValue(tokenHash)}, ${sqlValue(name)}, 'boss_view',
-       ${sqlValue(user.openId)}, ${sqlValue(user.name)}, ${sqlValue(expiresAt)});
+       ${sqlValue(user.userId)}, ${sqlValue(user.name)}, ${sqlValue(expiresAt)});
   `);
   sendJson(res, 200, {
     ok: true,
@@ -2346,7 +2609,7 @@ async function listBossViewMembers(req, res) {
   sendJson(res, 200, {
     ok: true,
     members: bossAccessState.members,
-    openIds: Array.from(bossAccessState.openIds),
+    userIds: Array.from(bossAccessState.userIds),
     names: Array.from(bossAccessState.names),
   });
 }
@@ -2366,9 +2629,10 @@ async function updateBossViewMembers(req, res) {
     return;
   }
   const body = await readJsonBody(req, { limitBytes: 80_000 });
-  const members = normalizeBossViewMembers(body.members || body.openIds || []);
-  await saveAppSetting("boss_view_members", { members });
+  const members = normalizeBossViewMembers(body.members || body.userIds || []);
+  await saveAppSetting("boss_view_members",{members});
   applyBossViewMembers(members);
+  await systemSettings.audit(session?.user||mockUser(),'老板角色授权已更新',{members:members.map(m=>m.userId)});
   sendJson(res, 200, { ok: true, members: bossAccessState.members });
 }
 
@@ -2397,8 +2661,9 @@ async function updateScoring360AdminMembers(req, res) {
   }
   const body = await readJsonBody(req, { limitBytes: 80_000 });
   const members = normalizeBossViewMembers(body.members || []);
-  await saveAppSetting("scoring360_admin_members", { members });
+  await saveAppSetting("scoring360_admin_members",{members});
   applyScoring360AdminMembers(members);
+  await systemSettings.audit(session?.user||mockUser(),'管理员角色授权已更新',{members:members.map(m=>m.userId)});
   sendJson(res, 200, { ok: true, members: scoring360AdminState.members });
 }
 
@@ -2426,26 +2691,27 @@ async function upsertManagedEmployee(req, res) {
     return;
   }
   const body = await readJsonBody(req, { limitBytes: 30_000 });
+  if(config.authMode!=='mock') return sendJson(res,405,{ok:false,error:'sso_roster_only'});
   const employee = normalizeManagedEmployee(body);
-  if (!employee.openId || !employee.name) {
-    sendJson(res, 400, { ok: false, error: "employee_open_id_and_name_required" });
+  if (!employee.userId || !employee.name) {
+    sendJson(res, 400, { ok: false, error: "employee_user_id_and_name_required" });
     return;
   }
   await ensureManagedEmployeeStore();
   await execSql(`
-    INSERT INTO employees (open_id, name, department, email, manager_open_id, role_level, is_active, updated_at)
-    VALUES (${sqlValue(employee.openId)}, ${sqlValue(employee.name)}, ${sqlValue(employee.department)},
-            ${sqlValue(employee.email)}, ${sqlValue(employee.managerOpenId)}, ${sqlValue(employee.roleLevel)}, 1, datetime('now'))
-    ON CONFLICT(open_id) DO UPDATE SET
+    INSERT INTO employees (user_id, name, department, email, manager_user_id, role_level, is_active, updated_at)
+    VALUES (${sqlValue(employee.userId)}, ${sqlValue(employee.name)}, ${sqlValue(employee.department)},
+            ${sqlValue(employee.email)}, ${sqlValue(employee.managerUserId)}, ${sqlValue(employee.roleLevel)}, 1, datetime('now'))
+    ON CONFLICT(user_id) DO UPDATE SET
       name = excluded.name,
       department = excluded.department,
       email = excluded.email,
-      manager_open_id = excluded.manager_open_id,
+      manager_user_id = excluded.manager_user_id,
       role_level = excluded.role_level,
       is_active = 1,
       updated_at = datetime('now');
   `);
-  sendJson(res, 200, { ok: true, employee: (await loadManagedEmployees({ includeInactive: true })).find((item) => item.openId === employee.openId) });
+  sendJson(res, 200, { ok: true, employee: (await loadManagedEmployees({ includeInactive: true })).find((item) => item.userId === employee.userId) });
 }
 
 async function updateManagedEmployeeStatus(req, res) {
@@ -2459,32 +2725,37 @@ async function updateManagedEmployeeStatus(req, res) {
     return;
   }
   const body = await readJsonBody(req, { limitBytes: 20_000 });
-  const openId = String(body.openId || body.open_id || "").trim();
+  const userId = String(body.userId || body.user_id || "").trim();
   const active = body.active !== false;
-  if (!openId) {
-    sendJson(res, 400, { ok: false, error: "employee_open_id_required" });
+  if(active && config.authMode!=='mock')return sendJson(res,405,{ok:false,error:'sso_roster_only'});
+  if (!userId) {
+    sendJson(res, 400, { ok: false, error: "employee_user_id_required" });
     return;
   }
   await ensureManagedEmployeeStore();
-  const rows = await querySqlRows(`SELECT open_id, name FROM employees WHERE open_id = ${sqlValue(openId)} LIMIT 1;`);
+  const rows = await querySqlRows(`SELECT user_id, name FROM employees WHERE user_id = ${sqlValue(userId)} LIMIT 1;`);
   if (!rows[0]) {
     sendJson(res, 404, { ok: false, error: "employee_not_found" });
     return;
   }
   await execSql(`
     UPDATE employees SET is_active = ${active ? 1 : 0}, updated_at = datetime('now')
-    WHERE open_id = ${sqlValue(openId)};
+    WHERE user_id = ${sqlValue(userId)};
   `);
   if (!active) {
     await execSql(`
       UPDATE scoring360_assignments
       SET status = 'inactive', updated_at = datetime('now')
       WHERE status = 'active'
-        AND (evaluee_open_id = ${sqlValue(openId)} OR evaluator_open_id = ${sqlValue(openId)}
-             OR evaluee_name = ${sqlValue(rows[0].name)} OR evaluator_name = ${sqlValue(rows[0].name)});
+        AND (evaluee_user_id = ${sqlValue(userId)} OR evaluator_user_id = ${sqlValue(userId)})
+        AND NOT EXISTS(SELECT 1 FROM scoring360_responses r WHERE r.assignment_id=scoring360_assignments.id)
+        AND NOT EXISTS(SELECT 1 FROM performance_results p JOIN scoring360_cycles c ON p.month=substr(c.start_date,1,7) WHERE c.id=scoring360_assignments.cycle_id AND p.kind='collaboration' AND p.employee_user_id=scoring360_assignments.evaluee_user_id)
+        AND NOT EXISTS(SELECT 1 FROM monthly_weighted_results p JOIN scoring360_cycles c ON p.month=substr(c.start_date,1,7) WHERE c.id=scoring360_assignments.cycle_id AND p.employee_user_id=scoring360_assignments.evaluee_user_id);
     `);
   }
-  sendJson(res, 200, { ok: true, openId, active });
+  await refreshEmployeeDirectory();
+  await systemSettings.audit(session?.user||mockUser(),'员工状态已更新',{userId,active});
+  sendJson(res, 200, { ok: true, userId, active });
 }
 
 async function getLarkReportSyncStatus(req, res) {
@@ -2503,14 +2774,16 @@ async function getLarkReportSyncStatus(req, res) {
   }
   sendJson(res, 200, {
     ok: true,
-    autoSyncEnabled: config.larkReportAutoSyncEnabled,
+    autoSyncEnabled: (await systemSettings.reportAutomationConfig()).enabled,
+    automation: await reportAutomation.overview(),
     autoSyncHour: config.larkReportAutoSyncHour,
-    processRunning: Boolean(larkReportSyncProcess),
+    processRunning: liveReportSync.isRunning(),
     status: await readLarkReportSyncStatus(),
   });
 }
 
 async function startLarkReportSync(req, res) {
+  if(req.headers.origin&&new URL(req.headers.origin).host!==req.headers.host)return sendJson(res,403,{ok:false,error:"invalid_origin"});
   const session = getSession(req);
   if (!session && config.authMode !== "mock") {
     sendJson(res, 401, { ok: false, error: "unauthorized" });
@@ -2546,6 +2819,12 @@ async function startLarkReportSync(req, res) {
 }
 
 async function enqueueLarkReportSync(options = {}) {
+  const today=new Intl.DateTimeFormat('sv-SE',{timeZone:'Asia/Shanghai'}).format(new Date());
+  const prior=new Date(today+'T00:00:00Z');prior.setUTCDate(prior.getUTCDate()-7);
+  return liveReportSync.start({start:options.commitStart||options.start||(options.source==='auto_monday'?prior.toISOString().slice(0,10):undefined),end:options.commitEnd||options.end});
+}
+
+async function enqueueLegacyLarkReportSync(options = {}) {
   if (larkReportSyncProcess) return false;
   await writeLarkReportSyncStatus({
     ok: true,
@@ -2613,9 +2892,18 @@ async function readLarkReportSyncStatus() {
 
 async function writeLarkReportSyncStatus(status) {
   await mkdir(path.dirname(larkReportSyncStatusPath), { recursive: true });
-  await writeFile(larkReportSyncStatusPath, `${JSON.stringify({ ...status, updatedAt: new Date().toISOString() }, null, 2)}\n`, "utf8");
+  const temp=larkReportSyncStatusPath+'.'+randomUUID()+'.tmp';
+  await writeFile(temp, `${JSON.stringify({ ...status, updatedAt: new Date().toISOString() }, null, 2)}\n`, "utf8");
+  await rename(temp,larkReportSyncStatusPath);
 }
 
+function scheduleAutomaticReportCollection() {
+  const tick=()=>reportAutomation.tick().catch(()=>console.error('automatic report collection scheduler failed'));
+  setInterval(tick,60*1000).unref();
+  void tick();
+}
+
+// Retained compatibility implementation; polling now collects new submissions throughout the week.
 function scheduleWeeklyLarkReportSync() {
   if (!config.larkReportAutoSyncEnabled) return;
   const tick = async () => {
@@ -2626,7 +2914,7 @@ function scheduleWeeklyLarkReportSync() {
     const dateKey = `${shanghai.getFullYear()}-${String(shanghai.getMonth() + 1).padStart(2, "0")}-${String(shanghai.getDate()).padStart(2, "0")}`;
     if (day !== 1 || hour < config.larkReportAutoSyncHour || lastAutoSyncKey === dateKey) return;
     const status = await readLarkReportSyncStatus();
-    if (status.running || larkReportSyncProcess) return;
+    if (liveReportSync.isRunning() || larkReportSyncProcess) return;
     if (isWeeklyReportSyncCompletedForDate(status, dateKey)) {
       lastAutoSyncKey = dateKey;
       return;
@@ -2649,7 +2937,8 @@ function scheduleWeeklyGrowthReminder() {
     const hour = shanghai.getHours();
     const minute = shanghai.getMinutes();
     const dateKey = formatDateKey(shanghai);
-    if (day !== config.weeklyReminderDay || hour !== config.weeklyReminderHour || minute < config.weeklyReminderMinute) return;
+    const end=fridayOfWeek(dateKey),policy=await systemSettings.policyFor(end.slice(0,7)),schedule=weeklyReportSchedule(end,chinaWorkCalendar,policy.deadlineTime);
+    if(schedule.exempt||schedule.calendarPending||dateKey!==schedule.deadlineDate||hour!==config.weeklyReminderHour||minute<config.weeklyReminderMinute)return;
     if (lastReminderKey === dateKey) return;
     const workday = getChinaWorkdayStatus(dateKey);
     if (config.weeklyReminderRespectChinaHolidays && !workday.isWorkday) {
@@ -2711,6 +3000,20 @@ function isAtOrAfterScheduledTime(hour, minute, scheduledHour, scheduledMinute) 
   return hour > scheduledHour || (hour === scheduledHour && minute >= scheduledMinute);
 }
 
+function scheduleMonthEndScoreReminders() {
+  const tick=async()=>{
+    try{
+      // Refreshes at most daily, also discovers next-year data without a code release.
+      await calendarUpdates.refresh();
+      const result=await monthEndScoreReminders.tick();
+      if(result.failed)console.error('month-end scoring reminders: delivery failed',result.failed);
+    }catch{console.error('month-end scoring reminders: scheduler failed');}
+  };
+  setInterval(tick,60*1000).unref();
+  void tick();
+}
+
+// Retained for compatibility/reference; automatic startup uses month-end reminders above.
 function scheduleScoring360Reminder() {
   if (!config.scoring360ReminderEnabled) return;
   let lastLaunchKey = "";
@@ -2724,7 +3027,8 @@ function scheduleScoring360Reminder() {
     if (!workday.isWorkday) return;
 
     if (
-      shanghai.getDate() >= Math.min(...config.scoring360ReminderDaysOfMonth)
+      config.scoring360LaunchMode === "scheduled"
+      && shanghai.getDate() >= Math.min(...config.scoring360ReminderDaysOfMonth)
       && isAtOrAfterScheduledTime(
         hour,
         minute,
@@ -2785,7 +3089,7 @@ async function runLarkAuthExpiryCheck({ source = "manual_lark_auth_monitor" } = 
     return { ok: false, error: status.error || "auth_status_failed" };
   }
   const user = status.user;
-  if (!user?.openId || !user?.refreshExpiresAt) {
+  if (!user?.userId || !user?.refreshExpiresAt) {
     return { ok: true, skipped: true, reason: "missing_user_refresh_expiry" };
   }
   const expiresAt = new Date(user.refreshExpiresAt).getTime();
@@ -2801,7 +3105,7 @@ async function runLarkAuthExpiryCheck({ source = "manual_lark_auth_monitor" } = 
     SELECT status, feishu_message_id, created_at
     FROM lark_auth_monitor_sends
     WHERE app_id = ${sqlValue(status.appId)}
-      AND user_open_id = ${sqlValue(user.openId)}
+      AND user_id = ${sqlValue(user.userId)}
       AND threshold_hours = ${threshold}
       AND refresh_expires_at = ${sqlValue(user.refreshExpiresAt)}
     LIMIT 1;
@@ -2813,12 +3117,12 @@ async function runLarkAuthExpiryCheck({ source = "manual_lark_auth_monitor" } = 
   const message = buildLarkAuthExpiryMessage({ status, user, threshold, remainingHours });
   const idempotencyKey = buildLarkAuthMonitorIdempotencyKey({
     appId: status.appId,
-    openId: user.openId,
+    userId: user.userId,
     refreshExpiresAt: user.refreshExpiresAt,
     threshold,
   });
   const sendResult = sendFeishuDirectMessage(
-    user.openId,
+    user.userId,
     message,
     idempotencyKey,
     config.larkAuthMonitorIdentity,
@@ -2834,14 +3138,14 @@ async function runLarkAuthExpiryCheck({ source = "manual_lark_auth_monitor" } = 
   const sendStatus = sendResult.ok ? "sent" : "failed";
   await execSql(`
     INSERT INTO lark_auth_monitor_sends
-      (id, app_id, user_open_id, user_name, threshold_hours, refresh_expires_at, message,
+      (id, app_id, user_id, user_name, threshold_hours, refresh_expires_at, message,
        identity, feishu_message_id, idempotency_key, status, raw_response_json, created_at)
     VALUES
-      (${sqlValue(randomUUID())}, ${sqlValue(status.appId)}, ${sqlValue(user.openId)}, ${sqlValue(user.userName)},
+      (${sqlValue(randomUUID())}, ${sqlValue(status.appId)}, ${sqlValue(user.userId)}, ${sqlValue(user.userName)},
        ${threshold}, ${sqlValue(user.refreshExpiresAt)}, ${sqlValue(message)}, ${sqlValue(config.larkAuthMonitorIdentity)},
        ${sqlValue(feishuMessageId)}, ${sqlValue(idempotencyKey)}, ${sqlValue(sendStatus)},
        ${sqlValue(JSON.stringify(payload || {}))}, datetime('now'))
-    ON CONFLICT(app_id, user_open_id, threshold_hours, refresh_expires_at) DO UPDATE SET
+    ON CONFLICT(app_id, user_id, threshold_hours, refresh_expires_at) DO UPDATE SET
       status = excluded.status,
       feishu_message_id = excluded.feishu_message_id,
       raw_response_json = excluded.raw_response_json;
@@ -2882,7 +3186,7 @@ function readLarkCliAuthStatus() {
     brand: String(payload.brand || ""),
     identity: String(payload.identity || ""),
     user: {
-      openId: String(user.openId || ""),
+      userId: String(user.userId || ""),
       userName: String(user.userName || ""),
       tokenStatus: String(user.tokenStatus || ""),
       scope: String(user.scope || ""),
@@ -2939,9 +3243,9 @@ function formatRemainingHours(value) {
   return `${Math.round(value)} 小时`;
 }
 
-function buildLarkAuthMonitorIdempotencyKey({ appId, openId, refreshExpiresAt, threshold }) {
+function buildLarkAuthMonitorIdempotencyKey({ appId, userId, refreshExpiresAt, threshold }) {
   const digest = createHash("sha1")
-    .update(`lark-auth:${appId || ""}:${openId || ""}:${refreshExpiresAt || ""}:${threshold}`)
+    .update(`lark-auth:${appId || ""}:${userId || ""}:${refreshExpiresAt || ""}:${threshold}`)
     .digest("hex")
     .slice(0, 24);
   return `wos-auth-${digest}`;
@@ -2971,6 +3275,7 @@ function loadChinaWorkCalendar() {
   try {
     const parsed = JSON.parse(readFileSync(filePath, "utf8"));
     return {
+      year: Number(parsed.year || 0),
       source: String(parsed.source || ""),
       holidayDates: Array.isArray(parsed.holidayDates) ? parsed.holidayDates.map(String) : [],
       workdayOverrides: Array.isArray(parsed.workdayOverrides) ? parsed.workdayOverrides.map(String) : [],
@@ -3002,15 +3307,15 @@ async function runWeeklyGrowthReminder({ dryRun = true, force = false, source = 
   const context = await loadWeeklyReminderContext();
   const deliveryRecipients = await resolveWeeklyReminderDeliveryRecipients(context.recipients);
   const outboxPeriodId = buildWeeklyReminderOutboxPeriodId(context.period.id, kind);
-  const outboxByOpenId = config.weeklyReminderUseOutbox
+  const outboxByUserId = config.weeklyReminderUseOutbox
     ? await loadWeeklyReminderOutbox(outboxPeriodId)
     : new Map();
   const results = [];
   for (const recipient of context.recipients) {
-    const deliveryRecipient = deliveryRecipients.get(recipient.openId) || recipient;
-    const outboxItem = outboxByOpenId.get(recipient.openId) || outboxByOpenId.get(deliveryRecipient.openId);
-    const message = outboxItem?.message || buildWeeklyReminderMessage(recipient, context.period, kind);
-    const idempotencyKey = buildWeeklyReminderIdempotencyKey(context.period.id, deliveryRecipient.openId, kind);
+    const deliveryRecipient = deliveryRecipients.get(recipient.userId) || recipient;
+    const outboxItem = outboxByUserId.get(recipient.userId) || outboxByUserId.get(deliveryRecipient.userId);
+    const message = kind==='friday_review'?await buildWeeklyReminderMessage(recipient,context.period,kind):outboxItem?.message||await buildWeeklyReminderMessage(recipient, context.period, kind);
+    const idempotencyKey = buildWeeklyReminderIdempotencyKey(context.period.id, deliveryRecipient.userId, kind);
     const existing = await querySqlRows(`
       SELECT status, feishu_message_id, created_at
       FROM weekly_reminder_sends
@@ -3052,7 +3357,7 @@ async function runWeeklyGrowthReminder({ dryRun = true, force = false, source = 
     }
 
     const sendResult = sendFeishuDirectMessage(
-      deliveryRecipient.openId,
+      deliveryRecipient.userId,
       message,
       idempotencyKey,
       config.weeklyReminderIdentity,
@@ -3078,7 +3383,7 @@ async function runWeeklyGrowthReminder({ dryRun = true, force = false, source = 
     });
     await updateWeeklyReminderOutboxAfterSend({
       outboxItem,
-      recipientOpenId: deliveryRecipient.openId,
+      recipientUserId: deliveryRecipient.userId,
       status: sendResult.ok ? "sent" : "failed",
       feishuMessageId,
     });
@@ -3106,13 +3411,13 @@ async function runWeeklyGrowthReminder({ dryRun = true, force = false, source = 
 }
 
 async function resolveWeeklyReminderDeliveryRecipients(recipients) {
-  const result = new Map(recipients.map((recipient) => [recipient.openId, recipient]));
+  const result = new Map(recipients.map((recipient) => [recipient.userId, recipient]));
   const emailRecipients = recipients.filter((recipient) => recipient.email);
   if (emailRecipients.length === 0) return result;
   try {
     const token = await getFeishuTenantAccessToken();
     const emailToRecipient = new Map(emailRecipients.map((recipient) => [recipient.email.toLowerCase(), recipient]));
-    const json = await feishuJson("/open-apis/contact/v3/users/batch_get_id?user_id_type=open_id", {
+    const json = await feishuJson("/open-apis/contact/v3/users/batch_get_id?user_id_type=user_id", {
       method: "POST",
       token,
       body: { emails: Array.from(emailToRecipient.keys()) },
@@ -3120,19 +3425,19 @@ async function resolveWeeklyReminderDeliveryRecipients(recipients) {
     const users = Array.isArray(json.data?.user_list) ? json.data.user_list : [];
     for (const user of users) {
       const email = String(user.email || "").toLowerCase();
-      const openId = String(user.user_id || "").trim();
+      const userId = String(user.user_id || "").trim();
       const recipient = emailToRecipient.get(email);
-      if (recipient && openId) result.set(recipient.openId, { ...recipient, openId });
+      if (recipient && userId) result.set(recipient.userId, { ...recipient, userId });
     }
   } catch (error) {
-    console.error("Failed to resolve weekly reminder open ids", error);
+    console.error("Failed to resolve weekly reminder user IDs", error);
   }
   return result;
 }
 
 async function loadWeeklyReminderOutbox(periodId) {
   const rows = await querySqlRows(`
-    SELECT id, period_id, recipient_open_id, recipient_name, message, personalization_note, status
+    SELECT id, period_id, recipient_user_id, recipient_name, message, personalization_note, status
     FROM weekly_reminder_outbox
     WHERE period_id = ${sqlValue(periodId)}
       AND status IN ('prepared', 'failed', 'sent')
@@ -3140,11 +3445,11 @@ async function loadWeeklyReminderOutbox(periodId) {
   `).catch(() => []);
   const result = new Map();
   for (const row of rows) {
-    if (!row.recipient_open_id || result.has(row.recipient_open_id)) continue;
-    result.set(row.recipient_open_id, {
+    if (!row.recipient_user_id || result.has(row.recipient_user_id)) continue;
+    result.set(row.recipient_user_id, {
       id: row.id,
       periodId: row.period_id,
-      recipientOpenId: row.recipient_open_id,
+      recipientUserId: row.recipient_user_id,
       recipientName: row.recipient_name,
       message: row.message,
       personalizationNote: row.personalization_note,
@@ -3154,12 +3459,12 @@ async function loadWeeklyReminderOutbox(periodId) {
   return result;
 }
 
-async function updateWeeklyReminderOutboxAfterSend({ outboxItem, recipientOpenId, status, feishuMessageId }) {
+async function updateWeeklyReminderOutboxAfterSend({ outboxItem, recipientUserId, status, feishuMessageId }) {
   if (!outboxItem?.id) return;
   await execSql(`
     UPDATE weekly_reminder_outbox
     SET status = ${sqlValue(status)},
-        recipient_open_id = COALESCE(NULLIF(${sqlValue(recipientOpenId || "")}, ''), recipient_open_id),
+        recipient_user_id = COALESCE(NULLIF(${sqlValue(recipientUserId || "")}, ''), recipient_user_id),
         feishu_message_id = ${sqlValue(feishuMessageId)},
         sent_at = CASE WHEN ${sqlValue(status)} = 'sent' THEN datetime('now') ELSE sent_at END,
         updated_at = datetime('now')
@@ -3168,7 +3473,7 @@ async function updateWeeklyReminderOutboxAfterSend({ outboxItem, recipientOpenId
 }
 
 async function loadWeeklyReminderContext() {
-  const filePath = path.join(rootDir, "src/data/prototypeData.json");
+  const filePath = path.join(config.dataDir, "prototypeData.json");
   const parsed = JSON.parse(readFileSync(filePath, "utf8"));
   const meta = parsed.meta || {};
   const periods = Array.isArray(meta.periods) ? meta.periods : [];
@@ -3186,22 +3491,22 @@ async function loadWeeklyReminderContext() {
   ].map((name) => String(name || "").trim()).filter(Boolean));
   const rows = Array.isArray(parsed.employee_summary) ? parsed.employee_summary : [];
   const activeEmployeeRows = await querySqlRows(`
-    SELECT open_id, name
+    SELECT user_id, name
     FROM employees
     WHERE is_active = 1;
   `).catch(() => []);
-  const activeOpenIds = new Set(activeEmployeeRows.map((row) => String(row.open_id || "").trim()).filter(Boolean));
+  const activeUserIds = new Set(activeEmployeeRows.map((row) => String(row.user_id || "").trim()).filter(Boolean));
   const activeNames = new Set(activeEmployeeRows.map((row) => normalizeUserName(row.name)).filter(Boolean));
   const recipients = rows
     .map((row) => ({
-      openId: String(row.open_id || row.openId || "").trim(),
+      userId: String(row.user_id || row.userId || "").trim(),
       name: String(row["姓名"] || row.name || "").trim(),
       department: String(row["部门"] || row.department || "").trim(),
       email: String(row["企业邮箱"] || row.email || "").trim(),
     }))
-    .filter((employee) => employee.openId && employee.name && !exemptPeople.has(employee.name))
+    .filter((employee) => employee.userId && employee.name && !exemptPeople.has(employee.name))
     .filter((employee) => activeEmployeeRows.length === 0
-      || activeOpenIds.has(employee.openId)
+      || activeUserIds.has(employee.userId)
       || activeNames.has(normalizeUserName(employee.name)));
   return {
     period: {
@@ -3215,7 +3520,7 @@ async function loadWeeklyReminderContext() {
   };
 }
 
-function buildWeeklyReminderMessage(recipient, period, kind = "friday_review") {
+async function buildWeeklyReminderMessage(recipient, period, kind = "friday_review") {
   if (kind === "monday_update") {
     return `${recipient.name}，早上好。
 
@@ -3226,9 +3531,11 @@ function buildWeeklyReminderMessage(recipient, period, kind = "friday_review") {
 期待你在这一周里，也继续带着复盘往前走，看到自己的成长和进步。`;
   }
   const periodText = period.label && period.label !== "最近一周期" ? `上一周期「${period.label}」` : "上一周期";
+  const today=new Intl.DateTimeFormat('sv-SE',{timeZone:'Asia/Shanghai'}).format(new Date()),end=fridayOfWeek(today),policy=await systemSettings.policyFor(end.slice(0,7)),schedule=weeklyReportSchedule(end,chinaWorkCalendar,policy.deadlineTime);
+  const deadline=schedule.exempt?'本周整周放假，免交周报。':schedule.calendarPending?'本周工作日日历待更新，请以公司通知的截止时间为准。':`请在 ${schedule.deadlineDate} ${policy.deadlineTime} 前提交周报${schedule.reason==='pre_holiday'?'（放假前最后一个工作日）':''}。`;
   return `${recipient.name}，又到每周总结时间了。
 
-感谢你上一周的辛勤付出。成长 OS 会在每周一早上自动更新周报分析。我建议你在撰写新一周周报之前，可以先打开成长 OS 回看一下${periodText}的个人成长页：看看上周的 AI 点评、任务候选和未闭环事项，再滚动总结这一周的新进展。
+感谢你上一周的辛勤付出。成长 OS 会定时收集飞书周报并自动进行 AI 分析。撰写新一周周报之前，可以先打开成长 OS 回看一下${periodText}的个人成长页，再总结这一周的新进展。${deadline}
 
 入口：${config.baseUrl}
 
@@ -3239,14 +3546,14 @@ function buildWeeklyReminderOutboxPeriodId(periodId, kind = "friday_review") {
   return kind === "monday_update" ? `${periodId || "latest"}::monday_update` : String(periodId || "latest");
 }
 
-function buildWeeklyReminderIdempotencyKey(periodId, openId, kind = "friday_review") {
-  const digest = createHash("sha1").update(`${kind}:${periodId || "latest"}:${openId}`).digest("hex").slice(0, 24);
+function buildWeeklyReminderIdempotencyKey(periodId, userId, kind = "friday_review") {
+  const digest = createHash("sha1").update(`${kind}:${periodId || "latest"}:${userId}`).digest("hex").slice(0, 24);
   return `wos-reminder-${digest}`;
 }
 
 function pickReminderRecipient(recipient) {
   return {
-    openId: recipient.openId,
+    userId: recipient.userId,
     name: recipient.name,
     department: recipient.department,
   };
@@ -3265,11 +3572,11 @@ async function persistWeeklyReminderSend({
 }) {
   await execSql(`
     INSERT OR REPLACE INTO weekly_reminder_sends
-      (id, period_id, period_label, recipient_open_id, recipient_name, department, message,
+      (id, period_id, period_label, recipient_user_id, recipient_name, department, message,
        source, identity, feishu_message_id, idempotency_key, status, raw_response_json, created_at)
     VALUES
       (${sqlValue(randomUUID())}, ${sqlValue(context.period.id)}, ${sqlValue(context.period.label)},
-       ${sqlValue(recipient.openId)}, ${sqlValue(recipient.name)}, ${sqlValue(recipient.department)},
+       ${sqlValue(recipient.userId)}, ${sqlValue(recipient.name)}, ${sqlValue(recipient.department)},
        ${sqlValue(message)}, ${sqlValue(source)}, ${sqlValue(identity)}, ${sqlValue(feishuMessageId)},
        ${sqlValue(idempotencyKey)}, ${sqlValue(status)}, ${sqlValue(JSON.stringify(rawResponse || {}))},
        datetime('now'));
@@ -3329,10 +3636,10 @@ async function importWeeklyReport(req, res) {
 
   await execSql(`
     INSERT INTO import_batches
-      (id, source_type, source_name, source_sha256, imported_by_open_id, record_count, status)
+      (id, source_type, source_name, source_sha256, imported_by_user_id, record_count, status)
     VALUES
       (${sqlValue(batchId)}, ${sqlValue(importMode)}, ${sqlValue(sourceName)}, ${sqlValue(sourceSha)},
-       ${sqlValue(user.openId)}, ${validRecords.length}, 'imported');
+       ${sqlValue(user.userId)}, ${validRecords.length}, 'imported');
   `);
 
   let inserted = 0;
@@ -3341,30 +3648,30 @@ async function importWeeklyReport(req, res) {
     const existing = await querySqlRows(`
       SELECT id
       FROM weekly_reports
-      WHERE employee_open_id = ${sqlValue(record.employeeOpenId)} AND week_label = ${sqlValue(record.weekLabel)}
+      WHERE employee_user_id = ${sqlValue(record.employeeUserId)} AND week_label = ${sqlValue(record.weekLabel)}
       LIMIT 1;
     `);
     if (existing.length > 0) updated += 1;
     else inserted += 1;
 
     await execSql(`
-      INSERT INTO employees (open_id, name, department, email, updated_at)
-      VALUES (${sqlValue(record.employeeOpenId)}, ${sqlValue(record.employeeName)}, ${sqlValue(record.department)}, ${sqlValue(record.email)}, datetime('now'))
-      ON CONFLICT(open_id) DO UPDATE SET
+      INSERT INTO employees (user_id, name, department, email, updated_at)
+      VALUES (${sqlValue(record.employeeUserId)}, ${sqlValue(record.employeeName)}, ${sqlValue(record.department)}, ${sqlValue(record.email)}, datetime('now'))
+      ON CONFLICT(user_id) DO UPDATE SET
         name = excluded.name,
         department = excluded.department,
         email = excluded.email,
         updated_at = datetime('now');
 
       INSERT INTO weekly_reports
-        (id, employee_open_id, employee_name, department, week_label, week_start, week_end, status,
+        (id, employee_user_id, employee_name, department, week_label, week_start, week_end, status,
          content_json, source_batch_id, source_hash, is_late, submitted_at, updated_at)
       VALUES
-        (${sqlValue(record.id)}, ${sqlValue(record.employeeOpenId)}, ${sqlValue(record.employeeName)}, ${sqlValue(record.department)},
+        (${sqlValue(record.id)}, ${sqlValue(record.employeeUserId)}, ${sqlValue(record.employeeName)}, ${sqlValue(record.department)},
          ${sqlValue(record.weekLabel)}, ${sqlValue(record.weekStart)}, ${sqlValue(record.weekEnd)}, ${sqlValue(record.status)},
          ${sqlValue(JSON.stringify(record.contentJson))}, ${sqlValue(batchId)}, ${sqlValue(record.sourceHash)},
          ${record.isLate ? 1 : 0}, ${sqlValue(record.submittedAt)}, datetime('now'))
-      ON CONFLICT(employee_open_id, week_label) DO UPDATE SET
+      ON CONFLICT(employee_user_id, week_label) DO UPDATE SET
         employee_name = excluded.employee_name,
         department = excluded.department,
         week_start = excluded.week_start,
@@ -3414,7 +3721,7 @@ async function enterExternalShare(_req, res, url) {
     res,
     {
       user: {
-        openId: `external:${link.id}`,
+        userId: `external:${link.id}`,
         unionId: `external:${link.id}`,
         name: link.name || "外部顾问",
         email: "",
@@ -3523,12 +3830,12 @@ async function createFeishuTask(candidate, session) {
   const token = session?.userAccessToken || (await getFeishuTenantAccessToken());
   const due = (candidate.useDueDate || config.taskDueMode === "candidate") ? toFeishuDue(candidate.dueDate) : null;
   const members = [];
-  if (candidate.assigneeOpenId) {
-    members.push({ id: candidate.assigneeOpenId, type: "user", role: "assignee" });
+  if (candidate.assigneeUserId) {
+    members.push({ id: candidate.assigneeUserId, type: "user", role: "assignee" });
   }
-  for (const followerOpenId of candidate.followerOpenIds) {
-    if (followerOpenId && followerOpenId !== candidate.assigneeOpenId) {
-      members.push({ id: followerOpenId, type: "user", role: "follower" });
+  for (const followerUserId of candidate.followerUserIds) {
+    if (followerUserId && followerUserId !== candidate.assigneeUserId) {
+      members.push({ id: followerUserId, type: "user", role: "follower" });
     }
   }
   const body = {
@@ -3538,7 +3845,7 @@ async function createFeishuTask(candidate, session) {
   };
   if (due) body.due = due;
   if (members.length > 0) body.members = members;
-  return feishuJson("/open-apis/task/v2/tasks?user_id_type=open_id", {
+  return feishuJson("/open-apis/task/v2/tasks?user_id_type=user_id", {
     method: "POST",
     token,
     body,
@@ -3570,14 +3877,14 @@ function sendFeishuGroupMessage(text, idempotencyKey) {
   };
 }
 
-function sendFeishuDirectMessage(openId, text, idempotencyKey, identity = "bot") {
+function sendFeishuDirectMessage(userId, text, idempotencyKey, identity = "bot") {
   const result = spawnSync("lark-cli", [
     "im",
     "+messages-send",
     "--as",
     identity === "user" ? "user" : "bot",
     "--user-id",
-    openId,
+    userId,
     "--text",
     text,
     "--idempotency-key",
@@ -3662,18 +3969,18 @@ function normalizeTaskCandidate(candidate, currentUser) {
     candidate.firstStep ? `\n第一步：${candidate.firstStep}` : "",
     candidate.contextNeed ? `\n上下文：${candidate.contextNeed}` : "",
   ].join("").trim();
-  const currentUserOpenId = String(currentUser?.openId || "").trim();
-  const requestedFollowers = Array.isArray(candidate.followerOpenIds)
-    ? candidate.followerOpenIds.map((id) => String(id || "").trim()).filter(Boolean)
+  const currentUserUserId = String(currentUser?.userId || "").trim();
+  const requestedFollowers = Array.isArray(candidate.followerUserIds)
+    ? candidate.followerUserIds.map((id) => String(id || "").trim()).filter(Boolean)
     : [];
-  const followerOpenIds = Array.from(new Set([currentUserOpenId, ...requestedFollowers].filter(Boolean)));
+  const followerUserIds = Array.from(new Set([currentUserUserId, ...requestedFollowers].filter(Boolean)));
   return {
     candidateId,
     priority: ["P0", "P1", "P2"].includes(candidate.priority) ? candidate.priority : "P1",
     title: String(candidate.title || "周报闭环任务").trim(),
     description,
-    assigneeOpenId: String(candidate.ownerOpenId || candidate.assigneeOpenId || "").trim(),
-    followerOpenIds,
+    assigneeUserId: String(candidate.ownerUserId || candidate.assigneeUserId || "").trim(),
+    followerUserIds,
     dueDate: normalizeDate(candidate.dueDate),
     useDueDate: Boolean(candidate.useDueDate),
     idempotencyKey: `weekly-report-os-${candidateId}`.slice(0, 64),
@@ -3687,10 +3994,10 @@ async function persistCreatedTask(candidate, created) {
   const url = task.url || task.link || "";
   await execSql(`
     INSERT OR REPLACE INTO feishu_tasks
-      (guid, candidate_id, idempotency_key, summary, assignee_open_id, due_date, url, status, raw_response_json, updated_at)
+      (guid, candidate_id, idempotency_key, summary, assignee_user_id, due_date, url, status, raw_response_json, updated_at)
     VALUES
       (${sqlValue(guid)}, ${sqlValue(candidate.candidateId)}, ${sqlValue(candidate.idempotencyKey)},
-       ${sqlValue(candidate.title)}, ${sqlValue(candidate.assigneeOpenId)}, ${sqlValue(candidate.dueDate)},
+       ${sqlValue(candidate.title)}, ${sqlValue(candidate.assigneeUserId)}, ${sqlValue(candidate.dueDate)},
        ${sqlValue(url)}, 'created', ${sqlValue(JSON.stringify(created))}, datetime('now'));
     UPDATE task_candidates
       SET created_task_guid = ${sqlValue(guid)}, status = 'created', updated_at = datetime('now')
@@ -3744,13 +4051,15 @@ async function serveStatic(url, res) {
     return;
   }
   const ext = path.extname(targetPath);
-  const headers = { "content-type": contentType(ext) };
+  const headers = { "content-type": contentType(ext), "cache-control": ext === ".html" ? "no-store" : "no-cache" };
   res.writeHead(200, headers);
   createReadStream(targetPath).pipe(res);
 }
 
 async function ensureDatabase() {
   await mkdir(path.dirname(config.dbPath), { recursive: true });
+  const prior=await querySqlRows('PRAGMA table_info(employees);');
+  if(prior.some(c=>c.name==='open_id'))throw Error('user_id_migration_required');
   const schemaPath = path.join(rootDir, "db/schema.sql");
   if (!existsSync(schemaPath)) return;
   const schema = await readFile(schemaPath, "utf8");
@@ -3836,12 +4145,15 @@ async function seedScoring360FromJson(data) {
   }
 
   for (const assignment of assignments) {
+    const evaluee=await findActiveManagedEmployee(assignment.evalueeUserId || assignment.evaluee);
+    const evaluator=await findActiveManagedEmployee(assignment.evaluatorUserId || assignment.evaluator) || (assignment.evaluatorUserId?{userId:assignment.evaluatorUserId}:null);
+    if(!evaluee||!evaluator)throw Error("assignment_identity_unresolved");
     statements.push(`
       INSERT OR IGNORE INTO scoring360_assignments (
-        id, cycle_id, evaluee_name, evaluator_name, created_at
+        id, cycle_id, evaluee_name, evaluator_name, evaluee_user_id, evaluator_user_id, created_at
       ) VALUES (
         ${sqlValue(assignment.id)}, ${sqlValue(assignment.cycleId)}, ${sqlValue(assignment.evaluee)},
-        ${sqlValue(assignment.evaluator)}, datetime('now')
+        ${sqlValue(assignment.evaluator)}, ${sqlValue(evaluee.userId)}, ${sqlValue(evaluator.userId)}, datetime('now')
       );
     `);
   }
@@ -3892,7 +4204,7 @@ function scoring360ActiveDate() {
   return new Date();
 }
 
-async function ensureScoring360CycleForLaunchDate(dateLike) {
+async function ensureScoring360CycleForLaunchDate(dateLike,{copyAssignments=true}={}) {
   const cycle = scoring360CycleForLaunchDate(dateLike);
   const existingRows = await querySqlRows(`SELECT id FROM scoring360_cycles WHERE id = ${sqlValue(cycle.id)} LIMIT 1;`);
   if (existingRows[0]?.id) return existingRows[0].id;
@@ -3909,7 +4221,7 @@ async function ensureScoring360CycleForLaunchDate(dateLike) {
       ${sqlValue(weights.currentWeight)}, 'draft', datetime('now'), datetime('now')
     );
   `);
-  await copyScoring360AssignmentsFromTemplate(cycle.id);
+  if(copyAssignments)await copyScoring360AssignmentsFromTemplate(cycle.id);
   await refreshScoring360CycleTotals(cycle.id);
   return cycle.id;
 }
@@ -3928,7 +4240,7 @@ async function copyScoring360AssignmentsFromTemplate(targetCycleId) {
   if (!templateId) return 0;
 
   const assignments = await querySqlRows(`
-    SELECT evaluee_name, evaluator_name, evaluee_open_id, evaluator_open_id, relationship, status
+    SELECT evaluee_name, evaluator_name, evaluee_user_id, evaluator_user_id, relationship, status
     FROM scoring360_assignments
     WHERE cycle_id = ${sqlValue(templateId)}
       AND COALESCE(status, 'active') = 'active'
@@ -3937,7 +4249,7 @@ async function copyScoring360AssignmentsFromTemplate(targetCycleId) {
   if (assignments.length === 0) return 0;
 
   const activeEmployees = await loadManagedEmployees();
-  const activeByOpenId = new Map(activeEmployees.filter((item) => item.openId).map((item) => [item.openId, item]));
+  const activeByUserId = new Map(activeEmployees.filter((item) => item.userId).map((item) => [item.userId, item]));
   const activeByName = new Map(activeEmployees.map((item) => [normalizeUserName(item.name), item]));
   const statements = ["BEGIN TRANSACTION;"];
   let copied = 0;
@@ -3945,17 +4257,17 @@ async function copyScoring360AssignmentsFromTemplate(targetCycleId) {
     const evalueeName = normalizeUserName(assignment.evaluee_name);
     const evaluatorName = normalizeUserName(assignment.evaluator_name);
     if (!evalueeName || !evaluatorName) continue;
-    const evaluee = activeByOpenId.get(String(assignment.evaluee_open_id || "")) || activeByName.get(evalueeName);
-    const evaluator = activeByOpenId.get(String(assignment.evaluator_open_id || "")) || activeByName.get(evaluatorName);
+    const evaluee = activeByUserId.get(String(assignment.evaluee_user_id || ""));
+    const evaluator = activeByUserId.get(String(assignment.evaluator_user_id || ""));
     if (!evaluee || !evaluator) continue;
-    const assignmentId = `sc360-${createHash("sha1").update(`${targetCycleId}:${evalueeName}:${evaluatorName}`).digest("hex").slice(0, 20)}`;
+    const assignmentId = `sc360-${createHash("sha1").update(`${targetCycleId}:${evaluee.userId}:${evaluator.userId}`).digest("hex").slice(0, 20)}`;
     statements.push(`
       INSERT OR IGNORE INTO scoring360_assignments (
-        id, cycle_id, evaluee_name, evaluator_name, evaluee_open_id, evaluator_open_id, relationship, status, created_at, updated_at
+        id, cycle_id, evaluee_name, evaluator_name, evaluee_user_id, evaluator_user_id, relationship, status, created_at, updated_at
       ) VALUES (
         ${sqlValue(assignmentId)}, ${sqlValue(targetCycleId)}, ${sqlValue(evalueeName)}, ${sqlValue(evaluatorName)},
-        ${sqlValue(evaluee.openId || "")},
-        ${sqlValue(evaluator.openId || "")},
+        ${sqlValue(evaluee.userId || "")},
+        ${sqlValue(evaluator.userId || "")},
         ${sqlValue(assignment.relationship || "")}, 'active', datetime('now'), datetime('now')
       );
     `);
@@ -3999,6 +4311,7 @@ function formatScoring360Result(row, options = {}) {
       ? averageScore
       : Number((previousScore * weights.historicalWeight + averageScore * weights.currentWeight).toFixed(1));
   return {
+    userId: row.user_id,
     name: row.name,
     expected: Number(row.expected || 0),
     submitted: Number(row.submitted || 0),
@@ -4035,7 +4348,7 @@ async function loadPreviousScoring360Scores(cycleRow) {
   const rows = await querySqlRows(`
     WITH cycle_scores AS (
       SELECT
-        a.evaluee_name,
+        a.evaluee_name, a.evaluee_user_id,
         c.id AS cycle_id,
         c.end_date,
         c.start_date,
@@ -4045,25 +4358,25 @@ async function loadPreviousScoring360Scores(cycleRow) {
       JOIN scoring360_responses r ON r.assignment_id = a.id
       WHERE c.id <> ${sqlValue(cycleRow.id)}
         AND (${anchor ? `date(COALESCE(c.end_date, c.start_date)) < date(${sqlValue(anchor)})` : "1 = 1"})
-      GROUP BY a.evaluee_name, c.id
+      GROUP BY a.evaluee_user_id, c.id
     ),
     ranked AS (
       SELECT
-        evaluee_name,
+        evaluee_name, evaluee_user_id,
         average_score,
         ROW_NUMBER() OVER (
-          PARTITION BY evaluee_name
+          PARTITION BY evaluee_user_id
           ORDER BY date(COALESCE(end_date, start_date)) DESC,
             CASE WHEN cycle_id LIKE '%round2%' THEN 0 ELSE 1 END,
             cycle_id DESC
         ) AS rank
       FROM cycle_scores
     )
-    SELECT evaluee_name, average_score
+    SELECT evaluee_name, evaluee_user_id, average_score
     FROM ranked
     WHERE rank = 1;
   `).catch(() => []);
-  return new Map(rows.map((row) => [row.evaluee_name, Number(row.average_score)]));
+  return new Map(rows.map((row) => [row.evaluee_user_id, Number(row.average_score)]));
 }
 
 function formatScoring360ConfigAssignment(row) {
@@ -4072,8 +4385,8 @@ function formatScoring360ConfigAssignment(row) {
     cycleId: row.cycle_id,
     evalueeName: row.evaluee_name,
     evaluatorName: row.evaluator_name,
-    evalueeOpenId: row.evaluee_open_id || "",
-    evaluatorOpenId: row.evaluator_open_id || "",
+    evalueeUserId: row.evaluee_user_id || "",
+    evaluatorUserId: row.evaluator_user_id || "",
     relationship: row.relationship || "",
     status: row.status || "active",
     response: row.response_id ? {
@@ -4102,12 +4415,12 @@ async function refreshScoring360CycleTotals(cycleId) {
   await execSql(`
     UPDATE scoring360_cycles
     SET total_employees = (
-          SELECT COUNT(DISTINCT evaluator_name)
+          SELECT COUNT(DISTINCT evaluator_user_id)
           FROM scoring360_assignments
           WHERE cycle_id = ${sqlValue(cycleId)} AND COALESCE(status, 'active') = 'active'
         ),
         total_evaluees = (
-          SELECT COUNT(DISTINCT evaluee_name)
+          SELECT COUNT(DISTINCT evaluee_user_id)
           FROM scoring360_assignments
           WHERE cycle_id = ${sqlValue(cycleId)} AND COALESCE(status, 'active') = 'active'
         ),
@@ -4134,22 +4447,22 @@ function isScoring360Locked(submittedAt) {
 }
 
 function applyBossViewMembers(members) {
-  bossAccessState.openIds = new Set(parseCsvList(config.bossViewOpenIds));
+  bossAccessState.userIds = new Set(parseCsvList(config.bossViewUserIds));
   bossAccessState.names = new Set(parseCsvList(config.bossViewNames));
   bossAccessState.members = normalizeBossViewMembers(members);
   for (const member of bossAccessState.members) {
-    if (member.openId) bossAccessState.openIds.add(member.openId);
-    if (member.name) bossAccessState.names.add(member.name);
+    if (member.userId) bossAccessState.userIds.add(member.userId);
+    if (member.name&&!member.userId) bossAccessState.names.add(member.name);
   }
 }
 
 function applyScoring360AdminMembers(members) {
   const normalized = normalizeBossViewMembers(members);
-  scoring360AdminState.openIds = new Set();
+  scoring360AdminState.userIds = new Set();
   scoring360AdminState.names = new Set();
   scoring360AdminState.members = normalized;
   for (const member of normalized) {
-    if (member.openId) scoring360AdminState.openIds.add(member.openId);
+    if (member.userId) scoring360AdminState.userIds.add(member.userId);
     if (member.name) scoring360AdminState.names.add(member.name);
   }
 }
@@ -4158,15 +4471,15 @@ function normalizeBossViewMembers(input) {
   const list = Array.isArray(input) ? input : [];
   const seen = new Set();
   return list.map((item) => {
-    if (typeof item === "string") return { openId: item, name: "", department: "" };
+    if (typeof item === "string") return { userId: employeeIdentity.resolve(item), name: "", department: "" };
     return {
-      openId: String(item?.openId || item?.open_id || "").trim(),
+      userId: (item?.userId||item?.user_id||item?.openId||item?.open_id)?employeeIdentity.resolve(item?.userId||item?.user_id||item?.openId||item?.open_id):((employeeDirectory.filter(e=>e.name===String(item?.name||item?.姓名||'').trim()).length===1)?employeeDirectory.find(e=>e.name===String(item?.name||item?.姓名||'').trim()).userId:''),
       name: String(item?.name || item?.姓名 || "").trim(),
       department: String(item?.department || item?.部门 || "").trim(),
     };
   }).filter((item) => {
-    const key = item.openId || item.name;
-    if (!key || seen.has(key)) return false;
+    const key = item.userId || item.name;
+    if (!key || (config.authMode!=="mock"&&!item.userId) || seen.has(key)) return false;
     seen.add(key);
     return true;
   });
@@ -4174,17 +4487,17 @@ function normalizeBossViewMembers(input) {
 
 function loadEmployeeDirectory() {
   try {
-    const filePath = path.join(rootDir, "src/data/prototypeData.json");
+    const filePath = path.join(config.dataDir, "prototypeData.json");
     const rawText = readFileSync(filePath, "utf8");
     const parsed = JSON.parse(rawText);
     const rows = Array.isArray(parsed.employee_summary) ? parsed.employee_summary : [];
     return rows.map((row) => ({
-      openId: String(row.open_id || row["open_id"] || "").trim(),
+      userId: String(row.user_id || row["user_id"] || "").trim(),
       name: String(row["姓名"] || row.name || "").trim(),
       department: String(row["部门"] || row.department || "").trim(),
       email: String(row["企业邮箱"] || row.email || "").trim(),
-      managerOpenId: String(row.manager_open_id || row["manager_open_id"] || "").trim(),
-    })).filter((employee) => employee.openId || employee.name);
+      managerUserId: String(row.manager_user_id || row["manager_user_id"] || "").trim(),
+    })).filter((employee) => employee.userId || employee.name);
   } catch (error) {
     console.error("Failed to load employee directory", error);
     return [];
@@ -4193,11 +4506,11 @@ function loadEmployeeDirectory() {
 
 function normalizeManagedEmployee(input) {
   return {
-    openId: String(input?.openId || input?.open_id || "").trim(),
+    userId: String(input?.userId || input?.user_id || "").trim(),
     name: normalizeUserName(input?.name || input?.姓名),
     department: String(input?.department || input?.部门 || "").trim(),
     email: String(input?.email || input?.企业邮箱 || "").trim(),
-    managerOpenId: String(input?.managerOpenId || input?.manager_open_id || "").trim(),
+    managerUserId: String(input?.managerUserId || input?.manager_user_id || "").trim(),
     roleLevel: String(input?.roleLevel || input?.role_level || "").trim(),
   };
 }
@@ -4207,11 +4520,11 @@ async function ensureManagedEmployeeStore() {
   if (Number(rows[0]?.count || 0) > 0 || employeeDirectory.length === 0) return;
   const statements = ["BEGIN TRANSACTION;"];
   for (const employee of employeeDirectory) {
-    if (!employee.openId || !employee.name) continue;
+    if (!employee.userId || !employee.name) continue;
     statements.push(`
-      INSERT OR IGNORE INTO employees (open_id, name, department, email, manager_open_id, is_active, updated_at)
-      VALUES (${sqlValue(employee.openId)}, ${sqlValue(employee.name)}, ${sqlValue(employee.department || "")},
-              ${sqlValue(employee.email || "")}, ${sqlValue(employee.managerOpenId || "")}, 1, datetime('now'));
+      INSERT OR IGNORE INTO employees (user_id, name, department, email, manager_user_id, is_active, updated_at)
+      VALUES (${sqlValue(employee.userId)}, ${sqlValue(employee.name)}, ${sqlValue(employee.department || "")},
+              ${sqlValue(employee.email || "")}, ${sqlValue(employee.managerUserId || "")}, 1, datetime('now'));
     `);
   }
   statements.push("COMMIT;");
@@ -4220,8 +4533,8 @@ async function ensureManagedEmployeeStore() {
 
 async function loadManagedEmployees({ includeInactive = false } = {}) {
   const rows = await querySqlRows(`
-    SELECT open_id, name, department, email, manager_open_id, role_level, is_active, updated_at
-    FROM employees
+    SELECT e.user_id, e.name, e.department, e.email, e.manager_user_id, e.role_level, e.is_active, e.updated_at, s.last_login_at, s.sync_note
+    FROM employees e LEFT JOIN employee_sso_logins s ON s.user_id=e.user_id
     ORDER BY name ASC;
   `).catch(() => []);
   if (rows.length === 0) {
@@ -4233,23 +4546,37 @@ async function loadManagedEmployees({ includeInactive = false } = {}) {
     }));
   }
   return rows.map((row) => ({
-    openId: row.open_id,
+    userId: row.user_id,
     name: row.name,
     department: row.department || "",
     email: row.email || "",
-    managerOpenId: row.manager_open_id || "",
+    managerUserId: row.manager_user_id || "",
     roleLevel: row.role_level || "",
     active: Number(row.is_active) === 1,
     updatedAt: row.updated_at || "",
-    source: "database",
+    source: row.last_login_at ? "feishu_sso" : "database",
+    lastLoginAt: row.last_login_at||"",
+    syncNote: row.sync_note||"",
   })).filter((employee) => includeInactive || employee.active);
+}
+
+async function refreshEmployeeDirectory() {
+  const rows=await loadManagedEmployees({includeInactive:true});
+  for(const employee of rows) {
+    const index=employeeDirectory.findIndex(e=>e.userId===employee.userId);
+    if(index>=0)employeeDirectory[index]={...employeeDirectory[index],...employee};
+    else employeeDirectory.push(employee);
+  }
 }
 
 async function findActiveManagedEmployee(value) {
   const normalized = normalizeUserName(value);
   if (!normalized) return null;
   const employees = await loadManagedEmployees();
-  return employees.find((employee) => employee.openId === normalized || normalizeUserName(employee.name) === normalized) || null;
+  const byId=employees.find(employee=>employee.userId===normalized);
+  if(byId)return byId;
+  const matches=employees.filter(employee=>normalizeUserName(employee.name)===normalized);
+  return matches.length===1?matches[0]:null;
 }
 
 function buildAccessProfile(session, user) {
@@ -4257,22 +4584,22 @@ function buildAccessProfile(session, user) {
   const bossView = isBossSession(session);
   const canManageScoring360 = isScoring360ConfigManagerSession(session);
   const canManagePersonnel = canManageScoring360;
-  const fullVisibility = bossView || externalView;
+  const fullVisibility = bossView || canManageScoring360;
   const currentEmployee = findDirectoryEmployee(user) || {
-    openId: String(user?.openId || "").trim(),
+    userId: String(user?.userId || "").trim(),
     name: normalizeUserName(user?.name),
     department: "",
     email: String(user?.email || "").trim(),
   };
   const visibleEmployees = fullVisibility
     ? employeeDirectory
-    : visibleEmployeesForUser(user, currentEmployee);
+    : [currentEmployee];
 
   return {
-    role: externalView ? "external_boss_view" : bossView ? "boss" : canManageScoring360 ? "system_admin" : "member",
+    role: externalView ? "external_boss_view" : isBossIdentity(session) ? "boss" : canManageScoring360 ? "system_admin" : "member",
     bossView,
     externalView,
-    canViewBossDashboard: bossView || externalView,
+    canViewBossDashboard: bossView,
     canViewSettings: bossView || canManageScoring360,
     canManageScoring360,
     canManagePersonnel,
@@ -4283,62 +4610,57 @@ function buildAccessProfile(session, user) {
         ? "self_department_and_reports"
         : "self_only",
     visibleEmployees,
-    visibleOpenIds: visibleEmployees.map((employee) => employee.openId).filter(Boolean),
+    visibleUserIds: visibleEmployees.map((employee) => employee.userId).filter(Boolean),
     visibleNames: visibleEmployees.map((employee) => employee.name).filter(Boolean),
     visibleDepartments: Array.from(new Set(visibleEmployees.map((employee) => employee.department).filter(Boolean))),
   };
 }
 
 function findDirectoryEmployee(user) {
-  const openId = String(user?.openId || "").trim();
-  const email = String(user?.email || "").trim().toLowerCase();
-  const name = normalizeUserName(user?.name);
-  return employeeDirectory.find((employee) => employee.openId && employee.openId === openId)
-    || employeeDirectory.find((employee) => email && employee.email.toLowerCase() === email)
-    || employeeDirectory.find((employee) => employee.name && employee.name === name)
-    || null;
+  const userId=String(user?.userId||'').trim();
+  return userId?employeeDirectory.find(employee=>employee.userId===userId)||null:null;
 }
 
 function findDirectoryEmployeeByName(name) {
-  const normalized = normalizeUserName(name);
-  return employeeDirectory.find((employee) => normalizeUserName(employee.name) === normalized) || null;
+  const matches=employeeDirectory.filter(employee=>normalizeUserName(employee.name)===normalizeUserName(name));
+  return matches.length===1?matches[0]:null;
 }
 
 function visibleEmployeesForUser(user, currentEmployee) {
   const visible = new Map();
   const add = (employee) => {
     if (!employee) return;
-    visible.set(employee.openId || employee.name, employee);
+    visible.set(employee.userId || employee.name, employee);
   };
   if (currentEmployee) {
     add(currentEmployee);
     for (const employee of employeeDirectory) {
       if (currentEmployee.department && employee.department === currentEmployee.department) add(employee);
     }
-    for (const employee of managedEmployeesFor(currentEmployee.openId)) add(employee);
+    for (const employee of managedEmployeesFor(currentEmployee.userId)) add(employee);
   } else {
     const name = normalizeUserName(user?.name);
-    const openId = String(user?.openId || "").trim();
-    add({ openId, name, department: "", email: String(user?.email || "") });
+    const userId = String(user?.userId || "").trim();
+    add({ userId, name, department: "", email: String(user?.email || "") });
   }
   return Array.from(visible.values());
 }
 
-function managedEmployeesFor(managerOpenId) {
-  if (!managerOpenId) return [];
+function managedEmployeesFor(managerUserId) {
+  if (!managerUserId) return [];
   const result = [];
   const visited = new Set();
-  const visit = (openId) => {
-    if (!openId || visited.has(openId)) return;
-    visited.add(openId);
+  const visit = (userId) => {
+    if (!userId || visited.has(userId)) return;
+    visited.add(userId);
     for (const employee of employeeDirectory) {
-      if (employee.managerOpenId === openId) {
+      if (employee.managerUserId === userId) {
         result.push(employee);
-        visit(employee.openId);
+        visit(employee.userId);
       }
     }
   };
-  visit(managerOpenId);
+  visit(managerUserId);
   return result;
 }
 
@@ -4368,13 +4690,16 @@ async function execSql(sql) {
       if (code === 0) resolve(stdout);
       else reject(new Error(stderr || stdout || `sqlite3 exited with ${code}`));
     });
-    child.stdin.end(`PRAGMA busy_timeout = 5000;\n${sql}`);
+    child.stdin.end(`.bail on\nPRAGMA busy_timeout = 5000;\n${sql}`);
   });
 }
 
 async function querySqlRows(sql) {
   const output = await new Promise((resolve, reject) => {
     const child = spawn("sqlite3", ["-cmd", ".timeout 5000", "-header", "-separator", "\u001f", config.dbPath, sql], { stdio: ["ignore", "pipe", "pipe"] });
+    // Decode across chunk boundaries; Buffer→string per chunk can corrupt Chinese JSON keys.
+    child.stdout.setEncoding('utf8');
+    child.stderr.setEncoding('utf8');
     let stdout = "";
     let stderr = "";
     child.stdout.on("data", (chunk) => { stdout += chunk; });
@@ -4618,11 +4943,11 @@ function normalizeImportedWeeklyRecord(record, index, weekWindow) {
     content.reflection,
   ].join("\n");
   const sourceHash = sha256(stable);
-  const employeeOpenId = employeeNo ? `emp:${employeeNo}` : email ? `email:${email.toLowerCase()}` : `name:${employeeName}`;
+  const employeeUserId = employeeNo ? `emp:${employeeNo}` : email ? `email:${email.toLowerCase()}` : `name:${employeeName}`;
   const submittedAt = cleanImportedText(record.submittedAt);
   return {
     id: `report-${sourceHash.slice(0, 16)}`,
-    employeeOpenId,
+    employeeUserId,
     employeeName,
     email,
     department,
@@ -4791,14 +5116,19 @@ function timingSafeEqual(a, b) {
 }
 
 function setSession(res, session, options = {}) {
-  setCookie(res, "wos_session", signPayload(session), { maxAge: options.maxAge || 60 * 60 * 24 * 7, httpOnly: true });
+  setCookie(res, "wos_session", signPayload(session), { maxAge: options.maxAge ?? 60 * 60 * 24 * 400, httpOnly: true });
 }
 
 function getSession(req) {
   const token = parseCookies(req).wos_session;
   const session = verifyPayload(token);
   if (!session) return null;
+  if(session.user){const user=employeeIdentity.sessionUser(session.user);if(!user)return null;session.user=user;}
+  if (session.devView && !config.devViewSwitchEnabled) return null;
   if (session.expiresAt && new Date(session.expiresAt).getTime() <= Date.now()) return null;
+  if(config.devViewSwitchEnabled && session.devView?.role==='hr' && !employeeDirectory.some(e=>e.userId===session.user?.userId&&e.active!==false)) {
+    session.user=developmentManagerIdentity();
+  }
   return session;
 }
 
@@ -4806,18 +5136,27 @@ function isExternalSession(session) {
   return Boolean(session?.externalShare || session?.user?.role === "external_boss_view");
 }
 
-function isBossSession(session) {
+function isBossIdentity(session) {
+  if(!session && config.devViewSwitchEnabled && !process.env.MOCK_USER_ID)return true;
+  if (session?.devView && config.devViewSwitchEnabled) return session.devView.role === "boss";
   const user = session?.user || (config.authMode === "mock" ? mockUser() : null);
-  const openId = String(user?.openId || "").trim();
+  const userId = String(user?.userId || "").trim();
   const name = String(user?.name || "").trim();
   return Boolean(
-    openId === "mock_owner" ||
-      bossAccessState.openIds.has(openId) ||
-      bossAccessState.names.has(name),
+    (config.authMode === "mock" && userId === "mock_owner") ||
+      bossAccessState.userIds.has(userId) ||
+      (config.authMode==="mock"&&bossAccessState.names.has(name)),
   );
 }
 
+// Boss and administrator share management capabilities but keep distinct identities.
+function isBossSession(session) {
+  if(session?.devView && config.devViewSwitchEnabled)return ['boss','hr'].includes(session.devView.role);
+  return isBossIdentity(session)||isScoring360ConfiguredManagerUser(session?.user||(config.authMode==='mock'?mockUser():null));
+}
+
 function isScoring360ConfigManagerSession(session) {
+  if (session?.devView && config.devViewSwitchEnabled) return ["boss","hr"].includes(session.devView.role);
   const user = session?.user || (config.authMode === "mock" ? mockUser() : null);
   return isBossSession(session) || isScoring360ConfiguredManagerUser(user);
 }
@@ -4827,9 +5166,9 @@ function isScoring360ConfiguredManagerUser(user) {
 }
 
 function scoring360ConfigManagers() {
-  const envOpenIds = parseCsvList(config.scoring360ConfigManagerOpenIds).map((openId) => ({ openId, name: "" }));
-  const envNames = parseCsvList(config.scoring360ConfigManagerNames).map((name) => ({ openId: "", name }));
-  return [...defaultScoring360ConfigManagers, ...envOpenIds, ...envNames, ...scoring360AdminState.members];
+  const envUserIds = parseCsvList(config.scoring360ConfigManagerUserIds).map((userId) => ({ userId, name: "" }));
+  const envNames = parseCsvList(config.scoring360ConfigManagerNames).map((name) => ({ userId: "", name }));
+  return [...defaultScoring360ConfigManagers, ...normalizeBossViewMembers([...envUserIds,...envNames]), ...scoring360AdminState.members];
 }
 
 function parseCsvList(value) {
@@ -4964,12 +5303,28 @@ function toFeishuDue(value) {
   return { is_all_day: true, timestamp };
 }
 
+function developmentManagerIdentity(currentUser) {
+  const employee=employeeDirectory.find(e=>e.userId===currentUser?.userId&&e.active!==false)
+    ||employeeDirectory.find(e=>e.userId==='demo_user_id_001'&&e.active!==false)
+    ||employeeDirectory.find(e=>e.userId&&e.name&&e.active!==false);
+  return employee?{userId:employee.userId,name:employee.name,email:employee.email||''}:{userId:'mock_owner',name:'Demo Owner',email:'owner@example.com'};
+}
+
+function developmentViews(currentUser) {
+  const manager=developmentManagerIdentity(currentUser);
+  return [
+    {id:'boss',role:'boss',label:'老板视角',group:'管理视角',user:{userId:'mock_owner',name:'Demo Owner',email:'owner@example.com'}},
+    {id:'hr',role:'hr',label:`管理员视角 · ${manager.name}`,group:'管理视角',user:manager},
+    ...employeeDirectory.filter(e=>e.userId&&e.name&&e.active!==false).map(e=>({id:`employee:${e.userId}`,role:'employee',label:`员工 · ${e.name}`,group:'员工视角',user:{userId:e.userId,name:e.name,email:e.email||''}})),
+  ];
+}
+
 function mockUser() {
-  const openId = process.env.MOCK_USER_OPEN_ID || "mock_owner";
+  const userId = process.env.MOCK_USER_ID || "mock_owner";
   const name = process.env.MOCK_USER_NAME || "Demo Owner";
   return {
-    openId,
-    unionId: process.env.MOCK_USER_UNION_ID || openId,
+    userId,
+    unionId: process.env.MOCK_USER_UNION_ID || userId,
     name,
     email: process.env.MOCK_USER_EMAIL || "owner@example.com",
     avatarUrl: "",

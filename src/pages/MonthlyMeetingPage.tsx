@@ -1,3 +1,4 @@
+import { AppSelect } from "../components/AppSelect";
 import {
   ArrowRight,
   Building2,
@@ -134,13 +135,13 @@ export function MonthlyMeetingPage({ onOpenEmployee }: MonthlyMeetingPageProps) 
             <label>
               <CalendarDays size={16} />
               <span>月会记录</span>
-              <select value={selectedMonth} onChange={(event) => setSelectedMonth(event.target.value)} aria-label="选择月会月份">
+              <AppSelect value={selectedMonth} onValueChange={setSelectedMonth} aria-label="选择月会月份">
                 {periodOptions.map((option) => (
                   <option value={option.monthKey} key={option.monthKey}>
                     {option.label}{option.meetingDate ? ` · ${option.meetingDate}` : ""}
                   </option>
                 ))}
-              </select>
+              </AppSelect>
             </label>
             <span className={`monthly-archive-status is-${brief.archiveStatus}`}>
               {brief.archiveStatus === "scheduled" ? "待开会" : brief.archiveStatus === "draft" ? "月中积累" : "历史归档"}
@@ -439,7 +440,7 @@ export function MonthlyMeetingPage({ onOpenEmployee }: MonthlyMeetingPageProps) 
             </div>
           </div>
           <p className="monthly-note">
-            当前版本先只服务老板视角。后续如果接入更多 MCP/飞书事实源，可以把销售、库存、审批、会议纪要和任务状态并入同一张月度事实图。
+            当前版本先只服务管理视角。后续如果接入更多 MCP/飞书事实源，可以把销售、库存、审批、会议纪要和任务状态并入同一张月度事实图。
           </p>
         </article>
       </section>

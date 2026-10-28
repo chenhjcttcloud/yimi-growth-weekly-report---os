@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
+import { AppSelect } from "../components/AppSelect";
 import { CheckCircle2, ClipboardList, Send, SlidersHorizontal, Trophy, UsersRound } from "lucide-react";
 import { ScoreBadge } from "../components/ScoreBadge";
 import {
@@ -49,6 +50,8 @@ function isLocked(submittedAt?: string) {
 }
 
 export function ScoresPage({ visibleEmployees = [], access }: ScoresPageProps) {
+  const viewerId = access?.currentEmployee?.userId || "";
+  const evaluatorLabel=(id:string)=>visibleEmployees.find(e=>e.userId===id)?.name||id;
   const viewerName = access?.currentEmployee?.name || "";
   const canSwitchEvaluator = Boolean(access?.bossView || access?.canManageScoring360);
   const [activeTab, setActiveTab] = useState<ScoreTab>(() => {
@@ -74,13 +77,13 @@ export function ScoresPage({ visibleEmployees = [], access }: ScoresPageProps) {
     : appData.employeeSummary;
   const staticResults = scoring360VisibleResults(visibleNames);
   const collaborationResults = (apiResults || staticResults).filter((result) => visibleNames.size === 0 || visibleNames.has(result.name));
-  const activeEvaluator = canSwitchEvaluator ? selectedEvaluator : viewerName;
-  const viewingAnotherEvaluator = canSwitchEvaluator && Boolean(activeEvaluator) && activeEvaluator !== viewerName;
+  const activeEvaluator = canSwitchEvaluator ? selectedEvaluator : viewerId;
+  const viewingAnotherEvaluator = canSwitchEvaluator && Boolean(activeEvaluator) && activeEvaluator !== viewerId;
   const myAssignments = apiTasks ?? [];
   const top360 = collaborationResults.slice(0, 5);
   const evaluatorOptions = canSwitchEvaluator
-    ? Array.from(new Set([viewerName, ...apiEvaluatorOptions])).filter(Boolean)
-    : [viewerName].filter(Boolean);
+    ? Array.from(new Set([viewerId, ...apiEvaluatorOptions])).filter(Boolean)
+    : [viewerId].filter(Boolean);
   const weeklyAverage = weeklyEmployees.length
     ? weeklyEmployees.reduce((sum, employee) => sum + employee.averageScore, 0) / weeklyEmployees.length
     : 0;
@@ -95,8 +98,8 @@ export function ScoresPage({ visibleEmployees = [], access }: ScoresPageProps) {
     : 0;
 
   useEffect(() => {
-    if (viewerName && !selectedEvaluator) setSelectedEvaluator(viewerName);
-  }, [selectedEvaluator, viewerName]);
+    if (viewerId && !selectedEvaluator) setSelectedEvaluator(viewerId);
+  }, [selectedEvaluator, viewerId]);
 
   useEffect(() => {
     let cancelled = false;
@@ -121,8 +124,8 @@ export function ScoresPage({ visibleEmployees = [], access }: ScoresPageProps) {
 
   useEffect(() => {
     if (!canSwitchEvaluator || !selectedEvaluator || evaluatorOptions.includes(selectedEvaluator)) return;
-    setSelectedEvaluator(viewerName);
-  }, [canSwitchEvaluator, evaluatorOptions, selectedEvaluator, viewerName]);
+    setSelectedEvaluator(viewerId);
+  }, [canSwitchEvaluator, evaluatorOptions, selectedEvaluator, viewerId]);
 
   useEffect(() => {
     if (!activeEvaluator) return;
@@ -130,7 +133,7 @@ export function ScoresPage({ visibleEmployees = [], access }: ScoresPageProps) {
     setApiTasks(null);
     setTasksLoading(true);
     const params = new URLSearchParams();
-    if (canSwitchEvaluator && activeEvaluator !== viewerName) params.set("evaluator", activeEvaluator);
+    if (canSwitchEvaluator && activeEvaluator !== viewerId) params.set("evaluatorUserId", activeEvaluator);
     if (currentCycle?.id) params.set("cycleId", currentCycle.id);
     fetch(`/api/scoring360/my-tasks?${params.toString()}`)
       .then((response) => response.ok ? response.json() : null)
@@ -145,7 +148,7 @@ export function ScoresPage({ visibleEmployees = [], access }: ScoresPageProps) {
         if (!cancelled) setTasksLoading(false);
       });
     return () => { cancelled = true; };
-  }, [activeEvaluator, canSwitchEvaluator, currentCycle?.id, tasksReloadKey, viewerName]);
+  }, [activeEvaluator, canSwitchEvaluator, currentCycle?.id, tasksReloadKey, viewerId]);
 
   function taskScore(assignmentId: string, fallback: number | null) {
     return draftScores[assignmentId] ?? fallback ?? 0;
@@ -260,18 +263,18 @@ export function ScoresPage({ visibleEmployees = [], access }: ScoresPageProps) {
               </div>
               {canSwitchEvaluator ? (
                 <div className="scoring-toolbar-actions">
-                  <select value={selectedEvaluator} onChange={(event) => setSelectedEvaluator(event.target.value)}>
+                  <AppSelect value={selectedEvaluator} onValueChange={setSelectedEvaluator} aria-label="选择评分人">
                     {evaluatorOptions.map((name) => (
-                      <option value={name} key={name}>{name}</option>
+                      <option value={name} key={name}>{evaluatorLabel(name)}</option>
                     ))}
-                  </select>
+                  </AppSelect>
                   <button className="primary-button" type="button" onClick={launchScoring360Cycle} disabled={launchState === "sending"}>
                     <Send size={15} />
                     <span>{launchState === "sending" ? "发起中" : "发起本月评分"}</span>
                   </button>
                 </div>
               ) : (
-                <div className="score-identity-pill">我的评分任务：{activeEvaluator || "当前账号"}</div>
+                <div className="score-identity-pill">我的评分任务：{evaluatorLabel(activeEvaluator) || "当前账号"}</div>
               )}
             </div>
             <div className="scoring360-task-brief">
@@ -329,7 +332,7 @@ export function ScoresPage({ visibleEmployees = [], access }: ScoresPageProps) {
             <div className="score-submit-bar">
               <p>
                 {viewingAnotherEvaluator
-                  ? `正在只读查看 ${activeEvaluator} 的评分任务；评分必须由本人账号提交。`
+                  ? `正在只读查看 ${evaluatorLabel(activeEvaluator)} 的评分任务；评分必须由本人账号提交。`
                   : "评分提交后 4 小时内可修改；后续周维度会从这里延展，不再需要 HRBP 单独维护一个孤立系统。"}
               </p>
               <button className="primary-button" type="button" onClick={submitScores} disabled={viewingAnotherEvaluator || submitState === "saving" || draftScoreCount === 0}>

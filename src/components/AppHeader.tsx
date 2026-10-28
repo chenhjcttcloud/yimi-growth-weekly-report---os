@@ -1,22 +1,34 @@
 import { useEffect, useState } from "react";
+import { AppSelect } from "./AppSelect";
 import { Bell, CheckCircle2, Send, ShieldCheck } from "lucide-react";
+import { DevViewSwitcher } from "./DevViewSwitcher";
+import { PerspectiveSwitcher } from "./PerspectiveSwitcher";
 import { appData } from "../lib/data";
 import type { PageKey } from "../lib/types";
 
 const titles: Record<PageKey, string> = {
+  departments: "部门管理",
   dashboard: "老板驾驶舱",
   monthly: "月度会议",
-  scores: "成长评分",
+  scores: "评分工作台",
   tasks: "任务闭环",
-  growth: "我的成长",
+  growth: "个人最终结果",
+  reports: "周报与互动",
+  coach: "AI 教练",
+  actions: "行动任务",
+  timeline: "成长轨迹",
   trends: "组织趋势",
-  settings: "设置",
+  settings: "系统设置",
 };
 
 interface AppHeaderProps {
   activePage: PageKey;
   externalView: boolean;
   canViewBossDashboard: boolean;
+  managementRole?: string;
+  adminPerspective?: string;
+  previewEmployees?: Array<{userId:string;name:string;department?:string}>;
+  onChangeAdminPerspective?: (value:string)=>void;
   summaryReady: boolean;
   taskCreated: boolean;
   selectedPeriodId: string;
@@ -41,6 +53,10 @@ export function AppHeader({
   activePage,
   externalView,
   canViewBossDashboard,
+  managementRole,
+  adminPerspective,
+  previewEmployees=[],
+  onChangeAdminPerspective,
   summaryReady,
   taskCreated,
   selectedPeriodId,
@@ -54,12 +70,13 @@ export function AppHeader({
   const [notificationOpen, setNotificationOpen] = useState(false);
 
   useEffect(() => {
+    if (!canViewBossDashboard) return;
     void loadNotifications();
     const timer = window.setInterval(() => {
       void loadNotifications();
     }, 30000);
     return () => window.clearInterval(timer);
-  }, [activePage]);
+  }, [activePage, canViewBossDashboard]);
 
   async function loadNotifications() {
     try {
@@ -105,14 +122,14 @@ export function AppHeader({
   return (
     <header className="app-header">
       <div>
-        <h1>{activePage === "growth" && canViewBossDashboard ? "个人成长" : titles[activePage]}</h1>
-        <div className="header-meta">
+        <h1>{titles[activePage]}</h1>
+        {canViewBossDashboard && activePage !== "growth" && activePage !== "departments" ? <div className="header-meta">
           <span>{currentPeriodLabel(selectedPeriodId)}</span>
           <span>数据生成：{appData.generatedOn}</span>
-          <select
+          <AppSelect
             className="period-select"
             value={selectedPeriodId}
-            onChange={(event) => onSelectPeriod(event.target.value)}
+            onValueChange={onSelectPeriod}
             aria-label="选择周报周期"
           >
             {appData.periods.slice().reverse().map((period) => (
@@ -120,12 +137,14 @@ export function AppHeader({
                 {period.label} {period.range}
               </option>
             ))}
-          </select>
-        </div>
+          </AppSelect>
+        </div> : <p className="header-meta">{activePage==="departments"?"部门层级 · 团队成员 · 月度表现 · 负责人评分":"月度结果 · 每周周报 · AI 教练 · 行动闭环"}</p>}
       </div>
 
       <div className="header-actions">
-        <div className="notification-anchor">
+        {adminPerspective && <PerspectiveSwitcher value={adminPerspective} employees={previewEmployees} onChange={onChangeAdminPerspective} />}
+          <DevViewSwitcher employees={previewEmployees} />
+        {canViewBossDashboard ? <div className="notification-anchor">
           <button className="icon-button notification-button" type="button" aria-label="通知" onClick={() => setNotificationOpen((open) => !open)}>
             <Bell size={18} />
             {unreadCount > 0 ? <span className="notification-badge">{unreadCount > 99 ? "99+" : unreadCount}</span> : null}
@@ -153,13 +172,13 @@ export function AppHeader({
               </div>
             </div>
           ) : null}
-        </div>
-        {canViewBossDashboard ? (
+        </div> : null}
+        {canViewBossDashboard && activePage !== "growth" && activePage !== "scores" && activePage !== "settings" && activePage !== "departments" ? (
           <>
-            <button className="secondary-button" type="button" onClick={externalView ? exitReadonlyView : undefined}>
+            {!adminPerspective && (<button className="secondary-button management-role-badge" type="button" onClick={externalView ? exitReadonlyView : undefined}>
               <ShieldCheck size={16} />
-              <span>{externalView ? "退出只读视图" : "老板视角"}</span>
-            </button>
+              <span>{externalView ? "退出只读视图" : "管理视角"}</span>
+            </button>)}
             <button
               className={`secondary-button ${taskCreated ? "is-confirmed" : ""}`}
               type="button"

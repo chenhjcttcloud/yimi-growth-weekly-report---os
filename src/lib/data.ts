@@ -1,8 +1,10 @@
-import rawData from "../data/prototypeData.json";
-import rawKimiInsights from "../data/kimiInsights.json";
-import rawKimiInsightsByPeriod from "../data/kimiInsightsByPeriod.json";
-import rawMonthlyMeetingInsights from "../data/monthlyMeetingInsights.json";
-import rawScoring360 from "../data/scoring360.json";
+// Process data is fetched through an authorized server endpoint, never bundled.
+const managementData: Record<string, any> = await fetch('/api/management-data').then(r => r.ok ? r.json() : {}).catch(() => ({}));
+const rawData = managementData.prototypeData || {};
+const rawKimiInsights = managementData.kimiInsights || {};
+const rawKimiInsightsByPeriod = managementData.kimiInsightsByPeriod || {};
+const rawMonthlyMeetingInsights = managementData.monthlyMeetingInsights || {};
+const rawScoring360 = managementData.scoring360 || {cycles:[],results:[],assignments:[]};
 import { buildEmployeeClosureInsight, buildOrganizationClosureRadar } from "./closure";
 import type {
   AppData,
@@ -65,7 +67,7 @@ function mapEmployee(row: RawRecord): EmployeeSummary {
   return {
     name: toText(row["姓名"]),
     department: toText(row["部门"]),
-    openId: toText(row["open_id"]),
+    userId: toText(row["user_id"]),
     email: toText(row["企业邮箱"]),
     reportCount: toNumber(row["周报数"]),
     onTimeCount: toNumber(row["准时次数"]),
@@ -183,7 +185,7 @@ function mapBossTask(row: RawRecord): AttentionTask {
     title: toText(row["建议任务标题"]),
     description: toText(row["建议任务描述"]),
     owner: toText(row["建议负责人"]),
-    ownerOpenId: toText(row["建议负责人open_id"]),
+    ownerUserId: toText(row["建议负责人user_id"]),
     dueDate: toText(row["截止日期"]),
     evidence: toText(row["证据"]),
   };
@@ -194,7 +196,7 @@ function mapEmployeeTask(row: RawRecord): EmployeeTask {
     priority: toText(row["优先级"]) as EmployeeTask["priority"],
     source: toText(row["来源人员"]),
     department: toText(row["部门"]),
-    assigneeOpenId: toText(row["负责人open_id"]),
+    assigneeUserId: toText(row["负责人user_id"]),
     theme: toText(row["主题"]),
     title: toText(row["建议任务标题"]),
     description: toText(row["建议任务描述"]),
@@ -208,7 +210,7 @@ function mapFeedback(row: RawRecord): FeedbackDraft {
   return {
     name: toText(row["姓名"]),
     department: toText(row["部门"]),
-    openId: toText(row["open_id"]),
+    userId: toText(row["user_id"]),
     delivery: toText(row["建议发送方式"]),
     body: toText(row["反馈草稿"]),
   };
@@ -229,7 +231,7 @@ function mapInsightAttention(row: RawRecord): AttentionTask {
     title: toText(row.title),
     description: toText(row.whyBoss || row.description || row.acceptance),
     owner: toText(row.owner),
-    ownerOpenId: toText(row.ownerOpenId),
+    ownerUserId: toText(row.ownerUserId),
     dueDate: toText(row.dueDate),
     evidence: toText(row.evidence),
   };
@@ -269,7 +271,7 @@ function mapCandidate(row: RawRecord, fallbackName: string, index: number): Kimi
     source: toText(row.source) || fallbackName,
     department: toText(row.department),
     owner: toText(row.owner) || fallbackName,
-    ownerOpenId: toText(row.ownerOpenId),
+    ownerUserId: toText(row.ownerUserId),
     title: toText(row.title),
     description: toText(row.description),
     dueDate: toText(row.dueDate),

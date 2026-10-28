@@ -63,7 +63,7 @@ function toTaskRows(insights) {
     id: `attention-${index}-${hash(task.title ?? "")}`,
     priority: task.priority,
     title: task.title,
-    ownerOpenId: task.ownerOpenId,
+    ownerUserId: task.ownerUserId,
     dueDate: task.dueDate,
     description: makeDescription(task, "attention"),
   }));
@@ -74,7 +74,7 @@ function toTaskRows(insights) {
       id: task.id || `${employee.name}-${index}-${hash(task.title ?? "")}`,
       priority: task.priority,
       title: task.title,
-      ownerOpenId: task.ownerOpenId,
+      ownerUserId: task.ownerUserId,
       dueDate: task.dueDate,
       description: makeDescription(task, "employee"),
       employeeName: employee.name,
@@ -135,7 +135,7 @@ async function main() {
       "--format",
       "json",
     ];
-    if (row.ownerOpenId) args.push("--assignee", row.ownerOpenId);
+    if (row.ownerUserId) args.push("--assignee", row.ownerUserId);
     if (!execute) args.push("--dry-run");
 
     const result = await runLark(args);

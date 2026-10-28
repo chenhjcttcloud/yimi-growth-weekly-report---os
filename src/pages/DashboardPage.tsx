@@ -9,6 +9,7 @@ import {
   Users,
 } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
+import { AppSelect } from "../components/AppSelect";
 import { PriorityBadge } from "../components/PriorityBadge";
 import { HorizontalBars } from "../components/SimpleCharts";
 import {
@@ -351,10 +352,10 @@ export function DashboardPage({ selectedPeriodId, onOpenEmployee, externalView =
                     分析窗口：{activeDepartmentBrief.recentPeriodLabels.join("、")}。先定议题，再把反复出现的问题沉淀为长期机制。
                   </p>
                 </div>
-                <select
+                <AppSelect
                   className="v2-select"
                   value={activeDepartmentBrief.department}
-                  onChange={(event) => setSelectedDepartment(event.target.value)}
+                  onValueChange={setSelectedDepartment}
                   aria-label="选择部门会议视角"
                 >
                   {departmentBriefs.map((brief) => (
@@ -362,7 +363,7 @@ export function DashboardPage({ selectedPeriodId, onOpenEmployee, externalView =
                       {brief.department}
                     </option>
                   ))}
-                </select>
+                </AppSelect>
               </div>
               <div className="v2-metric-row">
                 <div className="v2-profile-block">
@@ -373,7 +374,7 @@ export function DashboardPage({ selectedPeriodId, onOpenEmployee, externalView =
                   </div>
                 </div>
                 <div className="v2-profile-block">
-                  <span>本周均分</span>
+                  <span>本周AI参考均分</span>
                   <div className="v2-profile-360">
                     <strong>{activeDepartmentBrief.currentAverage || "-"}</strong>
                     <span className={activeDepartmentBrief.scoreDelta >= 0 ? "is-up" : "is-down"}>
@@ -513,7 +514,7 @@ export function DashboardPage({ selectedPeriodId, onOpenEmployee, externalView =
                 <div>
                   <span className="v2-eyebrow">
                     <Network size={13} />
-                    协同评分雷达
+                    协作候选评分雷达
                   </span>
                   <h3 className="v2-card-title">同事眼中的贡献者</h3>
                   <p className="v2-card-sub">
@@ -628,7 +629,7 @@ export function DashboardPage({ selectedPeriodId, onOpenEmployee, externalView =
                   <Users size={13} />
                   部门周报质量
                 </span>
-                <h3 className="v2-card-title">{cnNumber(appData.peopleCount)} 人的质量分布</h3>
+                <h3 className="v2-card-title">{cnNumber(appData.peopleCount)} 人的AI候选质量分布</h3>
               </div>
             </div>
             <HorizontalBars data={departmentBars} />
