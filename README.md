@@ -2,7 +2,7 @@
 
 > 把周报从一次性的“汇报动作”，变成个人成长轨迹、组织问题雷达和现实任务闭环。
 
-[![CI](https://github.com/brotherjean/emie-growth-os/actions/workflows/ci.yml/badge.svg)](https://github.com/brotherjean/emie-growth-os/actions)
+[![CI](https://github.com/chenhjcttcloud/yimi-growth-weekly-report---os/actions/workflows/ci.yml/badge.svg)](https://github.com/chenhjcttcloud/yimi-growth-weekly-report---os/actions)
 ![React](https://img.shields.io/badge/React-19-149eca)
 ![TypeScript](https://img.shields.io/badge/TypeScript-5-3178c6)
 ![SQLite](https://img.shields.io/badge/SQLite-runtime-0f80cc)
@@ -14,6 +14,8 @@
 它最初源于一个真实的管理问题：扁平组织里，老板很难每周完整阅读数十份周报、记住跨周承诺，并判断哪些事项真正需要自己介入。系统因此不以“生成更多点评”为目标，而以**帮助管理者排序注意力、帮助员工看见成长、帮助组织持续完成闭环**为核心。
 
 > **公开仓库说明**：本仓库只包含代码、匿名演示数据和脱敏截图。真实员工身份、周报正文、AI 分析、互动记录、SQLite 数据库、上传文件、API Key 与部署凭据均不进入 Git。
+
+代码同步维护于 [GitHub](https://github.com/chenhjcttcloud/yimi-growth-weekly-report---os) 和 [Gitee](https://gitee.com/Lucascloud/yimi-growth-weekly-report---os)。用户要求推送时，必须同步两个仓库的同一分支、同一提交，并分别核验远端 SHA；具体规则见 [AGENTS.md](AGENTS.md) 与 [协作开发指南](CONTRIBUTING.md#双仓库同步推送)。代码推送不自动部署生产。
 
 ## 项目价值
 
@@ -131,7 +133,7 @@ AI 管线采用“**分块分析 + 跨周上下文 + 结构化校验 + 人工确
 ## 本地运行
 
 ```bash
-git clone https://github.com/brotherjean/emie-growth-os.git
+git clone https://github.com/chenhjcttcloud/yimi-growth-weekly-report---os.git emie-growth-os
 cd emie-growth-os
 npm ci
 npm run build

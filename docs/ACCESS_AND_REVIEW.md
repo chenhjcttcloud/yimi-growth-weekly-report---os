@@ -2,20 +2,22 @@
 
 ## 公开访问方式
 
-仓库已公开，任何人都可以阅读和 Fork：
+代码在 [GitHub](https://github.com/chenhjcttcloud/yimi-growth-weekly-report---os) 与 [Gitee](https://gitee.com/Lucascloud/yimi-growth-weekly-report---os) 同步维护。任何人都可以阅读和 Fork 公开仓库：
 
 ```bash
-git clone https://github.com/brotherjean/emie-growth-os.git
+git clone https://github.com/chenhjcttcloud/yimi-growth-weekly-report---os.git emie-growth-os
 ```
 
 公开访问不包含生产服务器、真实业务数据、飞书应用凭据或直接写入权限。
+
+获得用户推送指令时，必须按 [AGENTS.md](../AGENTS.md) 和 [双仓库同步推送规则](../CONTRIBUTING.md#双仓库同步推送)，同步两个仓库的同一分支和提交，并分别核对远端 SHA。原 `brotherjean/emie-growth-os` 仅保留为历史来源。
 
 ## IT 开发流程
 
 推荐通过 Fork 或功能分支提交 Pull Request：
 
 ```bash
-git clone https://github.com/<your-account>/emie-growth-os.git
+git clone https://github.com/<your-account>/yimi-growth-weekly-report---os.git emie-growth-os
 cd emie-growth-os
 npm ci
 git switch -c feature/<主题>
@@ -25,7 +27,7 @@ git switch -c feature/<主题>
 
 ```bash
 git push -u origin feature/<主题>
-gh pr create --repo brotherjean/emie-growth-os --base main --fill
+gh pr create --repo chenhjcttcloud/yimi-growth-weekly-report---os --base main --fill
 ```
 
 PR 会自动运行 CI。维护者重点审阅行为变化、权限范围、数据安全、验证证据和回滚方式。
@@ -42,7 +44,7 @@ PR 会自动运行 CI。维护者重点审阅行为变化、权限范围、数�
 CLI 邀请方式：
 
 ```bash
-gh api --method PUT repos/brotherjean/emie-growth-os/collaborators/<github-username> -f permission=push
+gh api --method PUT repos/chenhjcttcloud/yimi-growth-weekly-report---os/collaborators/<github-username> -f permission=push
 ```
 
 ## 合并与生产发布边界
@@ -52,4 +54,4 @@ gh api --method PUT repos/brotherjean/emie-growth-os/collaborators/<github-usern
 - 未经审阅的 PR 不得直接连接生产飞书应用或生产数据库。
 - Issue、PR、Actions 日志和截图中不得出现真实员工数据或凭据。
 
-仓库已配置 CODEOWNER、PR 模板、GitHub Actions CI、合并后删除分支，并优先使用 squash/rebase。
+仓库保留 CODEOWNERS、PR 模板和 GitHub Actions CI。合并及同步不得删除分支或改写已有历史；生产发布仍需本次单独授权。

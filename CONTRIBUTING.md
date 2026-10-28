@@ -15,6 +15,31 @@
 3. PR 必须说明目标、影响页面/API、数据迁移、验证方式和回滚方式。
 4. 涉及权限、消息、任务、数据库和自动化时，要明确 dry-run 与真实写入边界。
 
+## 双仓库同步推送
+
+所有推送操作必须遵守 [AGENTS.md](AGENTS.md)。用户要求推送代码时，同一次操作同步到两个仓库的相同分支和相同提交：
+
+| 远端名 | 仓库地址 |
+|---|---|
+| `github` | https://github.com/chenhjcttcloud/yimi-growth-weekly-report---os.git |
+| `gitee` | https://gitee.com/Lucascloud/yimi-growth-weekly-report---os.git |
+
+本地尚未配置时，先核对已有远端，再添加缺少的远端；不要覆盖或删除已有配置。GitHub 当前推送使用已配置的 SSH 认证，HTTPS 地址也可用于读取。
+
+推送前读取两个远端分支状态，确保不会覆盖已有历史。以已获授权推送的 `main` 为例：
+
+```bash
+git push github main:main
+git push gitee main:main
+git ls-remote github refs/heads/main
+git ls-remote gitee refs/heads/main
+git rev-parse main
+```
+
+最后三项的提交 SHA 必须一致。功能分支同样同步到两个仓库的对应分支；如一边失败，报告部分成功，保留已成功推送的提交并补推失败的一边。不得强推或使用镜像推送覆盖远端。原 `brotherjean/emie-growth-os` 保留为历史来源，不再作为默认推送目标。
+
+代码推送、PR 合并和生产部署是不同操作。普通本地修改不自动推送；只有本次获得明确生产部署指令才能上线，CI 不得自动部署生产。
+
 ## 必做检查
 
 ```bash
