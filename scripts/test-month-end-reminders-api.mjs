@@ -21,13 +21,18 @@ try{
  assert.equal((await call(endpoint,'admin',{enabled:false,time:'30:00'})).body.error,'invalid_monthly_reminders');assert.equal((await call(endpoint,'admin',{enabled:true,time:'10:00'})).body.error,'feishu_required');
  assert.equal((await call(endpoint,'admin',{enabled:false,time:'09:30'},'https://untrusted.example')).status,403);
  assert.equal((await call(endpoint,'admin',{enabled:false,time:'09:30'})).status,200);assert.equal((await call(endpoint,'boss')).body.settings.time,'09:30');
+ assert.equal((await call(endpoint,'admin',{enabled:false,time:'09:30',startMonth:'2026-13'})).body.error,'invalid_monthly_reminders');
+ assert.equal((await call(endpoint,'admin',{enabled:false,time:'09:30',startMonth:'2026-11'})).status,200);assert.equal((await call(endpoint,'boss')).body.settings.startMonth,'2026-11');
+ assert.equal((await call(endpoint,'admin',{enabled:false,time:'09:30'})).status,200);assert.equal((await call(endpoint,'boss')).body.settings.startMonth,'2026-11');
  assert.equal(run('SELECT count(*) AS n FROM monthly_score_reminder_deliveries;')[0].n,0,'preview/save creates no sends');assert((await call('/api/system-settings/logs','boss')).body.logs.some(l=>l.action==='月末评分提醒设置已保存'));
  browser=await chromium.launchPersistentContext(dir+'/browser-profile',{channel:'chrome',headless:true,viewport:{width:1440,height:1100}});await browser.addCookies([{name:'wos_session',value:cookie('boss'),url:base}]);
  const page=await browser.newPage(),errors=[];page.on('pageerror',e=>errors.push(e.message));await page.goto(base+'/?page=settings&settingsTab=cycles');
  const region=page.getByRole('region',{name:'月度评分飞书提醒'});await region.getByRole('button',{name:'保存月末提醒设置'}).waitFor();await region.getByLabel('工作日日历更新状态').waitFor();assert.equal(await region.getByRole('checkbox').isChecked(),false);assert.equal(await region.getByLabel('月末提醒发送时间').inputValue(),'09:30');
+ assert.equal(await region.getByLabel('月末提醒生效月份').inputValue(),'2026-11');await region.getByLabel('月末提醒生效月份').fill('2026-12');
  await region.getByLabel('月末提醒发送时间').fill('10:00');await region.getByRole('button',{name:'保存月末提醒设置'}).click();await region.getByText('已保存：自动提醒已关闭。',{exact:true}).waitFor();await region.getByText('查看待提醒名单',{exact:false}).click();await region.getByText('测试负责人',{exact:true}).waitFor();
  await page.screenshot({path:dir+'/month-end-settings.png',fullPage:true});await page.reload();await page.getByRole('region',{name:'月度评分飞书提醒'}).getByLabel('月末提醒发送时间').waitFor();assert.equal(await region.getByLabel('月末提醒发送时间').inputValue(),'10:00');assert.deepEqual(errors,[]);
  const overflow=await page.evaluate(()=>({outer:document.documentElement.scrollHeight>window.innerHeight,width:document.documentElement.scrollWidth>window.innerWidth}));assert.equal(overflow.width,false);assert.equal(overflow.outer,false);
+ assert.equal(await region.getByLabel('月末提醒生效月份').inputValue(),'2026-12');
  assert.equal(run('SELECT count(*) AS n FROM monthly_score_reminder_deliveries;')[0].n,0);
  console.log(JSON.stringify({ok:true,apiAuthorization:true,validation:true,originGuard:true,noRealSends:true,settingsPersist:true,browserSave:true,layout:overflow,artifacts:dir}));
 }catch(e){console.error(logs);throw e;}

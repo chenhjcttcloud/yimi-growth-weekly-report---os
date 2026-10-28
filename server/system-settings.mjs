@@ -16,7 +16,7 @@ export function createSystemSettings({query,exec,sql,config,now=()=>new Date()})
  async function monthlyReminderConfig(){
   const row=(await query("SELECT value_json FROM app_settings WHERE key='month_end_score_reminders';"))[0];
   const stored=row?JSON.parse(row.value_json):null;
-  return {enabled:stored?stored.enabled===true:config.scoring360ReminderEnabled===true,time:stored?.time||`${String(config.scoring360ReminderHour??10).padStart(2,'0')}:${String(config.scoring360ReminderMinute??0).padStart(2,'0')}`,configured:!!(config.feishuAppId&&config.feishuAppSecret)};
+  return {enabled:stored?stored.enabled===true:config.scoring360ReminderEnabled===true,time:stored?.time||`${String(config.scoring360ReminderHour??10).padStart(2,'0')}:${String(config.scoring360ReminderMinute??0).padStart(2,'0')}`,startMonth:stored?.startMonth||'',configured:!!(config.feishuAppId&&config.feishuAppSecret)};
  }
  async function reportAutomationConfig(){
   const row=(await query("SELECT value_json FROM app_settings WHERE key='report_automation_config';"))[0],stored=row?JSON.parse(row.value_json):null;
@@ -32,8 +32,10 @@ export function createSystemSettings({query,exec,sql,config,now=()=>new Date()})
  }
  async function saveMonthlyReminders(body,user){
   if(typeof body.enabled!=='boolean'||!/^([01]\d|2[0-3]):[0-5]\d$/.test(body.time||''))throw Error('invalid_monthly_reminders');
+  const startMonth=body.startMonth===undefined?(await monthlyReminderConfig()).startMonth:body.startMonth;
+  if(typeof startMonth!=='string'||startMonth!==''&&!/^\d{4}-(0[1-9]|1[0-2])$/.test(startMonth))throw Error('invalid_monthly_reminders');
   if(body.enabled&&!(config.feishuAppId&&config.feishuAppSecret))throw Error('feishu_required');
-  const value={enabled:body.enabled,time:body.time};
+  const value={enabled:body.enabled,time:body.time,startMonth};
   await exec(`INSERT INTO app_settings(key,value_json,updated_at) VALUES('month_end_score_reminders',${sql(JSON.stringify(value))},datetime('now')) ON CONFLICT(key) DO UPDATE SET value_json=excluded.value_json,updated_at=excluded.updated_at;`);
   await audit(user,'月末评分提醒设置已保存',{...value,schedule:'last_two_workdays',timezone:'Asia/Shanghai'});
  }

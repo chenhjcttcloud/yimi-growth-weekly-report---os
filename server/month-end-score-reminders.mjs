@@ -45,12 +45,14 @@ export function createMonthEndScoreReminders({query,exec,sql,managerReviews,boss
   }
   return [...groups.values()].map(g=>({...g,counts:{peer:g.peer.length,manager:g.manager.length,boss:g.boss.length},total:g.peer.length+g.manager.length+g.boss.length})).sort((a,b)=>a.userId.localeCompare(b.userId));
  }
- async function preview(month=shanghaiClock(now()).month) {
+ async function preview(month) {
+  const settings=await getSettings(),currentMonth=shanghaiClock(now()).month;
+  month=month||[currentMonth,settings.startMonth||''].sort().at(-1);
   validMonth(month);
-  const settings=await getSettings(),cal=calendar(),dates=lastTwoWorkingDays(month,cal),recipients=await pending(month);
+  const cal=calendar(),dates=lastTwoWorkingDays(month,cal),recipients=await pending(month);
   const year=Number(month.slice(0,4)),calendarCovered=Number(cal.year)===year||(cal.years||[]).includes(year);
   const deliveries=await query(`SELECT reminder_date,recipient_user_id,recipient_name,status,attempts,message_id,last_error,sent_at,updated_at FROM monthly_score_reminder_deliveries WHERE month=${sql(month)} ORDER BY reminder_date DESC,recipient_user_id;`);
-  return {month,settings,dates,timezone:'Asia/Shanghai',calendarCovered,calendarSource:cal.source||'',calendarUpdate:cal.automaticUpdate||null,calendarWarning:calendarCovered?'':cal.autoManaged?`${year} 年完整节假日与调休安排尚未取得，系统会自动重试；以下日期为周一至周五估算，取得日历前暂停当年自动评分提醒。`:`${year} 年节假日与调休表尚未维护，当前按周一至周五计算工作日。`,recipients:recipients.map(({peer,manager,boss,...rest})=>rest),deliveries};
+  return {month,settings,activeInMonth:!settings.startMonth||month>=settings.startMonth,dates,timezone:'Asia/Shanghai',calendarCovered,calendarSource:cal.source||'',calendarUpdate:cal.automaticUpdate||null,calendarWarning:calendarCovered?'':cal.autoManaged?`${year} 年完整节假日与调休安排尚未取得，系统会自动重试；以下日期为周一至周五估算，取得日历前暂停当年自动评分提醒。`:`${year} 年节假日与调休表尚未维护，当前按周一至周五计算工作日。`,recipients:recipients.map(({peer,manager,boss,...rest})=>rest),deliveries};
  }
  function message(recipient,clock,dates) {
   const lines=[`【成长 OS 月度评分提醒】${recipient.name}，你还有 ${clock.month} 月评分未完成。`];
@@ -68,6 +70,7 @@ export function createMonthEndScoreReminders({query,exec,sql,managerReviews,boss
   try {
    const clock=shanghaiClock(now()),settings=await getSettings(),cal=calendar(),dates=lastTwoWorkingDays(clock.month,cal);
    if(!settings.enabled)return {skipped:'disabled'};
+   if(settings.startMonth&&clock.month<settings.startMonth)return {skipped:'not_started'};
    if(settings.configured===false)return {skipped:'not_configured'};
    if(cal.autoManaged&&Number(cal.year)!==Number(clock.month.slice(0,4))&&!(cal.years||[]).includes(Number(clock.month.slice(0,4))))return {skipped:'calendar_unavailable'};
    if(!dates.includes(clock.date)||clock.time<settings.time)return {skipped:'not_due'};
@@ -87,7 +90,8 @@ UPDATE monthly_score_reminder_deliveries SET status='pending',claim_token=${sql(
     try {
      // Work may have been completed (or notifications disabled) since the initial scan.
      const current=(await pending(clock.month)).find(p=>p.userId===recipient.userId),freshClock=shanghaiClock(now());
-     if(!current||!(await getSettings()).enabled||freshClock.date!==clock.date){
+     const freshSettings=await getSettings();
+     if(!current||!freshSettings.enabled||freshSettings.startMonth&&clock.month<freshSettings.startMonth||freshClock.date!==clock.date){
       await exec(`UPDATE monthly_score_reminder_deliveries SET status='cancelled',updated_at=${sql(now().toISOString())} WHERE ${owned};`);continue;
      }
      const text=message(current,clock,dates),uuid=createHash('sha256').update(`${clock.date}:${current.userId}`).digest('hex').slice(0,32);

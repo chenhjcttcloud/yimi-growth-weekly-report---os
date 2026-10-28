@@ -1,7 +1,7 @@
 name: emie-growth-os-production
 services:
   app:
-    image: emie-growth-os:production-20261028-auto-scores
+    image: emie-growth-os:production-20261028-monthly-start
     restart: unless-stopped
     init: true
     env_file: .env
