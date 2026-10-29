@@ -157,7 +157,7 @@ npm run server:dev
 本地部署使用 Node API 提供前端静态资源，默认启用匿名演示身份，不需要飞书或 AI 密钥。
 首次运行请在 `.env` 中设置随机的 `SESSION_SECRET`（例如用 `openssl rand -hex 32` 生成）。
 
-普通登录没有服务端固定过期时间；浏览器登录 Cookie 保存 400 天，并在每次访问和活跃心跳时续期，旧的 7 天 Cookie 也会在访问时升级。主动退出、清理浏览器数据或更换 `SESSION_SECRET` 后需要重新登录；外部分享和开发视角仍保留各自的有效期。
+飞书登录采用服务端绝对有效期，默认168小时，可用 `SESSION_TTL_HOURS` 配置；访问与心跳不会延长原始期限。主动退出会保留会话撤销记录。开发视角有独立期限。外部顾问分享功能已停用，旧链接与既有外部会话不能访问系统，员工继续使用飞书登录。
 
 ```bash
 docker --context orbstack compose up -d --build
@@ -265,7 +265,7 @@ See the Chinese sections above for architecture, setup, security boundaries, and
 - 员工的协作评分任务独立于个人结果页，仅能提交本人被分配的任务，不能查看他人对自己的评分过程。
 - 管理原始数据不再打包进公开前端 JS，而由管理权限接口提供。现有 `canManageScoring360` 管理身份作为 HR 权限，范围为全公司。
 
-当前容器仍是 `AUTH_MODE=mock` 的老板演示环境。真实员工隔离需要配置飞书 SSO；当前无飞书凭据，因此外发提醒、同步和真实 AI 调用保持关闭。启用提醒时，`SCORING360_REMINDER_ENABLED=true` 支持已发起轮次的未评分跟进，`SCORING360_LAUNCH_MODE=scheduled` 支持按月自动发起；`WEEKLY_REMINDER_ENABLED=true` 启用周报提醒。
+本地开发环境可使用 `AUTH_MODE=mock` 与开发视角切换；生产环境使用 `AUTH_MODE=feishu` 并关闭开发切换。真实员工隔离、飞书汇报同步与 AI 调用由各环境的服务端配置决定，密钥不得提交仓库。启用提醒时，`SCORING360_REMINDER_ENABLED=true` 支持已发起轮次的未评分跟进，`SCORING360_LAUNCH_MODE=scheduled` 支持按月自动发起；`WEEKLY_REMINDER_ENABLED=true` 启用周报提醒。
 
 新增回归验证（需要 Node 与 sqlite3）：
 
@@ -375,7 +375,7 @@ AI 页面保存服务地址、模型和加密密钥，后端实时追问立即�
 
 ### 完整业务回归
 
-运行 `npm run test:business` 可安全构建并执行33组业务回归。外部飞书/Kimi请求由测试程序拦截，不发送真实消息、不创建真实任务；数据库、日志、截图和构建文件保留在 `outputs/tests/business-regression-*`。真实服务检查及本轮验证结果见 [完整业务回归报告](docs/BUSINESS_REGRESSION_20261028.md)。
+运行 `npm run test:business` 可安全构建并执行37组业务回归（加 TypeScript 检查与构建，共39项）。外部飞书/Kimi请求由测试程序拦截，不发送真实消息、不创建真实任务；数据库、日志、截图和构建文件保留在 `outputs/tests/business-regression-*`。真实服务检查及本轮验证结果见 [完整业务回归报告](docs/BUSINESS_REGRESSION_20261028.md)。
 
 ### 月度配评入口
 

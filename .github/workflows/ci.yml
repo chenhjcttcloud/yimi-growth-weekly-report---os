@@ -34,5 +34,7 @@ jobs:
       - run: node scripts/test-scoring-workbench.mjs
       - run: node scripts/test-authorization-candidates.mjs
       - run: node scripts/test-company-directory.mjs
+      - run: node scripts/test-employee-status-api.mjs
+      - run: BUSINESS_TEST_SKIP_BROWSER=true TEST_STATIC_DIR=outputs/ci-preview node scripts/test-external-sharing-disabled.mjs
       - run: BUSINESS_TEST_SKIP_BROWSER=true TEST_STATIC_DIR=outputs/ci-preview node scripts/test-business-workflow.mjs
       - run: npm audit --audit-level=high

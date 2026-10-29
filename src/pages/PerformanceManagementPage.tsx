@@ -13,6 +13,7 @@ export function PerformanceManagementPage(){
 }
 function PerformanceResults(){
  const [data,setData]=useState<any>(null),[month,setMonth]=useState(''),[error,setError]=useState('');
+ const [managerReviewBusy,setManagerReviewBusy]=useState(false);
  const [selectedName,setSelectedName]=useState('');
  const [tab,setTab]=useState<'review'|'reports'|'collaboration'|'history'>('review');
  async function load(){try{const r=await fetch('/api/performance/manage');const j=await r.json();if(!r.ok)throw Error(j.error);setData(j);setMonth(m=>m||j.months[0]||'');}catch(e){setError(String(e));}}
@@ -32,8 +33,8 @@ function PerformanceResults(){
  const timePct=rows.some((r:any)=>r.timeliness.pendingTimestamp||r.timeliness.pendingCalendar)?'—':totals.expected?(totals.onTime/totals.expected*100).toFixed(1):'—';
  const formatDate=(s:string)=>s?new Date(s.includes('T')?s:s.replace(' ','T')+'Z').toLocaleString('zh-CN',{timeZone:'Asia/Shanghai',hour12:false}):'—';
  return <div className="v2-page v2-page-wide pf-page">
-  <section className="pf-intro"><div><span className="v2-eyebrow"><ShieldCheck size={14}/>月度评分工作台</span><h2>让每一份结果，都有据可依。</h2><p>周报质量与提交统计自动计算，月度评分全部完成后自动发布。</p></div><label className="pf-month pf-month-select"><CalendarDays size={16}/><AppSelect aria-label="选择绩效月份" value={month} onValueChange={value=>{setMonth(value);setSelectedName('');}}>{data.months.map((m:string)=><option value={m} key={m}>{monthText(m)}</option>)}</AppSelect></label></section>
-  <ManagerReviewsPanel/>
+  <section className="pf-intro"><div><span className="v2-eyebrow"><ShieldCheck size={14}/>月度评分工作台</span><h2>让每一份结果，都有据可依。</h2><p>周报质量与提交统计自动计算，月度评分全部完成后自动发布。</p></div><label className="pf-month pf-month-select"><CalendarDays size={16}/><AppSelect aria-label="选择绩效月份" disabled={managerReviewBusy} value={month} onValueChange={value=>{setMonth(value);setSelectedName('');}}>{data.months.map((m:string)=><option value={m} key={m}>{monthText(m)}</option>)}</AppSelect></label></section>
+  <ManagerReviewsPanel month={month} onBusyChange={setManagerReviewBusy}/>
   <section className="pf-metrics">
    <ResultMetric icon={Clock3} label="全员周报提交率" value={pct} unit="%" description={`准时提交率 ${timePct}${timePct==='—'?'':'%'}`}><span className="pf-caption">迟交 <b>{rows.filter((r:any)=>r.timeliness.late>0).length}</b> 人</span><span className="pf-caption">未交 <b>{rows.filter((r:any)=>r.timeliness.missing>0).length}</b> 人</span></ResultMetric>
    <ResultMetric icon={FileCheck2} label="周报质量最终均分" value={mean('quality')} unit="分" description="自动汇总已完成 AI 分析的周报"><span className="pf-caption">本月待完成 AI 分析</span><span className="pf-status">{pending} 份</span></ResultMetric>

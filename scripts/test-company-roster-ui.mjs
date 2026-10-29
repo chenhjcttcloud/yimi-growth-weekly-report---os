@@ -5,8 +5,8 @@ import {createHmac} from 'node:crypto';
 import path from 'node:path';
 import {chromium} from 'playwright';
 
-// Retained isolated database and browser fixtures. All directory requests are
-// intercepted in the browser; this script never synchronizes a real roster.
+// Retained isolated database and browser fixtures. Directory and employee-status
+// requests are intercepted; this script never changes a real employee or roster.
 await mkdir('outputs/tests',{recursive:true});
 const dir=await mkdtemp(path.resolve('outputs/tests/company-roster-ui-')),db=dir+'/test.sqlite',data=dir+'/data';
 await mkdir(data);
@@ -25,15 +25,27 @@ const people=[
   {userId:'stopped',name:'已停用同事',department:'研发部',active:false},
   {userId:'name-pending',name:'',department:'运营部',active:true,nameMissing:true},
   ...Array.from({length:30},(_,index)=>({userId:'member-'+index,name:'测试成员'+String(index).padStart(2,'0'),department:index%2?'研发部':'设计部',active:true})),
-].map(person=>({...person,source:'feishu_directory',directorySyncedAt:'2026-10-28T07:00:00Z',employmentPeriods:[{start_date:'2026-10-01',source:'feishu'}]}));
+].map(person=>({...person,source:'feishu_directory',directorySyncedAt:'2026-10-28T07:00:00Z',employmentPeriods:[{start_date:'2026-10-01',...(person.active?{}:{end_date:'2026-10-20'}),source:'feishu'}]}));
 let lastSync={total:35,created:3,updated:31,preservedInactive:1,failed:0,failedUserIds:[],missingNames:1,scannedDepartments:12,coverage:'visible_scope',expectedCompanyTotal:36,scopeComplete:false,incomplete:true,notReturnedLocalCount:0,finishedAt:'2026-10-28T07:00:00Z'};
-let nextResult={...lastSync},syncPosts=0,statusGets=0,failSync=false,failRoster=false;
+let nextResult={...lastSync},syncPosts=0,statusGets=0,failSync=false,failRoster=false,failStatus=false,statusGate=null;
+const statusPosts=[];
 try{
   for(let attempt=0;attempt<150;attempt++){if(server.exitCode!==null)throw Error(logs);try{if((await fetch(base+'/health')).ok)break;}catch{}await new Promise(resolve=>setTimeout(resolve,100));}
   const initialEmployees=sql('SELECT user_id,name,is_active FROM employees ORDER BY user_id;'),initialCycles=sql('SELECT count(*) FROM scoring360_cycles;');
   browser=await chromium.launchPersistentContext(dir+'/browser',{channel:'chrome',headless:true,viewport:{width:1600,height:1000}});await browser.addCookies([{name:'wos_session',value:cookie,url:base}]);
   const page=await browser.newPage(),errors=[],posts=[];page.setDefaultTimeout(12000);page.on('pageerror',error=>errors.push(error.message));page.on('request',request=>{if(request.method()==='POST')posts.push(new URL(request.url()).pathname);});
   await page.route('**/api/employees/manage',route=>route.fulfill({status:failRoster?503:200,json:failRoster?{ok:false}:{ok:true,employees:people}}));
+  await page.route('**/api/employees/manage/status',async route=>{
+    assert.equal(route.request().method(),'POST');
+    const body=route.request().postDataJSON();assert.equal(typeof body.active,'boolean');
+    const person=people.find(person=>person.userId===body.userId);assert(person,'status changes only target fixture people');
+    statusPosts.push(body);if(statusGate)await statusGate;
+    if(failStatus)return route.fulfill({status:503,json:{ok:false,error:'update_employee_status_failed'}});
+    if(body.active&&!person.active)person.employmentPeriods.push({start_date:'2026-10-29',source:'manager_restore'});
+    if(!body.active)for(const period of person.employmentPeriods)if(!period.end_date)period.end_date='2026-10-29';
+    person.active=body.active;
+    return route.fulfill({status:200,json:{ok:true,userId:body.userId,active:body.active}});
+  });
   await page.route('**/api/employees/directory-status',route=>{statusGets++;return route.fulfill({status:200,json:{ok:true,lastSync}});});
   await page.route('**/api/employees/sync-feishu',route=>{
     assert.equal(route.request().method(),'POST');syncPosts++;
@@ -45,7 +57,7 @@ try{
   assert.equal(syncPosts,0,'opening the page must not start a directory sync');assert(statusGets>0);
   assert.equal(await panel.locator('.company-roster-list>div').count(),35);await panel.getByText('当前仅同步了飞书授权范围内人员',{exact:true}).waitFor();assert.equal(await panel.getByText('本次公司人员同步已完成',{exact:true}).count(),0);
   await panel.getByText('尚不能确认全公司已纳入。请将飞书应用的通讯录可见范围设为「全部员工」，再重新同步。',{exact:true}).waitFor();await panel.getByText('1 人的姓名待补全',{exact:false}).waitFor();
-  const unseen=panel.locator('.company-roster-list>div').filter({hasText:'未登录负责人'});await unseen.getByText('已从飞书收录 · 尚未登录',{exact:true}).waitFor();assert.equal(await panel.locator('.employment-dates').count(),35);assert(await panel.locator('.company-roster-list>div').filter({hasText:'已停用同事'}).getByRole('button',{name:'已停用',exact:true}).isDisabled());
+  const unseen=panel.locator('.company-roster-list>div').filter({hasText:'未登录负责人'});await unseen.getByText('已从飞书收录 · 尚未登录',{exact:true}).waitFor();assert.equal(await panel.locator('.employment-dates').count(),35);assert(await panel.locator('.company-roster-list>div').filter({hasText:'已停用同事'}).getByRole('button',{name:'恢复',exact:true}).isEnabled());
   await page.waitForTimeout(500);await page.screenshot({path:dir+'/01-directory-partial.png',fullPage:true});
   const search=panel.getByRole('searchbox',{name:'搜索公司员工'});
   await search.fill('未登录负责人');assert.equal(await panel.locator('.company-roster-list>div').count(),1);
@@ -53,6 +65,35 @@ try{
   await search.fill('same-1');assert.equal(await panel.locator('.company-roster-list>div').count(),1);await panel.locator('.employee-profile strong').filter({hasText:'张同'}).waitFor();
   await search.fill('不存在的人员');await panel.getByText('没有匹配人员，请调整搜索或状态筛选。',{exact:true}).waitFor();await search.fill('');
   await panel.locator('.company-roster-filters').getByRole('button',{name:/^已停用\s*1$/}).click();assert.equal(await panel.locator('.company-roster-list>div').count(),1);await panel.locator('.company-roster-filters').getByRole('button',{name:/^在职\s*34$/}).click();assert.equal(await panel.locator('.company-roster-list>div').count(),34);await panel.locator('.company-roster-filters').getByRole('button',{name:/^全部\s*35$/}).click();
+  // Status actions are entirely fixture-backed: cancel does not send, a failed
+  // restore keeps the user inactive, and success updates both actions and counts.
+  const otherPeople=JSON.stringify(people.filter(person=>person.userId!=='stopped'));
+  await search.fill('stopped');const stoppedRow=panel.locator('.company-roster-list>div'),restore=stoppedRow.getByRole('button',{name:'恢复',exact:true});
+  page.once('dialog',dialog=>{assert.match(dialog.message(),/恢复/);return dialog.dismiss();});
+  await restore.click();assert.equal(statusPosts.length,0,'canceling restore must not call the API');
+  failStatus=true;page.once('dialog',dialog=>dialog.accept());await restore.click();
+  await panel.getByRole('alert').filter({hasText:/失败|重试/}).waitFor();
+  assert.equal(people.find(person=>person.userId==='stopped').active,false);assert(await restore.isEnabled());assert.equal(statusPosts.length,1);
+  failStatus=false;let releaseStatus;statusGate=new Promise(resolve=>{releaseStatus=resolve;});
+  const restoreRequest=page.waitForRequest(request=>new URL(request.url()).pathname==='/api/employees/manage/status'&&request.method()==='POST');
+  page.once('dialog',dialog=>dialog.accept());await restore.click();await restoreRequest;
+  assert(await restore.isDisabled(),'the status action must stay disabled while its save is pending');assert.equal(statusPosts.length,2);
+  releaseStatus();statusGate=null;
+  await stoppedRow.getByRole('button',{name:'停用',exact:true}).waitFor();await panel.getByText(/已恢复/).waitFor();
+  assert.equal(people.find(person=>person.userId==='stopped').active,true);
+  const restoredDates=stoppedRow.locator('.employment-dates');await restoredDates.locator('summary').getByText('恢复日期 · 2026-10-29 起',{exact:true}).waitFor();
+  await restoredDates.locator('summary').click();assert.equal(await restoredDates.getByRole('list',{name:'在职区间记录'}).getByRole('listitem').count(),2);
+  await restoredDates.getByText('2026-10-01 — 2026-10-20',{exact:true}).waitFor();await restoredDates.getByText('2026-10-29 — 至今',{exact:true}).waitFor();
+  await panel.locator('.company-roster-filters').getByRole('button',{name:/^已停用\s*0$/}).click();await panel.getByText('没有匹配人员，请调整搜索或状态筛选。',{exact:true}).waitFor();
+  await panel.locator('.company-roster-filters').getByRole('button',{name:/^在职\s*35$/}).click();assert.equal(await panel.locator('.company-roster-list>div').count(),1);
+  await page.screenshot({path:dir+'/05-restored.png',fullPage:true});
+  page.once('dialog',dialog=>{assert.match(dialog.message(),/停用/);return dialog.accept();});await stoppedRow.getByRole('button',{name:'停用',exact:true}).click();
+  await panel.getByText('没有匹配人员，请调整搜索或状态筛选。',{exact:true}).waitFor();
+  await panel.locator('.company-roster-filters').getByRole('button',{name:/^已停用\s*1$/}).click();await stoppedRow.getByRole('button',{name:'恢复',exact:true}).waitFor();
+  assert.equal(people.find(person=>person.userId==='stopped').active,false);assert.equal(statusPosts.length,3);
+  assert.deepEqual(statusPosts.map(body=>({userId:body.userId,active:body.active})),[{userId:'stopped',active:true},{userId:'stopped',active:true},{userId:'stopped',active:false}]);
+  assert.equal(JSON.stringify(people.filter(person=>person.userId!=='stopped')),otherPeople,'restore/stop must not alter other fixture people');
+  await panel.locator('.company-roster-filters').getByRole('button',{name:/^全部\s*35$/}).click();await search.fill('');
   const sync=panel.getByRole('button',{name:'同步公司全部人员',exact:true});
   await sync.click();await panel.getByText('本次读取 35 人，新增 3 人，更新 31 人，保留已停用 1 人。当前仅覆盖飞书授权范围，尚不能确认全公司已纳入。',{exact:true}).waitFor();assert.equal(syncPosts,1);
   nextResult={...lastSync,total:34,coverage:'company',expectedCompanyTotal:34,scopeComplete:true,incomplete:false,notReturnedLocalCount:1};await sync.click();await panel.getByText('人员已收录，部分资料仍待补全',{exact:true}).waitFor();assert.equal(syncPosts,2);assert.equal(await panel.getByText('本次公司人员同步已完成',{exact:true}).count(),0);await panel.getByText('另有 1 个原有账号本次未返回，已保留，请核实。',{exact:true}).waitFor();await page.screenshot({path:dir+'/02-missing-names.png',fullPage:true});
@@ -65,6 +106,6 @@ try{
   failRoster=true;await panel.getByRole('button',{name:'刷新状态',exact:true}).click();await panel.getByRole('alert').filter({hasText:'花名册暂时加载失败'}).waitFor();assert.equal(await panel.locator('.company-roster-list>div').count(),35);failRoster=false;await panel.getByRole('button',{name:'刷新状态',exact:true}).click();await panel.getByRole('alert').filter({hasText:'花名册暂时加载失败'}).waitFor({state:'hidden'});
   await page.setViewportSize({width:390,height:844});await panel.locator('.company-roster-toolbar').scrollIntoViewIfNeeded();await page.waitForTimeout(300);await page.screenshot({path:dir+'/04-mobile.png',fullPage:true});assert(await page.evaluate(()=>document.scrollingElement.scrollHeight<=innerHeight+1&&document.scrollingElement.scrollWidth<=innerWidth+1));assert((await panel.boundingBox()).width<=390);assert.equal(await panel.locator('.company-roster-list').evaluate(element=>getComputedStyle(element).overflowY),'auto');
   assert.deepEqual(errors,[]);assert.equal(sql('SELECT user_id,name,is_active FROM employees ORDER BY user_id;'),initialEmployees);assert.equal(sql('SELECT count(*) FROM scoring360_cycles;'),initialCycles);assert.equal(sql('SELECT count(*) FROM monthly_score_reminder_deliveries;'),'0');assert.equal(sql('PRAGMA integrity_check;'),'ok');
-  assert(posts.filter(route=>!route.startsWith('/api/usage/')).every(route=>route==='/api/employees/sync-feishu'),'no unrelated mutations were sent');
-  const result={ok:true,manualSyncOnly:true,searchNameDepartmentAndUserId:true,statusFilters:true,unenrolledSourceLabel:true,incompleteCoverageWarning:true,missingNameWarning:true,completeStatusOnlyWhenComplete:true,unreturnedLocalAccountsPreservedAndExplained:true,reloadReadsOnly:true,syncFailurePreservesRoster:true,loadFailurePreservesRoster:true,desktopAndMobileInternalScroll:true,browserErrors:errors,mockedDirectorySyncRequests:syncPosts,realDirectorySyncs:0,realMessagesSent:0,artifacts:dir};await writeFile(dir+'/result.json',JSON.stringify(result,null,2));console.log(JSON.stringify(result));
+  assert(posts.filter(route=>!route.startsWith('/api/usage/')).every(route=>['/api/employees/sync-feishu','/api/employees/manage/status'].includes(route)),'no unrelated mutations were sent');
+  const result={ok:true,manualSyncOnly:true,searchNameDepartmentAndUserId:true,statusFilters:true,restoreCancelSendsNothing:true,restoreFailurePreservesInactive:true,restoreAndStopUpdateFiltersAndCounters:true,restorationShowsLatestOpenPeriodAndPreservesHistory:true,statusSaveDisablesAction:true,statusChangesPreserveOtherPeople:true,unenrolledSourceLabel:true,incompleteCoverageWarning:true,missingNameWarning:true,completeStatusOnlyWhenComplete:true,unreturnedLocalAccountsPreservedAndExplained:true,reloadReadsOnly:true,syncFailurePreservesRoster:true,loadFailurePreservesRoster:true,desktopAndMobileInternalScroll:true,browserErrors:errors,mockedDirectorySyncRequests:syncPosts,mockedEmployeeStatusRequests:statusPosts.length,realEmployeeStatusWrites:0,realDirectorySyncs:0,realMessagesSent:0,artifacts:dir};await writeFile(dir+'/result.json',JSON.stringify(result,null,2));console.log(JSON.stringify(result));
 }catch(error){console.error(logs);throw error;}finally{if(browser)await browser.close();server.kill('SIGTERM');if(server.exitCode===null)await new Promise(resolve=>server.once('exit',resolve));await writeFile(dir+'/server.log',logs);console.log('Artifacts retained:',dir);}

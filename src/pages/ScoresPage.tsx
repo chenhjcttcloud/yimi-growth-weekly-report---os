@@ -337,7 +337,7 @@ export function ScoresPage({ visibleEmployees = [], access }: ScoresPageProps) {
               </p>
               <button className="primary-button" type="button" onClick={submitScores} disabled={viewingAnotherEvaluator || submitState === "saving" || draftScoreCount === 0}>
                 {submitState === "saved" ? <CheckCircle2 size={16} /> : <Send size={16} />}
-                <span>{submitState === "saving" ? "提交中" : submitState === "saved" ? "已提交" : draftScoreCount === 0 ? "请先选择分数" : `提交评分（${draftScoreCount}项）`}</span>
+                <span>{submitState === "saving" ? "提交中" : submitState === "saved" ? "已提交" : draftScoreCount === 0 ? "请先选择分数" : `提交积分（${draftScoreCount}项）`}</span>
               </button>
             </div>
             {submitState === "error" ? <p className="form-error">提交失败，请确认已通过飞书 SSO 登录且当前账号有评分任务。</p> : null}

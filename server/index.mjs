@@ -218,6 +218,17 @@ setInterval(checkOperations,60000).unref();void checkOperations();
 
 async function route(req, res) {
   const url = new URL(req.url || "/", config.baseUrl);
+  // External sharing is retired. Check the signed payload before validity and
+  // mock fallback, so expired legacy guests cannot become a development owner.
+  if (url.pathname === '/share' || url.pathname.startsWith('/share/') ||
+      url.pathname === '/api/external-links' || url.pathname.startsWith('/api/external-links/')) {
+    return sendExternalAccessDisabled(req, res, url);
+  }
+  const presentedSession = verifyPayload(parseCookies(req).wos_session);
+  if (isExternalSession(presentedSession) &&
+      !['/auth/login','/auth/feishu/callback','/auth/logout','/health'].includes(url.pathname)) {
+    return sendExternalAccessDisabled(req, res, url);
+  }
   if(req.method==='POST'&&(url.pathname.startsWith('/api/')&&url.pathname!=='/api/feishu/events'||url.pathname==='/auth/logout')&&req.headers.origin){
     let same=false;try{same=new URL(req.headers.origin).host===req.headers.host;}catch{}
     if(!same)return sendJson(res,403,{ok:false,error:'invalid_origin'});
@@ -609,11 +620,6 @@ async function route(req, res) {
     return;
   }
 
-  if (req.method === "GET" && url.pathname === "/api/external-links") {
-    await listExternalLinks(req, res);
-    return;
-  }
-
   if (req.method === "GET" && url.pathname === "/api/boss-view-members") {
     await listBossViewMembers(req, res);
     return;
@@ -641,11 +647,6 @@ async function route(req, res) {
 
   if (req.method === "GET" && url.pathname === "/api/ai/followups") {
     await listAiFollowups(req, res, url);
-    return;
-  }
-
-  if (req.method === "GET" && url.pathname.startsWith("/share/")) {
-    await enterExternalShare(req, res, url);
     return;
   }
 
@@ -689,11 +690,6 @@ async function route(req, res) {
 
   if (req.method === "GET" && url.pathname === "/api/roster/audit") {
     await getRosterAudit(req, res, url);
-    return;
-  }
-
-  if (req.method === "POST" && url.pathname === "/api/external-links") {
-    await createExternalLink(req, res);
     return;
   }
 
@@ -783,6 +779,13 @@ async function route(req, res) {
   }
 
   sendJson(res, 404, { ok: false, error: "not_found" });
+}
+
+function sendExternalAccessDisabled(req, res, url) {
+  res.setHeader('Cache-Control', 'no-store');
+  if (url.pathname.startsWith('/api/')) return sendJson(res,410,{ok:false,error:'external_access_disabled'});
+  res.setHeader('Content-Security-Policy', "default-src 'none'; style-src 'unsafe-inline'; base-uri 'none'; frame-ancestors 'none'");
+  return send(res,410,{'content-type':'text/html; charset=utf-8'},`<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>外部分享已停用 · 成长 OS</title><style>body{margin:0;background:#f4f6f1;color:#283f34;font:15px/1.8 system-ui,sans-serif;display:grid;place-items:center;min-height:100vh}main{max-width:430px;margin:24px;padding:36px;background:#fff;border:1px solid #e2e9df;border-radius:14px}h1{font-size:23px;margin:0 0 12px}p{color:#7c8d80;margin:0 0 24px}a{display:inline-block;background:#087e65;color:#fff;padding:10px 18px;border-radius:8px;text-decoration:none}</style></head><body><main><h1>外部分享已停用</h1><p>请使用公司飞书账号登录成长 OS。</p><a href="/auth/login">使用飞书登录</a></main></body></html>`);
 }
 
 async function startLogin(_req, res, url) {
@@ -2650,83 +2653,6 @@ async function listAccountActivity(req, res, url) {
   });
 }
 
-async function listExternalLinks(req, res) {
-  const session = getSession(req);
-  if (!session && config.authMode !== "mock") {
-    sendJson(res, 401, { ok: false, error: "unauthorized" });
-    return;
-  }
-  if (isExternalSession(session)) {
-    sendJson(res, 403, { ok: false, error: "external_share_readonly" });
-    return;
-  }
-  if (!isBossSession(session)) {
-    sendJson(res, 403, { ok: false, error: "boss_only" });
-    return;
-  }
-  const rows = await querySqlRows(`
-    SELECT id, name, scope, created_by_name, expires_at, status, access_count, last_accessed_at, created_at
-    FROM external_share_links
-    ORDER BY datetime(created_at) DESC
-    LIMIT 50;
-  `);
-  sendJson(res, 200, {
-    ok: true,
-    links: rows.map((row) => ({
-      id: row.id,
-      name: row.name,
-      scope: row.scope,
-      createdByName: row.created_by_name,
-      expiresAt: row.expires_at,
-      status: externalLinkRuntimeStatus(row),
-      accessCount: Number(row.access_count || 0),
-      lastAccessedAt: row.last_accessed_at,
-      createdAt: row.created_at,
-    })),
-  });
-}
-
-async function createExternalLink(req, res) {
-  const session = getSession(req);
-  if (!session && config.authMode !== "mock") {
-    sendJson(res, 401, { ok: false, error: "unauthorized" });
-    return;
-  }
-  if (isExternalSession(session)) {
-    sendJson(res, 403, { ok: false, error: "external_share_readonly" });
-    return;
-  }
-  if (!isBossSession(session)) {
-    sendJson(res, 403, { ok: false, error: "boss_only" });
-    return;
-  }
-  const user = session?.user || mockUser();
-  const body = await readJsonBody(req, { limitBytes: 20_000 });
-  const ttlHours = clampNumber(Number(body.ttlHours || 72), 1, 24 * 30);
-  const name = String(body.name || "外部顾问临时访问").trim().slice(0, 80);
-  const id = randomUUID();
-  const token = randomBytes(32).toString("base64url");
-  const tokenHash = hashExternalToken(token);
-  const expiresAt = new Date(Date.now() + ttlHours * 60 * 60 * 1000).toISOString();
-  await execSql(`
-    INSERT INTO external_share_links
-      (id, token_hash, name, scope, created_by_user_id, created_by_name, expires_at)
-    VALUES
-      (${sqlValue(id)}, ${sqlValue(tokenHash)}, ${sqlValue(name)}, 'boss_view',
-       ${sqlValue(user.userId)}, ${sqlValue(user.name)}, ${sqlValue(expiresAt)});
-  `);
-  sendJson(res, 200, {
-    ok: true,
-    link: {
-      id,
-      name,
-      scope: "boss_view",
-      expiresAt,
-      url: `${requestPublicBaseUrl(req)}/share/${token}`,
-    },
-  });
-}
-
 async function listBossViewMembers(req, res) {
   const session = getSession(req);
   if (!session && config.authMode !== "mock") {
@@ -2884,39 +2810,25 @@ async function updateManagedEmployeeStatus(req, res) {
     sendJson(res, 403, { ok: false, error: "scoring360_config_manager_only" });
     return;
   }
+  if(req.headers.origin&&new URL(req.headers.origin).host!==req.headers.host)return sendJson(res,403,{ok:false,error:'invalid_origin'});
   const body = await readJsonBody(req, { limitBytes: 20_000 });
+  if(!body||typeof body!=='object'||Array.isArray(body)||typeof body.active!=='boolean')return sendJson(res,400,{ok:false,error:'invalid_employee_status'});
   const userId = String(body.userId || body.user_id || "").trim();
-  const active = body.active !== false;
-  if(active && config.authMode!=='mock')return sendJson(res,405,{ok:false,error:'sso_roster_only'});
+  const active = body.active;
   if (!userId) {
     sendJson(res, 400, { ok: false, error: "employee_user_id_required" });
     return;
   }
   await ensureManagedEmployeeStore();
-  const rows = await querySqlRows(`SELECT user_id, name FROM employees WHERE user_id = ${sqlValue(userId)} LIMIT 1;`);
-  if (!rows[0]) {
-    sendJson(res, 404, { ok: false, error: "employee_not_found" });
-    return;
-  }
-  if(!active)await employeeLifecycle.stop(userId,body.lastWorkingDate||undefined);
-  await execSql(`
-    UPDATE employees SET is_active = ${active ? 1 : 0}, updated_at = datetime('now')
-    WHERE user_id = ${sqlValue(userId)};
-  `);
-  if (!active) {
-    await execSql(`
-      UPDATE scoring360_assignments
-      SET status = 'inactive', updated_at = datetime('now')
-      WHERE status = 'active'
-        AND (evaluee_user_id = ${sqlValue(userId)} OR evaluator_user_id = ${sqlValue(userId)})
-        AND NOT EXISTS(SELECT 1 FROM scoring360_responses r WHERE r.assignment_id=scoring360_assignments.id)
-        AND NOT EXISTS(SELECT 1 FROM performance_results p JOIN scoring360_cycles c ON p.month=substr(c.start_date,1,7) WHERE c.id=scoring360_assignments.cycle_id AND p.kind='collaboration' AND p.employee_user_id=scoring360_assignments.evaluee_user_id)
-        AND NOT EXISTS(SELECT 1 FROM all_monthly_weighted_results p JOIN scoring360_cycles c ON p.month=substr(c.start_date,1,7) WHERE c.id=scoring360_assignments.cycle_id AND p.employee_user_id=scoring360_assignments.evaluee_user_id);
-    `);
+  let result;
+  try {
+    result=await employeeLifecycle.setStatus(userId,active,session?.user||mockUser(),body.lastWorkingDate);
+  } catch(error) {
+    if(['employee_not_found','invalid_employee_status','invalid_employment_dates','employment_periods_require_review'].includes(error.message))return sendJson(res,error.message==='employee_not_found'?404:error.message==='employment_periods_require_review'?409:400,{ok:false,error:error.message});
+    throw error;
   }
   await refreshEmployeeDirectory();
-  await systemSettings.audit(session?.user||mockUser(),'员工状态已更新',{userId,active});
-  sendJson(res, 200, { ok: true, userId, active });
+  sendJson(res, 200, { ok: true, userId, ...result });
 }
 
 async function getLarkReportSyncStatus(req, res) {
@@ -3724,70 +3636,6 @@ async function importWeeklyReport(req, res) {
     })),
     warnings: parsed.warnings,
   });
-}
-
-async function enterExternalShare(_req, res, url) {
-  const token = decodeURIComponent(url.pathname.replace(/^\/share\//, "")).trim();
-  const link = await validateExternalShareToken(token);
-  if (!link) {
-    send(res, 403, textHeaders, "外部访问链接无效或已过期。请联系管理员重新生成。");
-    return;
-  }
-  setSession(
-    res,
-    {
-      user: {
-        userId: `external:${link.id}`,
-        unionId: `external:${link.id}`,
-        name: link.name || "外部顾问",
-        email: "",
-        avatarUrl: "",
-        role: "external_boss_view",
-      },
-      externalShare: {
-        id: link.id,
-        scope: link.scope,
-        expiresAt: link.expiresAt,
-      },
-      issuedAt: Date.now(),
-      expiresAt: link.expiresAt,
-    },
-    { maxAge: Math.max(60, Math.floor((new Date(link.expiresAt).getTime() - Date.now()) / 1000)) },
-  );
-  redirect(res, "/");
-}
-
-async function validateExternalShareToken(token) {
-  if (!token || token.length < 24) return null;
-  const tokenHash = hashExternalToken(token);
-  const rows = await querySqlRows(`
-    SELECT id, name, scope, expires_at, status
-    FROM external_share_links
-    WHERE token_hash = ${sqlValue(tokenHash)}
-    LIMIT 1;
-  `);
-  const row = rows[0];
-  if (!row || row.status !== "active" || new Date(row.expires_at).getTime() <= Date.now()) return null;
-  await execSql(`
-    UPDATE external_share_links
-    SET access_count = access_count + 1, last_accessed_at = datetime('now'), updated_at = datetime('now')
-    WHERE id = ${sqlValue(row.id)};
-  `);
-  return {
-    id: row.id,
-    name: row.name,
-    scope: row.scope,
-    expiresAt: row.expires_at,
-  };
-}
-
-function externalLinkRuntimeStatus(row) {
-  if (row.status !== "active") return row.status;
-  return new Date(row.expires_at).getTime() <= Date.now() ? "expired" : "active";
-}
-
-function hashExternalToken(token) {
-  return createHash("sha256").update(String(token)).digest("hex");
 }
 
 function clampNumber(value, min, max) {
@@ -5075,7 +4923,7 @@ function getSession(req) {
 }
 
 function isExternalSession(session) {
-  return Boolean(session?.externalShare || session?.user?.role === "external_boss_view");
+  return Boolean(session?.externalShare || session?.user?.role === "external_boss_view" || String(session?.user?.userId||'').startsWith('external:'));
 }
 
 function isBossIdentity(session) {

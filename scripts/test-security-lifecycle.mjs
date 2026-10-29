@@ -19,6 +19,50 @@ const rawData={meta:{collectionStartDate:'2026-09-14',periods:[{id:'old-week',st
 const lifecycle=createEmployeeLifecycle({query,exec,sql,now:()=>new Date('2026-10-28T02:00:00Z')});await lifecycle.initialize(rawData);await lifecycle.setDates('old',{startDate:'2026-09-01'}, {userId:'admin',name:'管理员'});await lifecycle.setDates('left',{startDate:'2026-09-01',endDate:'2026-09-30'},{userId:'admin',name:'管理员'});
 const perf=createPerformance({query,exec,sql,readData:()=>rawData,policyFor:async()=>({weights:[30,25,25,20],deadlineTime:'20:00'}),calendar:()=>JSON.parse(awaitRead),managerReviews:{snapshot:async()=>({scores:[],bossScores:[]}),progress:()=>({expected:0,complete:false})},now:()=>new Date('2026-10-28T02:00:00Z')});
 const awaitRead=await readFile('src/data/chinaWorkCalendar.json','utf8');let view=await perf.overview();assert(!view.monthly.some(r=>r.userId==='new'&&r.month==='2026-09'));assert.equal(view.monthly.find(r=>r.userId==='new'&&r.month==='2026-10').timeliness.missing,0);assert(view.monthly.some(r=>r.userId==='left'&&r.month==='2026-09'));assert(!view.monthly.some(r=>r.userId==='left'&&r.month==='2026-10'));
+
+// A first discovery is not a verified hire date. Historical Feishu reports can
+// establish an earlier observable working period without rewriting known dates.
+const eligibleSources=['report','first_seen','sso'];
+for(const source of eligibleSources)run(`INSERT INTO employees(user_id,name,department,is_active) VALUES(${sql('backfill-'+source)},${sql('历史回填-'+source)},'团队',1);
+ INSERT INTO employee_employment_periods(id,employee_user_id,start_date,source) VALUES(${sql('backfill-period-'+source)},${sql('backfill-'+source)},'2026-10-28',${sql(source)});`);
+const historyContent={source:{provider:'feishu-report',taskId:'fixture-august-report'},results:'完成已提交的真实格式交付记录',problems:'核实接口验收',nextPlan:'完成下一项交付',reflection:'沉淀验收清单','成果分':80,'问题分':80,'计划分':80,'复盘分':80};
+run(`INSERT INTO weekly_reports(id,employee_user_id,employee_name,department,week_label,week_start,week_end,status,content_json,submitted_at)
+ VALUES('lark-report-fixture-august-report','backfill-first_seen','历史回填-first_seen','团队','2026年8月第1周','2026-08-03','2026-08-07','准时',${sql(JSON.stringify(historyContent))},'2026-08-07T19:00:00+08:00');`);
+rawData.meta.collectionStartDate='2026-08-01';rawData.meta.periods.push({id:'august-week',start:'2026-08-03',end:'2026-08-07'});
+assert(!(await perf.personal('历史回填-first_seen','backfill-first_seen')).history.some(row=>row.month==='2026-08'),'a discovery-only October date initially hides the August result');
+const readPeriods=id=>run(`SELECT * FROM employee_employment_periods WHERE employee_user_id=${sql(id)} ORDER BY id;`,true);
+for(const source of eligibleSources){
+ const id='backfill-'+source;await lifecycle.observe(id,'2026-08-03');
+ assert.equal(readPeriods(id)[0].start_date,'2026-08-03');assert.equal(readPeriods(id)[0].source,'report');
+ const snapshot=readPeriods(id);await lifecycle.observe(id,'2026-09-14');assert.deepEqual(readPeriods(id),snapshot,'later reports do not move the known start forward');
+}
+const august=(await perf.personal('历史回填-first_seen','backfill-first_seen')).history.find(row=>row.month==='2026-08');
+assert.equal(august?.quality,80,'historical report backfill produces the personal August quality result');
+assert.equal(august.timeliness.submitted,1);assert.equal(august.timeliness.onTime,1);
+const protectedCases=[['verified-manager','manager',null],['verified-feishu','feishu',null],['restored','manager_restore',null],['closed-first','first_seen','2026-10-28'],['closed-sso','sso','2026-10-28'],['closed-report','report','2026-10-28']];
+for(const [id,source,end] of protectedCases){
+ run(`INSERT INTO employees(user_id,name,department,is_active) VALUES(${sql(id)},${sql(id)},'团队',${end?0:1});
+ INSERT INTO employee_employment_periods(id,employee_user_id,start_date,end_date,source) VALUES(${sql('period-'+id)},${sql(id)},'2026-10-01',${sql(end)},${sql(source)});`);
+ const snapshot=readPeriods(id);await lifecycle.observe(id,'2026-08-03');assert.deepEqual(readPeriods(id),snapshot,'backfill preserves '+id);
+}
+run("INSERT INTO employees(user_id,name,department,is_active) VALUES('multi-period','多段历史','团队',1); INSERT INTO employee_employment_periods(id,employee_user_id,start_date,end_date,source) VALUES('multi-closed','multi-period','2026-07-01','2026-07-31','report'),('multi-open','multi-period','2026-10-01',NULL,'first_seen');");
+const multiSnapshot=readPeriods('multi-period');await lifecycle.observe('multi-period','2026-08-03');assert.deepEqual(readPeriods('multi-period'),multiSnapshot,'a multi-period employment history is never backdated');
+for(const kind of ['verified','closed','multi']){
+ const id='concurrent-'+kind;run(`INSERT INTO employees(user_id,name,department,is_active) VALUES(${sql(id)},${sql(id)},'团队',1); INSERT INTO employee_employment_periods(id,employee_user_id,start_date,source) VALUES(${sql('period-'+id)},${sql(id)},'2026-10-01','first_seen');`);
+ let changed=false,afterConcurrentChange;
+ const racingLifecycle=createEmployeeLifecycle({query:async statement=>{
+  const rows=await query(statement);
+  if(!changed&&statement===`SELECT * FROM employee_employment_periods WHERE employee_user_id=${sql(id)};`){
+   changed=true;
+   if(kind==='verified')run(`UPDATE employee_employment_periods SET source='manager' WHERE employee_user_id=${sql(id)};`);
+   if(kind==='closed')run(`UPDATE employee_employment_periods SET end_date='2026-10-28' WHERE employee_user_id=${sql(id)};`);
+   if(kind==='multi')run(`INSERT INTO employee_employment_periods(id,employee_user_id,start_date,end_date,source) VALUES(${sql('older-'+id)},${sql(id)},'2026-07-01','2026-07-31','report');`);
+   afterConcurrentChange=readPeriods(id);
+  }
+  return rows;
+ },exec,sql});
+ await racingLifecycle.observe(id,'2026-08-03');assert(changed);assert.deepEqual(readPeriods(id),afterConcurrentChange,'concurrent '+kind+' history is protected by the write guard');
+}
 run("INSERT INTO feishu_department_links(open_department_id,department_id,parent_open_department_id,aliases_json,leader_name,synced_at,raw_json) VALUES('od','dept','','[]','',datetime('now'),'{\"name\":\"当前部门\"}');");
 let directoryCalls=0;
 const directory=createDirectorySync({query,exec,sql,config:{feishuAppId:'cli_test',feishuAppSecret:'test'},lifecycle,fetcher:async input=>{
@@ -43,5 +87,5 @@ try{
  await start();assert.equal((await fetch(base+'/api/me',{headers:{cookie:sign({user:{userId:'new'},issuedAt:0})}})).status,401);
  const valid=sign({user:{userId:'new',name:'测试员工'},issuedAt:Date.now(),sessionId:randomUUID(),expiresAt:new Date(Date.now()+3600000).toISOString()});assert.equal((await fetch(base+'/api/me',{headers:{cookie:valid}})).status,200);await fetch(base+'/auth/logout',{method:'POST',headers:{cookie:valid}});assert.equal((await fetch(base+'/api/me',{headers:{cookie:valid}})).status,401);await stop();await start();assert.equal((await fetch(base+'/api/me',{headers:{cookie:valid}})).status,401);
  const event={header:{event_type:'task.completed',event_id:'test-event'},event:{task:{guid:'task',status:'completed'}}};const send=body=>fetch(base+'/api/feishu/events',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify(body)});assert.equal((await send(event)).status,403);assert.equal(run("SELECT status FROM feishu_tasks WHERE guid='task';",true)[0].status,'created');const authenticated={...event,header:{...event.header,token:'expected-token'}};const responses=await Promise.all([send(authenticated),send(authenticated)]);assert(responses.every(r=>r.status===200));assert.equal(run('SELECT count(*) AS n FROM received_feishu_events;',true)[0].n,1);assert.equal(run("SELECT count(*) AS n FROM contribution_events WHERE event_type='task.completed';",true)[0].n,1);
- console.log(JSON.stringify({ok:true,callbackAuthentication:true,eventDedup:true,sessionExpiry:true,logoutRevocationAcrossRestart:true,newHireNoRetroactiveMissing:true,formerEmployeeHistoryRetained:true,directoryIdentity:true,artifacts:dir}));
+ console.log(JSON.stringify({ok:true,callbackAuthentication:true,eventDedup:true,sessionExpiry:true,logoutRevocationAcrossRestart:true,newHireNoRetroactiveMissing:true,historicalReportBackfill:true,augustPersonalResultsVisible:true,verifiedAndSuspendedPeriodsProtected:true,concurrentEmploymentEditsProtected:true,formerEmployeeHistoryRetained:true,directoryIdentity:true,artifacts:dir}));
 }finally{if(server?.exitCode===null)await stop();console.log('Artifacts retained:',dir);}

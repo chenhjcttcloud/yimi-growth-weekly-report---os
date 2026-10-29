@@ -16,17 +16,6 @@ import type { UserAccess } from "../lib/types";
 import '../styles/company-roster.css';
 const RoleAuthorization = lazy(() => import('../components/RoleAuthorization').then(module=>({default:module.RoleAuthorization})));
 
-interface ExternalLink {
-  id: string;
-  name: string;
-  scope: string;
-  expiresAt: string;
-  status: string;
-  accessCount: number;
-  lastAccessedAt?: string;
-  createdAt?: string;
-}
-
 interface ImportResult {
   batch?: {
     id: string;
@@ -294,7 +283,6 @@ export function SettingsPage({ access,onOpenScoringSetup }: SettingsPageProps) {
   }
   useEffect(() => { void loadRuntimeStatus(); }, []);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
-  const [externalLinks, setExternalLinks] = useState<ExternalLink[]>([]);
   const [managedEmployees, setManagedEmployees] = useState<ManagedEmployee[]>([]);
   const [managedEmployeeState, setManagedEmployeeState] = useState<"idle" | "saving" | "saved" | "error">("idle");
   const [employeeMessage,setEmployeeMessage]=useState("");
@@ -309,10 +297,6 @@ export function SettingsPage({ access,onOpenScoringSetup }: SettingsPageProps) {
     (employeeFilter==='all'||employee.active===(employeeFilter==='active'))&&
     `${employee.name} ${employee.department} ${employee.userId}`.toLowerCase().includes(employeeQuery.trim().toLowerCase())
   ),[managedEmployees,employeeQuery,employeeFilter]);
-  const [externalName, setExternalName] = useState("外部顾问临时访问");
-  const [ttlHours, setTtlHours] = useState("72");
-  const [generatedUrl, setGeneratedUrl] = useState("");
-  const [externalLinkState, setExternalLinkState] = useState<"idle" | "creating" | "error">("idle");
   const [importState, setImportState] = useState<"idle" | "dragging" | "uploading" | "done" | "error">("idle");
   const [importResult, setImportResult] = useState<ImportResult | null>(null);
   const [importError, setImportError] = useState("");
@@ -338,7 +322,6 @@ export function SettingsPage({ access,onOpenScoringSetup }: SettingsPageProps) {
 
   useEffect(() => {
     if (bossView) {
-      loadExternalLinks();
       loadLarkReportSyncStatus();
       loadWeeklyReminderStatus();
       loadRosterAudit();
@@ -403,7 +386,10 @@ export function SettingsPage({ access,onOpenScoringSetup }: SettingsPageProps) {
   }
 
   async function setManagedEmployeeActive(employee: ManagedEmployee, active: boolean) {
-    if (!active && !window.confirm(`确认停用 ${employee.name}？历史评分会保留，但不会进入新周期或提醒。`)) return;
+    if (managedEmployeeState === "saving") return;
+    if (!window.confirm(active
+      ? `确认恢复 ${employee.name}？恢复后可登录系统，并从今天起纳入周报、评分与提醒。停用期间不补记缺交，历史结果保留。`
+      : `确认停用 ${employee.name}？停用后将停止登录、周报采集、新评分和提醒，历史记录保留。`)) return;
     setEmployeeMessage("");
     setManagedEmployeeState("saving");
     try {
@@ -417,41 +403,23 @@ export function SettingsPage({ access,onOpenScoringSetup }: SettingsPageProps) {
       await loadManagedEmployees();
       await loadScoring360Config();
       await loadScoring360ReminderStatus();
-      setEmployeeMessage(`${employee.name}已${active?"恢复在职":"停用"}。`);
+      setEmployeeMessage(active
+        ? `${employee.name}已恢复正常使用。从今天起参与后续周报、评分与提醒；原来已停用的评分关系可在配评工作台重新配置。`
+        : `${employee.name}已停用，不再参与周报采集、新评分和提醒。`);
       setManagedEmployeeState("saved");
     } catch(error) {
       const code=error instanceof Error?error.message:'';
-      setEmployeeMessage(code==='employee_user_id_and_name_required'?'请填写员工姓名和飞书 user_id。':code==='scoring360_config_manager_only'||code==='manager_only'?'当前账号没有人员管理权限，请切换到管理视角。':'保存失败，请检查网络后重试。');
+      const messages:Record<string,string>={
+        employee_user_id_and_name_required:'请填写员工姓名和飞书 user_id。',
+        scoring360_config_manager_only:'当前账号没有人员管理权限，请切换到管理视角。',
+        manager_only:'当前账号没有人员管理权限，请切换到管理视角。',
+        employment_periods_require_review:'在职记录存在冲突，请先核实在职日期后重试。',
+        invalid_employee_status:'操作参数无效，请刷新页面后重试。',
+        employee_not_found:'未找到该账号，请刷新人员列表后重试。',
+        invalid_employment_dates:'在职日期不正确，请核实日期后重试。',
+      };
+      setEmployeeMessage(messages[code]||'保存失败，请检查网络后重试。');
       setManagedEmployeeState("error");
-    }
-  }
-
-  async function loadExternalLinks() {
-    try {
-      const response = await fetch("/api/external-links");
-      if (!response.ok) return;
-      const result = await response.json();
-      setExternalLinks(Array.isArray(result.links) ? result.links : []);
-    } catch {
-      // Settings remains usable even if the server is not available in static preview.
-    }
-  }
-
-  async function createExternalLink() {
-    setExternalLinkState("creating");
-    try {
-      const response = await fetch("/api/external-links", {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({ name: externalName, ttlHours: Number(ttlHours) }),
-      });
-      if (!response.ok) throw new Error("create_external_link_failed");
-      const result = await response.json();
-      setGeneratedUrl(result.link?.url || "");
-      setExternalLinkState("idle");
-      await loadExternalLinks();
-    } catch {
-      setExternalLinkState("error");
     }
   }
 
@@ -709,7 +677,7 @@ export function SettingsPage({ access,onOpenScoringSetup }: SettingsPageProps) {
             {managedEmployeeState==='saving'?'正在同步公司人员…':'同步公司全部人员'}
           </button>
         </div>
-        <p className="company-roster-copy">从飞书收录公司人员，无需先登录成长 OS。后续 SSO 登录会更新本人资料；同步不会自动分配角色或评分人，已停用账号和历史记录继续保留。</p>
+        <p className="company-roster-copy">从飞书收录公司人员，无需先登录成长 OS。可在这里停用或恢复账号；恢复从当天生效，停用期间不补记缺交。飞书同步保留人工停用状态，历史记录继续保留。</p>
         <div className="company-roster-metrics" aria-label="公司人员统计">
           <div><span>已收录人员</span><strong>{managedEmployees.length}<small>人</small></strong></div>
           <div><span>在职</span><strong>{managedEmployees.filter(employee=>employee.active).length}<small>人</small></strong></div>
@@ -740,8 +708,8 @@ export function SettingsPage({ access,onOpenScoringSetup }: SettingsPageProps) {
             <div className={employee.active ? "" : "is-inactive"} key={employee.userId}>
               <div className="company-roster-avatar" aria-hidden="true">{employee.nameMissing?'?':(employee.name||'?').slice(0,1)}</div>
               <div className="employee-profile"><strong>{employee.nameMissing?'姓名待补全':employee.name||'姓名待补全'}{employee.nameMissing&&<em>资料待补全</em>}</strong><small>{employee.department || "部门待同步"} · user_id：{employee.userId}</small>{employee.lastLoginAt?<small>最近 SSO 登录：{formatDateTime(employee.lastLoginAt)}</small>:employee.source==='feishu_directory'?<small className="company-roster-source">已从飞书收录 · 尚未登录</small>:<small>尚未通过 SSO 登录 · 现有收录记录</small>}{employee.syncNote&&<small className="company-roster-note">{employee.syncNote}</small>}<EmploymentDates key={employee.userId+JSON.stringify(employee.employmentPeriods)} userId={employee.userId} active={employee.active} periods={employee.employmentPeriods||[]} onSaved={loadManagedEmployees}/></div>
-              <button className="secondary-button" type="button" onClick={() => setManagedEmployeeActive(employee, false)} disabled={managedEmployeeState === "saving" || !employee.active}>
-                {employee.active ? "停用" : "已停用"}
+              <button className={`secondary-button${employee.active?'':' company-roster-restore'}`} type="button" onClick={() => void setManagedEmployeeActive(employee, !employee.active)} disabled={managedEmployeeState === "saving"}>
+                {employee.active ? "停用" : "恢复"}
               </button>
             </div>
           ))}
@@ -904,58 +872,6 @@ export function SettingsPage({ access,onOpenScoringSetup }: SettingsPageProps) {
           </table>
         </div>
         <p className="settings-hint">口径：登录=SSO成功次数；会话=已有登录态打开成长OS；心跳=页面可见时的持续活跃；访问=栏目切换或页面打开；互动=评论、点赞、追问。</p>
-      </article>
-      <article className="panel external-access-panel" data-settings-group="permissions" hidden={settingsTab !== "permissions"}>
-        <div className="panel-heading compact">
-          <div>
-            <span className="section-label">External Access</span>
-            <h2>外部顾问临时访问链接</h2>
-          </div>
-        </div>
-        <div className="external-access-copy">
-          <strong>绕过 SSO，但不绕过过期控制</strong>
-          <span>用于公司教练、外部顾问临时查看管理视角。链接按 token 访问，服务器只保存 hash，到期后自动失效。</span>
-        </div>
-        <div className="external-link-form">
-          <label>
-            <span>链接名称</span>
-            <input value={externalName} onChange={(event) => setExternalName(event.target.value)} />
-          </label>
-          <label>
-            <span>有效期</span>
-            <AppSelect value={ttlHours} onValueChange={setTtlHours} aria-label="链接有效期">
-              <option value="24">24 小时</option>
-              <option value="72">3 天</option>
-              <option value="168">7 天</option>
-              <option value="720">30 天</option>
-            </AppSelect>
-          </label>
-          <button className="primary-button" type="button" onClick={createExternalLink} disabled={externalLinkState === "creating"}>
-            {externalLinkState === "creating" ? "生成中" : "生成访问链接"}
-          </button>
-        </div>
-        {generatedUrl ? (
-          <div className="generated-link-box">
-            <strong>新链接只在这里完整显示一次</strong>
-            <code>{generatedUrl}</code>
-          </div>
-        ) : null}
-        {externalLinkState === "error" ? <p className="settings-error">生成失败，请确认后端服务和登录状态。</p> : null}
-        <div className="external-link-list">
-          {externalLinks.length === 0 ? (
-            <p>暂无外部访问链接。</p>
-          ) : (
-            externalLinks.slice(0, 6).map((link) => (
-              <div className="external-link-row" key={link.id}>
-                <div>
-                  <strong>{link.name || "外部顾问访问"}</strong>
-                  <span>{link.status === "active" ? "有效" : "已失效"} · 访问 {link.accessCount || 0} 次 · 到期 {formatDateTime(link.expiresAt)}</span>
-                </div>
-                <small>{link.lastAccessedAt ? `最近访问 ${formatDateTime(link.lastAccessedAt)}` : "尚未访问"}</small>
-              </div>
-            ))
-          )}
-        </div>
       </article>
       {settingsTab === "integrations" && <FeishuReportConfiguration />}
       <article className="panel" data-settings-group="integrations" hidden={settingsTab !== "integrations"}>

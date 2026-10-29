@@ -9,7 +9,15 @@ export function createEmployeeLifecycle({query,exec,sql,now=()=>new Date()}){
   start=day(start)||today();
   const rows=await query(`SELECT * FROM employee_employment_periods WHERE employee_user_id=${sql(userId)};`);
   if(!rows.length)await exec(`INSERT INTO employee_employment_periods(id,employee_user_id,start_date,source) VALUES(${sql(randomUUID())},${sql(userId)},${sql(start)},${sql(source)});`);
-  else if(source==='report'&&rows.length===1&&rows[0].source==='report'&&start<rows[0].start_date)await exec(`UPDATE employee_employment_periods SET start_date=${sql(start)} WHERE id=${sql(rows[0].id)};`);
+  else if(source==='report'&&rows.length===1&&!rows[0].end_date&&['report','first_seen','sso'].includes(rows[0].source)&&start<rows[0].start_date){
+   // Earlier verified report collection can refine a discovery-only start.
+   // Recheck the source and interval in SQL so concurrent manager edits or
+   // a stop/restore cannot turn this inference into a rewrite of history.
+   await exec(`UPDATE employee_employment_periods SET start_date=${sql(start)},source='report',updated_at=datetime('now')
+    WHERE id=${sql(rows[0].id)} AND start_date>${sql(start)} AND end_date IS NULL
+      AND source IN('report','first_seen','sso')
+      AND (SELECT COUNT(*) FROM employee_employment_periods WHERE employee_user_id=${sql(userId)})=1;`);
+  }
  }
  async function initialize(data={}){
   const rows=await query('SELECT user_id,is_active FROM employees;'),reports=await query('SELECT employee_user_id,MIN(week_start) AS first_week,MAX(week_end) AS last_week FROM weekly_reports GROUP BY employee_user_id;');
@@ -41,5 +49,39 @@ export function createEmployeeLifecycle({query,exec,sql,now=()=>new Date()}){
   if(!day(date)||date>today())throw Error('invalid_employment_dates');
   await exec(`UPDATE employee_employment_periods SET end_date=CASE WHEN start_date>${sql(date)} THEN start_date ELSE ${sql(date)} END,updated_at=datetime('now') WHERE employee_user_id=${sql(userId)} AND end_date IS NULL;`);
  }
- return {initialize,observe,profile,setDates,stop};
+ async function setStatus(userId,active,actor,lastWorkingDate){
+  if(typeof active!=='boolean')throw Error('invalid_employee_status');
+  const effectiveDate=active?today():lastWorkingDate||today();
+  if(typeof effectiveDate!=='string'||day(effectiveDate)!==effectiveDate||effectiveDate>today())throw Error('invalid_employment_dates');
+  const snapshot=await query(`SELECT e.is_active,p.* FROM employees e LEFT JOIN employee_employment_periods p ON p.employee_user_id=e.user_id WHERE e.user_id=${sql(userId)} ORDER BY p.start_date,p.id;`);
+  const employee=snapshot[0];
+  if(!employee)throw Error('employee_not_found');
+  const periods=snapshot.filter(period=>period.id);
+  const open=periods.filter(period=>!period.end_date);
+  if(active&&(open.length>1||open.some(period=>period.start_date>effectiveDate)||periods.some(period=>period.end_date>effectiveDate)||Number(employee.is_active)===0&&open.length))throw Error('employment_periods_require_review');
+  if(Number(employee.is_active)===(active?1:0)&&(active?open.length===1:open.length===0))return {active,effectiveDate,changed:false};
+  const periodChange=active?`
+    INSERT INTO employee_employment_periods(id,employee_user_id,start_date,source)
+    SELECT ${sql(randomUUID())},${sql(userId)},${sql(effectiveDate)},'manager_restore'
+    WHERE EXISTS(SELECT 1 FROM employees WHERE user_id=${sql(userId)})
+      AND NOT EXISTS(SELECT 1 FROM employee_employment_periods WHERE employee_user_id=${sql(userId)} AND end_date IS NULL);`
+   :`UPDATE employee_employment_periods SET end_date=CASE WHEN start_date>${sql(effectiveDate)} THEN start_date ELSE ${sql(effectiveDate)} END,updated_at=datetime('now') WHERE employee_user_id=${sql(userId)} AND end_date IS NULL;`;
+  const assignmentChange=active?'':`
+    UPDATE scoring360_assignments SET status='inactive',updated_at=datetime('now')
+    WHERE status='active' AND (evaluee_user_id=${sql(userId)} OR evaluator_user_id=${sql(userId)})
+      AND NOT EXISTS(SELECT 1 FROM scoring360_responses r WHERE r.assignment_id=scoring360_assignments.id)
+      AND NOT EXISTS(SELECT 1 FROM performance_results p JOIN scoring360_cycles c ON p.month=substr(c.start_date,1,7) WHERE c.id=scoring360_assignments.cycle_id AND p.kind='collaboration' AND p.employee_user_id=scoring360_assignments.evaluee_user_id)
+      AND NOT EXISTS(SELECT 1 FROM all_monthly_weighted_results p JOIN scoring360_cycles c ON p.month=substr(c.start_date,1,7) WHERE c.id=scoring360_assignments.cycle_id AND p.employee_user_id=scoring360_assignments.evaluee_user_id);`;
+  // Keep state, employment dates, pending assignments and the audit in one
+  // transaction. The in-transaction guard prevents concurrent restores from
+  // creating multiple open periods; closed history is never reopened.
+  await exec(`BEGIN IMMEDIATE;${periodChange}
+    UPDATE employees SET is_active=${active?1:0},updated_at=datetime('now') WHERE user_id=${sql(userId)};
+    ${assignmentChange}
+    INSERT INTO system_operation_logs(id,actor_user_id,actor_name,action,details_json,created_at)
+    VALUES(${sql(randomUUID())},${sql(actor.userId)},${sql(actor.name)},'员工状态已更新',${sql(JSON.stringify({userId,active,effectiveDate,previousActive:Number(employee.is_active)===1}))},datetime('now'));
+    COMMIT;`);
+  return {active,effectiveDate,changed:true};
+ }
+ return {initialize,observe,profile,setDates,stop,setStatus};
 }
