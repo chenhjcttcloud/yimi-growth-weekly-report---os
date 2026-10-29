@@ -27,6 +27,11 @@ jobs:
       - run: node scripts/test-china-work-calendar.mjs
       - run: node scripts/test-weighted-monthly.mjs
       - run: node scripts/test-performance-policy-reads.mjs
+      - run: node scripts/test-personal-loading-scope.mjs
+      - run: node scripts/test-source-data-cache.mjs
+      - run: node scripts/test-management-transport.mjs
+      - run: node scripts/test-department-summary-loading.mjs
+      - run: BUSINESS_TEST_SKIP_BROWSER=true TEST_STATIC_DIR=outputs/ci-preview node scripts/test-scoring-overview-loading.mjs
       - run: node scripts/test-management-client-data.mjs
       - run: BUSINESS_TEST_SKIP_BROWSER=true TEST_STATIC_DIR=outputs/ci-preview node scripts/test-performance-loading.mjs
       - run: node scripts/test-security-lifecycle.mjs

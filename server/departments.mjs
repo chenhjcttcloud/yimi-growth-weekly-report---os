@@ -96,10 +96,18 @@ export function createDepartments({query,exec,sql,employees,beforeScore,resolveS
   month=month||current;if(!/^\d{4}-(0[1-9]|1[0-2])$/.test(month)||month>current)throw Error('invalid_month');
   const data=await overview();
   const average=xs=>xs.length?Math.round(xs.reduce((a,b)=>a+b,0)/xs.length*10)/10:null;
+  // Result ownership is an identity column. Old imports without that column
+  // may use their snapshot's userId, but decode it once rather than for every
+  // department/month aggregation. Large evidence bodies are not needed here.
+  const resultOwners=new Map(performance.results.map(record=>{
+   if(record.employee_user_id)return [record,String(record.employee_user_id)];
+   try{return [record,String(JSON.parse(record.evidence_json||'{}').userId||'')];}
+   catch{return [record,''];}
+  }));
   function summarize(department,targetMonth){
    const members=data.employees.filter(e=>e.departmentIds.includes(department.id)),ids=new Set(members.map(e=>e.userId));
    const rows=performance.monthly.filter(r=>r.month===targetMonth&&ids.has(r.userId));
-   const snapshots=performance.results.filter(r=>r.month===targetMonth&&ids.has(JSON.parse(r.evidence_json||'{}').userId));
+   const snapshots=performance.results.filter(r=>r.month===targetMonth&&ids.has(resultOwners.get(r)));
    const result=kind=>snapshots.filter(r=>r.kind===kind&&Number.isFinite(r.result.score)).map(r=>r.result.score);
    const sum=key=>rows.reduce((n,r)=>n+(r.timeliness[key]||0),0),expected=sum('expected'),submitted=sum('submitted'),onTime=sum('onTime');
    return {headcount:members.length,expected,submitted,onTime,late:sum('late'),missing:sum('missing'),submissionRate:expected?Math.round(submitted/expected*1000)/10:null,onTimeRate:expected?Math.round(onTime/expected*1000)/10:null,quality:average(result('quality')),collaboration:average(result('collaboration')),qualityPublished:result('quality').length,collaborationPublished:result('collaboration').length,qualityReference:average(rows.flatMap(r=>r.reports.filter(x=>x.submitted&&x.candidate!==null).map(x=>x.candidate))),pendingRatings:rows.filter(r=>r.collaborationExpected>r.collaborationSubmitted).length};

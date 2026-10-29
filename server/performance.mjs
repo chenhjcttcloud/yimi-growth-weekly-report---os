@@ -6,6 +6,17 @@ export function createPerformance({ query, exec, sql, readData, policyFor, manag
   const round = n => Math.round(n * 10) / 10;
   const average = xs => xs.length ? round(xs.reduce((a,b)=>a+b,0)/xs.length) : null;
   const monthOf = value => String(value || '').slice(0,7);
+  const reportContexts=new WeakSet();
+  function employeeScope(value) {
+    if(value===undefined)return undefined;
+    if(typeof value!=='string'||!value||value.trim()!==value||value.length>200)throw Error('invalid_employee_identity');
+    return value;
+  }
+  function assertReportContext(context,userId) {
+    employeeScope(userId);
+    if(!userId||!context||!reportContexts.has(context)||context.userId!==userId)throw Error('invalid_report_context');
+    return context;
+  }
   // Reuse each month's policy only within the current calculation. A new
   // request gets a fresh reader, so rule changes cannot leave stale results.
   function policyReader() {
@@ -18,14 +29,14 @@ export function createPerformance({ query, exec, sql, readData, policyFor, manag
   // The first pass only checks publication presence and legacy precedence.
   // Keep large result/evidence snapshots out of that read; final results below
   // still use confirmed() so callers receive the original complete response.
-  async function publishedKeys() {
-    return query(`SELECT month,employee_user_id,kind,'legacy' AS scoring_rule FROM performance_results
-UNION ALL SELECT month,employee_user_id,kind,'weighted_30_70' AS scoring_rule FROM all_monthly_weighted_results
-UNION ALL SELECT a.month,a.employee_user_id,a.kind,'automatic_report' AS scoring_rule FROM automatic_performance_results a
-WHERE NOT EXISTS(SELECT 1 FROM performance_results p WHERE p.month=a.month AND p.employee_user_id=a.employee_user_id AND p.kind=a.kind)
-GROUP BY a.month,a.employee_user_id,a.kind;`);
+  async function publishedKeys(userId) {
+    return query(`SELECT month,employee_user_id,kind,'legacy' AS scoring_rule,NULL AS calculation_hash FROM performance_results${userId?` WHERE employee_user_id=${sql(userId)}`:''}
+UNION ALL SELECT month,employee_user_id,kind,'weighted_30_70' AS scoring_rule,NULL AS calculation_hash FROM all_monthly_weighted_results${userId?` WHERE employee_user_id=${sql(userId)}`:''}
+UNION ALL SELECT a.month,a.employee_user_id,a.kind,'automatic_report' AS scoring_rule,a.calculation_hash FROM automatic_performance_results a
+WHERE ${userId?`a.employee_user_id=${sql(userId)} AND `:''}a.rowid=(SELECT MAX(b.rowid) FROM automatic_performance_results b WHERE b.month=a.month AND b.employee_user_id=a.employee_user_id AND b.kind=a.kind)
+AND NOT EXISTS(SELECT 1 FROM performance_results p WHERE p.month=a.month AND p.employee_user_id=a.employee_user_id AND p.kind=a.kind);`);
   }
-  async function confirmed(clientSummary=false) {
+  async function confirmed(clientSummary=false,userId) {
     // SQLite reduces snapshots before they leave the process. Keep selected
     // keys' JSON types and explicit nulls; absent keys stay absent. Invalid
     // historical evidence becomes an empty summary without changing its row.
@@ -35,10 +46,10 @@ WHEN 'array' THEN json(value) WHEN 'object' THEN json(value) ELSE value END)
 FROM json_each(CASE WHEN json_valid(${column}) THEN ${column} ELSE '{}' END)
 WHERE key IN ('reviewNote','qualityCandidate','legitimateReason','deduction'))`:column;
     const columns=alias=>`${alias}.month,${alias}.employee_user_id,${alias}.employee_name,${alias}.kind,${alias}.result_json,${evidence(alias+'.evidence_json')} AS evidence_json,${alias}.confirmed_by,${alias}.confirmed_at`;
-    return (await query(`SELECT ${clientSummary?columns('p'):'*'}, 'legacy' AS scoring_rule FROM performance_results p
-UNION ALL SELECT ${clientSummary?columns('w'):'*'}, 'weighted_30_70' AS scoring_rule FROM all_monthly_weighted_results w
+    return (await query(`SELECT ${clientSummary?columns('p'):'*'}, 'legacy' AS scoring_rule FROM performance_results p${userId?` WHERE p.employee_user_id=${sql(userId)}`:''}
+UNION ALL SELECT ${clientSummary?columns('w'):'*'}, 'weighted_30_70' AS scoring_rule FROM all_monthly_weighted_results w${userId?` WHERE w.employee_user_id=${sql(userId)}`:''}
 UNION ALL SELECT a.month,a.employee_user_id,a.employee_name,a.kind,a.result_json,${evidence('a.evidence_json')} AS evidence_json,'系统自动计算' AS confirmed_by,a.calculated_at AS confirmed_at,'automatic_report' AS scoring_rule FROM automatic_performance_results a
-WHERE a.rowid=(SELECT MAX(b.rowid) FROM automatic_performance_results b WHERE b.month=a.month AND b.employee_user_id=a.employee_user_id AND b.kind=a.kind)
+WHERE ${userId?`a.employee_user_id=${sql(userId)} AND `:''}a.rowid=(SELECT MAX(b.rowid) FROM automatic_performance_results b WHERE b.month=a.month AND b.employee_user_id=a.employee_user_id AND b.kind=a.kind)
 AND NOT EXISTS(SELECT 1 FROM performance_results p WHERE p.month=a.month AND p.employee_user_id=a.employee_user_id AND p.kind=a.kind)
 ORDER BY month DESC, employee_name;`)).map(r=>({...r, result:JSON.parse(r.result_json)}));
   }
@@ -52,6 +63,9 @@ ORDER BY month DESC, employee_name;`)).map(r=>({...r, result:JSON.parse(r.result
       if(existing.some(r=>r.month===row.month&&r.employee_user_id===row.userId&&r.kind===kind&&r.scoring_rule==='legacy'))continue;
       const evidence={userId:row.userId,name:row.name,department:row.department,publicationMode:'automatic',rule:kind==='quality'?'四模块按配置权重生成周分，全部已提交周报分析完成后取月度算术平均':'按提交时间和周五截止时间自动统计，及时率与质量分独立',reports:row.reports,statistics:row.timeliness,reviewNote:'系统自动计算，无需人工确认',deduction:0};
       const hash=createHash('sha256').update(JSON.stringify({result,evidence})).digest('hex');
+      // A read with unchanged inputs does not need a write transaction. Keep the
+      // SQL comparison too: another request may publish between this read/write.
+      if(existing.some(r=>r.month===row.month&&r.employee_user_id===row.userId&&r.kind===kind&&r.scoring_rule==='automatic_report'&&r.calculation_hash===hash))continue;
       // Last-version comparison (rather than a unique hash) preserves A→B→A revisions too.
       statements.push(`INSERT INTO automatic_performance_results(id,month,employee_user_id,employee_name,kind,calculation_hash,result_json,evidence_json,calculated_at)
 SELECT ${sql(randomUUID())},${sql(row.month)},${sql(row.userId)},${sql(row.name)},${sql(kind)},${sql(hash)},${sql(JSON.stringify(result))},${sql(JSON.stringify(evidence))},${sql(now().toISOString())}
@@ -59,11 +73,16 @@ WHERE COALESCE((SELECT calculation_hash FROM automatic_performance_results WHERE
     }
     return statements;
   }
-  async function reports(readPolicy=policyReader()) {
-    const data = readData('prototypeData');
-    const stored = await query('SELECT * FROM weekly_reports;');
+  function prototypeIdentity(data) {
+    const names=new Map();
+    for(const employee of data.employee_summary||[]){const name=employee['姓名'];names.set(name,names.has(name)?null:employee.user_id);}
+    return row=>row.user_id||names.get(row['姓名'])||'';
+  }
+  async function readReports(data,userId,readPolicy) {
+    const stored = await query(`SELECT * FROM weekly_reports${userId?` WHERE employee_user_id=${sql(userId)}`:''};`);
     const rows = new Map();
-    for(const r of data.weekly_scores || []) {const employeeUserId=r.user_id || ((data.employee_summary||[]).filter(e=>e['姓名']===r['姓名']).length===1?(data.employee_summary||[]).find(e=>e['姓名']===r['姓名'])?.user_id:''); rows.set(`${employeeUserId}|${r['结束日期']}`, {employeeUserId,id:r['源记录ID'], name:r['姓名'], department:r['部门'], end:r['结束日期'], start:r['开始日期'], submittedAt:r['提交时间'], content:r, status:r['状态']});}
+    const identity=prototypeIdentity(data);
+    for(const r of data.weekly_scores || []) {const employeeUserId=identity(r);if(userId&&employeeUserId!==userId)continue;rows.set(`${employeeUserId}|${r['结束日期']}`, {employeeUserId,id:r['源记录ID'], name:r['姓名'], department:r['部门'], end:r['结束日期'], start:r['开始日期'], submittedAt:r['提交时间'], content:r, status:r['状态']});}
     for(const r of stored) rows.set(`${r.employee_user_id}|${r.week_end}`, {employeeUserId:r.employee_user_id,id:r.id,name:r.employee_name,department:r.department,end:r.week_end,start:r.week_start,submittedAt:r.submitted_at,content:JSON.parse(r.content_json),status:r.status});
     const policies=new Map();
     for(const r of rows.values())if(!policies.has(monthOf(r.end)))policies.set(monthOf(r.end),await readPolicy(monthOf(r.end)));
@@ -83,19 +102,55 @@ WHERE COALESCE((SELECT calculation_hash FROM automatic_performance_results WHERE
       return {...r,status,schedule,scoringPolicy:policy, month:monthOf(r.end), submitted, timestampUnknown:submitted&&!Number.isFinite(ts),late,onTime:submitted&&!schedule.exempt&&!schedule.calendarPending&&Number.isFinite(ts)&&ts<=deadline, candidate:valid?round(scores.reduce((n,s)=>n+s.value*s.w,0)):null, missing, evidence:sections.map(([key])=>({module:key,text:c[key]||''})), anomalies:[...(Array.isArray(c.ai?.anomalies)?c.ai.anomalies:[]),...(c.source?.weekInference?['周次按提交日期推定，请核实补交或跨周汇报的归属']:[]),...missing.map(x=>`缺失：${x}`),...(!valid?['缺少有效的四模块候选分']:[]),...(submitted&&!Number.isFinite(ts)?['提交时间无法解析']:[])], suggestions:c.ai?.summary|| (missing.length?'请补齐缺失模块，并由主管核实事实与结果。':'请主管核实成果证据、问题影响和计划可验证性。')};
     });
   }
-  async function overview({clientSummary=false}={}) {
+  async function reports(options={}) {
+    const readPolicy=typeof options==='function'?options:policyReader();
+    const userId=employeeScope(typeof options==='function'?undefined:options.employeeUserId);
+    return readReports(readData('prototypeData'),userId,readPolicy);
+  }
+  // This context is created inside one request and never cached across requests.
+  // Non-enumerable internals prevent accidental JSON serialization of source data.
+  async function createReportContext(userId) {
+    employeeScope(userId);
+    if(!userId)throw Error('invalid_employee_identity');
     const data=readData('prototypeData'),readPolicy=policyReader();
-    const rs=await reports(readPolicy);
-    const results=await publishedKeys();
+    const context={userId};
+    Object.defineProperties(context,{data:{value:data},reports:{value:await readReports(data,userId,readPolicy)},readPolicy:{value:readPolicy}});
+    Object.freeze(context);reportContexts.add(context);
+    return context;
+  }
+  async function overview({clientSummary=false,employeeUserId,reportContext}={}) {
+    const userId=employeeScope(employeeUserId);
+    const context=reportContext===undefined?null:assertReportContext(reportContext,userId);
+    const data=context?.data||readData('prototypeData'),readPolicy=context?.readPolicy||policyReader();
+    const rs=context?.reports||await readReports(data,userId,readPolicy);
+    const results=await publishedKeys(userId);
     const managerState=await managerReviews.snapshot();
     const cycles=await query('SELECT * FROM scoring360_cycles ORDER BY start_date DESC;');
+    let cycleTotals=[];
+    if(userId&&cycles.length){
+      // Keep the management view's whole-cycle progress while reading only this
+      // employee's assignment details. Match JavaScript String.trim whitespace.
+      const comment=`trim(COALESCE(r.comment,''),char(9,10,11,12,13,32,160,5760,8192,8193,8194,8195,8196,8197,8198,8199,8200,8201,8202,8232,8233,8239,8287,12288,65279))`;
+      cycleTotals=await query(`SELECT a.cycle_id,COUNT(*) AS expected,SUM(CASE WHEN r.score IS NOT NULL AND ${comment}<>'' THEN 1 ELSE 0 END) AS submitted,json_group_array(a.evaluator_name) FILTER (WHERE r.score IS NULL OR ${comment}='') AS pending_json FROM scoring360_assignments a LEFT JOIN scoring360_responses r ON r.assignment_id=a.id WHERE (COALESCE(a.status,'active')='active' OR r.id IS NOT NULL) GROUP BY a.cycle_id;`);
+    }
     const collaborations=[];
     for(const c of cycles){
-      const assignments=await query(`SELECT a.*,r.score,r.comment,r.submitted_at FROM scoring360_assignments a LEFT JOIN scoring360_responses r ON r.assignment_id=a.id WHERE a.cycle_id=${sql(c.id)} AND (COALESCE(a.status,'active')='active' OR r.id IS NOT NULL);`);
-      collaborations.push({...c,month:monthOf(c.start_date),assignments,expected:assignments.length,submitted:assignments.filter(a=>a.score!==''&&String(a.comment||'').trim()).length,pending:assignments.filter(a=>a.score===''||!String(a.comment||'').trim()).map(a=>a.evaluator_name)});
+      const assignments=await query(`SELECT a.*,r.score,r.comment,r.submitted_at FROM scoring360_assignments a LEFT JOIN scoring360_responses r ON r.assignment_id=a.id WHERE a.cycle_id=${sql(c.id)}${userId?` AND a.evaluee_user_id=${sql(userId)}`:''} AND (COALESCE(a.status,'active')='active' OR r.id IS NOT NULL);`);
+      const totals=cycleTotals.find(t=>t.cycle_id===c.id);
+      collaborations.push({...c,month:monthOf(c.start_date),assignments,expected:userId?Number(totals?.expected||0):assignments.length,submitted:userId?Number(totals?.submitted||0):assignments.filter(a=>a.score!==''&&String(a.comment||'').trim()).length,pending:userId?JSON.parse(totals?.pending_json||'[]'):assignments.filter(a=>a.score===''||!String(a.comment||'').trim()).map(a=>a.evaluator_name)});
     }
     const periodMap=new Map((data.meta?.periods||[]).map(p=>[p.end,p]));
-    for(const r of rs) if(r.end&&!periodMap.has(r.end)) periodMap.set(r.end,{end:r.end,start:r.start});
+    let reportPeriods=rs,publicationMonths=results;
+    if(userId){
+      // Only global calendar boundaries are needed to keep historical missing
+      // counts identical. No other employee's report body or scores are read.
+      const identity=prototypeIdentity(data),boundaries=new Map();
+      for(const r of data.weekly_scores||[])boundaries.set(`${identity(r)}|${r['结束日期']}`,{end:r['结束日期'],start:r['开始日期']});
+      for(const r of await query('SELECT employee_user_id,week_start,week_end FROM weekly_reports;'))boundaries.set(`${r.employee_user_id}|${r.week_end}`,{end:r.week_end,start:r.week_start});
+      reportPeriods=[...boundaries.values()];
+      publicationMonths=await query('SELECT month FROM performance_results UNION SELECT month FROM all_monthly_weighted_results UNION SELECT month FROM automatic_performance_results;');
+    }
+    for(const r of reportPeriods) if(r.end&&!periodMap.has(r.end)) periodMap.set(r.end,{end:r.end,start:r.start});
     const today=new Intl.DateTimeFormat('sv-SE',{timeZone:'Asia/Shanghai'}).format(now());
     const coverageStart=data.meta?.collectionStartDate||[...periodMap.values()].map(p=>p.start).filter(Boolean).sort()[0]||shiftDate(today,-((new Date(today+'T00:00:00Z').getUTCDay()||7)-1));
     if(calendar){
@@ -103,10 +158,10 @@ WHERE COALESCE((SELECT calculation_hash FROM automatic_performance_results WHERE
       for(const month of new Set([current,...[...periodMap.keys()].map(monthOf)]))for(const end of monthFridays(month))if(![...periodMap.values()].some(p=>p.start<=end&&p.end>=end))periodMap.set(end,{start:shiftDate(end,-4),end});
     }
     const periods=[...periodMap.values()];
-    const months=[...new Set([...periods.map(p=>monthOf(p.end)),...rs.map(r=>r.month),...collaborations.map(c=>c.month),...managerState.scores.map(s=>s.month),...managerState.bossScores.map(s=>s.month),...results.map(r=>r.month)])].filter(m=>/^\d{4}-\d{2}$/.test(m)).sort().reverse();
-    const directory = new Map((data.employee_summary||[]).map(e=>[e.user_id,{name:e['姓名'],department:e['部门'],userId:e.user_id}]));
-    const roster=await query('SELECT user_id,name,department,is_active FROM employees;');
-    const servicePeriods=await query('SELECT * FROM employee_employment_periods;');
+    const months=[...new Set([...periods.map(p=>monthOf(p.end)),...rs.map(r=>r.month),...collaborations.map(c=>c.month),...managerState.scores.map(s=>s.month),...managerState.bossScores.map(s=>s.month),...publicationMonths.map(r=>r.month)])].filter(m=>/^\d{4}-\d{2}$/.test(m)).sort().reverse();
+    const directory = new Map((data.employee_summary||[]).filter(e=>!userId||e.user_id===userId).map(e=>[e.user_id,{name:e['姓名'],department:e['部门'],userId:e.user_id}]));
+    const roster=await query(`SELECT user_id,name,department,is_active FROM employees${userId?` WHERE user_id=${sql(userId)}`:''};`);
+    const servicePeriods=await query(`SELECT * FROM employee_employment_periods${userId?` WHERE employee_user_id=${sql(userId)}`:''};`);
     for(const e of roster)directory.set(e.user_id,{name:e.name,department:e.department,userId:e.user_id,active:Number(e.is_active)===1});
     for(const e of directory.values()){
       const own=servicePeriods.filter(p=>p.employee_user_id===e.userId);
@@ -138,10 +193,12 @@ WHERE COALESCE((SELECT calculation_hash FROM automatic_performance_results WHERE
       const snapshot={...row,publicationMode:'weighted_30_70',reviewNote:'负责人或老板评分30%＋同事互评70%，两部分完成后自动发布',reviewer:'系统自动发布'};
       await exec(`INSERT OR IGNORE INTO monthly_person_weighted_results(month,employee_user_id,employee_name,kind,result_json,evidence_json,confirmed_by,confirmed_at) VALUES(${sql(row.month)},${sql(row.userId)},${sql(row.name)},'collaboration',${sql(JSON.stringify({score:row.collaborationCandidate,peerScore:row.peerCandidate,managerScore:row.managerProgress.score,weights:{manager:30,peers:70}}))},${sql(JSON.stringify(snapshot))},'系统自动发布',datetime('now'));`);
     }
-    return {months,employees,monthly,collaborations,results:await confirmed(clientSummary)};
+    return {months,employees,monthly,collaborations,results:await confirmed(clientSummary,userId)};
   }
-  async function personal(name, userId) {
-    const view=await overview({clientSummary:true});
+  async function personal(name, userId,{reportContext}={}) {
+    employeeScope(userId);
+    if(!userId)throw Error('invalid_employee_identity');
+    const view=await overview({clientSummary:true,employeeUserId:userId,reportContext});
     const rows=view.results.filter(r=>r.employee_user_id===userId);
     const months=[...new Set(rows.map(r=>r.month))].sort().reverse();
     const history=months.map(month=>{
@@ -154,5 +211,5 @@ WHERE COALESCE((SELECT calculation_hash FROM automatic_performance_results WHERE
   async function confirm(body,user) {
     throw new Error('results_auto_published');
   }
-  return {overview,personal,confirm,reports};
+  return {overview,personal,confirm,reports,createReportContext,assertReportContext};
 }

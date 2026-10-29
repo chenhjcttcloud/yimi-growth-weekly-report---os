@@ -19,7 +19,9 @@ import {createManagementSummary} from './management-summary.mjs';
 import {createScoringWorkbench} from './scoring-workbench.mjs';
 import {createScoringSetup} from './scoring-setup.mjs';
 import {createOperations,ensureOperationsSchema} from './operations.mjs';
-import {performanceClientOverview} from './performance-client-data.mjs';
+import {performanceClientOverview,performanceClientEmployeeMonth} from './performance-client-data.mjs';
+import {createSourceDataCache,createSourceResponseCache} from './source-data-cache.mjs';
+import {sendSourceResponse} from './management-data-response.mjs';
 import {createFeishuUserTokens} from './feishu-user-tokens.mjs';
 import {createFeishuBotMessenger} from './feishu-bot-messenger.mjs';
 import {weeklyReportSchedule,fridayOfWeek} from './weekly-report-schedule.mjs';
@@ -113,6 +115,11 @@ const textHeaders = { "content-type": "text/plain; charset=utf-8" };
 
 const defaultBossViewMembers = [];
 
+const managementSourceNames=['prototypeData','kimiInsights','kimiInsightsByPeriod','monthlyMeetingInsights','scoring360'];
+const sourceDataCache=createSourceDataCache({directory:config.dataDir});
+const sourceResponseCache=createSourceResponseCache();
+const readSourceReadonly=name=>sourceDataCache.snapshot([name]).data[name];
+
 const employeeDirectory = loadEmployeeDirectory();
 const larkReportSyncStatusPath = path.resolve(rootDir,process.env.LARK_REPORT_SYNC_STATUS_PATH || "outputs/lark-report-sync-status.json");
 const scoring360DataPath = path.join(config.dataDir, "scoring360.json");
@@ -162,14 +169,14 @@ const managementSummary=createManagementSummary({query:querySqlRows,exec:execSql
 }});
 const calendarUpdates=createChinaWorkCalendar({query:querySqlRows,exec:execSql,sql:sqlValue,bundled:loadChinaWorkCalendar(),onChange:value=>{chinaWorkCalendar=value;},enabled:process.env.CHINA_CALENDAR_AUTO_UPDATE_ENABLED!=='false'});
 await calendarUpdates.initialize();
-const liveReportSync=createLiveReportSync({query:querySqlRows,exec:execSql,sql:sqlValue,config,settings:systemSettings,calendar:()=>chinaWorkCalendar,observeEmployee:(id,date)=>employeeLifecycle.observe(id,date),refreshDirectory:refreshEmployeeDirectory,writeStatus:writeLarkReportSyncStatus,onComplete:()=>performance.overview()});
+const liveReportSync=createLiveReportSync({query:querySqlRows,exec:execSql,sql:sqlValue,config,settings:systemSettings,calendar:()=>chinaWorkCalendar,observeEmployee:(id,date)=>employeeLifecycle.observe(id,date),refreshDirectory:refreshEmployeeDirectory,writeStatus:writeLarkReportSyncStatus,onComplete:()=>performance.overview({clientSummary:true})});
 if((await readLarkReportSyncStatus()).running)await writeLarkReportSyncStatus({ok:false,running:false,phase:'interrupted',message:'上次同步因服务重启中断，可点击同步继续；已保存的分析将复用。'});
 const feishuDepartmentSync=createFeishuDepartmentSync({query:querySqlRows,exec:execSql,sql:sqlValue,config});
 const directorySync=createDirectorySync({query:querySqlRows,exec:execSql,sql:sqlValue,config,lifecycle:employeeLifecycle,registerIdentity:employeeIdentity.register});
 const departments=createDepartments({query:querySqlRows,exec:execSql,sql:sqlValue,employees:()=>loadManagedEmployees(),beforeScore:(month,id)=>managerReviews.freezeBossPlan(month,id),resolveScoreTarget:(month,id)=>managerReviews.bossTarget(month,id)});
 let organizationMutationRunning=false;
 const managerReviews=createManagerReviews({query:querySqlRows,exec:execSql,sql:sqlValue,organization:departments.overview,reports:()=>performance.reports(),isBossUserId:id=>bossAccessState.userIds.has(id)||(config.authMode==='mock'&&id==='mock_owner')});
-const performance = createPerformance({managerReviews,calendar:()=>chinaWorkCalendar,policyFor:systemSettings.policyFor,query: querySqlRows, exec: execSql, sql: sqlValue, readData: name => JSON.parse(readFileSync(path.join(config.dataDir, `${name}.json`), 'utf8'))});
+const performance = createPerformance({managerReviews,calendar:()=>chinaWorkCalendar,policyFor:systemSettings.policyFor,query: querySqlRows, exec: execSql, sql: sqlValue, readData:readSourceReadonly});
 const reportAutomation=createReportAutomation({query:querySqlRows,exec:execSql,sql:sqlValue,getConfig:systemSettings.reportAutomationConfig,isRunning:()=>liveReportSync.isRunning(),start:options=>liveReportSync.start(options)});
 const scoringSetup=createScoringSetup({query:querySqlRows,exec:execSql,sql:sqlValue,isBoss:id=>bossAccessState.userIds.has(id)||(config.authMode==='mock'&&id==='mock_owner')});
 const scoringWorkbench=createScoringWorkbench({query:querySqlRows,exec:execSql,sql:sqlValue,setup:scoringSetup,managerReviews,bossMembers:()=>[...bossAccessState.userIds].map(userId=>({userId,name:bossAccessState.members.find(m=>m.userId===userId)?.name||'老板'}))});
@@ -182,7 +189,7 @@ const monthEndScoreReminders=createMonthEndScoreReminders({query:querySqlRows,ex
  getSettings:systemSettings.monthlyReminderConfig,calendar:()=>chinaWorkCalendar,baseUrl:config.baseUrl,
  deliver:(userId,text,uuid)=>botMessenger.send(userId,text,uuid)});
 
-const personalWorkspace = createPersonalWorkspace({calendar:()=>chinaWorkCalendar,policyFor:systemSettings.policyFor,performance,readData:name=>JSON.parse(readFileSync(path.join(config.dataDir,`${name}.json`),'utf8')),query:querySqlRows,exec:execSql,sql:sqlValue,config,askAi:callKimiFollowup,createTask:(task,user,session)=>createFeishuTask(normalizeTaskCandidate({...task,useDueDate:true},user),session)});
+const personalWorkspace = createPersonalWorkspace({calendar:()=>chinaWorkCalendar,policyFor:systemSettings.policyFor,performance,readData:readSourceReadonly,query:querySqlRows,exec:execSql,sql:sqlValue,config,askAi:callKimiFollowup,createTask:(task,user,session)=>createFeishuTask(normalizeTaskCandidate({...task,useDueDate:true},user),session)});
 const operations=createOperations({query:querySqlRows,exec:execSql,sql:sqlValue,dbPath:config.dbPath,dataDir:config.dataDir,uploadDir:config.uploadDir,backupDir:process.env.BACKUP_DIR||path.join(path.dirname(path.dirname(config.dbPath)),'backups','automatic'),deliver:async(userId,text,uuid)=>{
  if(config.authMode==='mock')throw Object.assign(Error('development_delivery_disabled'),{retryable:false});
  return botMessenger.send(userId,text,uuid);
@@ -319,7 +326,7 @@ async function route(req, res) {
     if(req.method!=='POST')return sendJson(res,405,{ok:false,error:'method_not_allowed'});
     if(req.headers.origin&&new URL(req.headers.origin).host!==req.headers.host)return sendJson(res,403,{ok:false,error:'invalid_origin'});
     const body=await readJsonBody(req);
-    try{await employeeLifecycle.setDates(String(body.userId||''),body,userForPolicy);await performance.overview();return sendJson(res,200,{ok:true});}
+    try{await employeeLifecycle.setDates(String(body.userId||''),body,userForPolicy);await performance.overview({clientSummary:true});return sendJson(res,200,{ok:true});}
     catch(error){return sendJson(res,400,{ok:false,error:['invalid_employment_dates','employee_not_found','multiple_employment_periods_require_review','stop_employee_before_setting_end_date'].includes(error.message)?error.message:'employment_update_failed'});}
   }
   if(url.pathname==='/api/management/summary'){
@@ -408,7 +415,7 @@ async function route(req, res) {
       if(req.method==='GET')return sendJson(res,200,{ok:true,...await managerReviews.tasks(userForPolicy,url.searchParams.get('month'))});
       if(req.method==='POST'){
         if(req.headers.origin&&new URL(req.headers.origin).host!==req.headers.host)return sendJson(res,403,{ok:false,error:'invalid_origin'});
-        await managerReviews.submit(userForPolicy,await readJsonBody(req));await performance.overview();
+        await managerReviews.submit(userForPolicy,await readJsonBody(req));await performance.overview({clientSummary:true});
         return sendJson(res,200,{ok:true});
       }
       return sendJson(res,405,{ok:false,error:'method_not_allowed'});
@@ -417,7 +424,7 @@ async function route(req, res) {
   if(url.pathname.startsWith('/api/departments')) {
     if(!managerForPolicy)return sendJson(res,403,{ok:false,error:'manager_only'});
     res.setHeader('cache-control','no-store');
-    if(req.method==='GET'&&url.pathname==='/api/departments/dashboard'){try{return sendJson(res,200,{ok:true,...await departments.dashboard(url.searchParams.get('month'),await performance.overview()),canScore:isBossIdentity(sessionForPolicy),currentUserId:userForPolicy.userId});}catch{return sendJson(res,400,{ok:false,error:'invalid_department_month'});}}
+    if(req.method==='GET'&&url.pathname==='/api/departments/dashboard'){try{return sendJson(res,200,{ok:true,...await departments.dashboard(url.searchParams.get('month'),await performance.overview({clientSummary:true})),canScore:isBossIdentity(sessionForPolicy),currentUserId:userForPolicy.userId});}catch{return sendJson(res,400,{ok:false,error:'invalid_department_month'});}}
     if(req.method==='GET'&&url.pathname==='/api/departments'){try{return sendJson(res,200,{ok:true,...await departments.overview(),...await managerReviews.bossTargets(url.searchParams.get('month')||undefined),canScore:isBossIdentity(sessionForPolicy),currentUserId:userForPolicy.userId});}catch{return sendJson(res,400,{ok:false,error:'invalid_department_month'});}}
     if(req.method==='POST'){
       if(req.headers.origin&&new URL(req.headers.origin).host!==req.headers.host)return sendJson(res,403,{ok:false,error:'invalid_origin'});
@@ -432,7 +439,7 @@ async function route(req, res) {
         else if(url.pathname==='/api/departments/score'){
           if(!isBossIdentity(sessionForPolicy))return sendJson(res,403,{ok:false,error:'boss_only'});
           if((await managerReviews.bossTarget(body.month,body.departmentId))?.leaderUserId===userForPolicy.userId)return sendJson(res,409,{ok:false,error:'self_scoring_forbidden'});
-          await departments.score(body,userForPolicy);await performance.overview();await systemSettings.audit(userForPolicy,'老板负责人评分已发布',{departmentId:body.departmentId,month:body.month});
+          await departments.score(body,userForPolicy);await performance.overview({clientSummary:true});await systemSettings.audit(userForPolicy,'老板负责人评分已发布',{departmentId:body.departmentId,month:body.month});
         }else return sendJson(res,404,{ok:false,error:'not_found'});
         return sendJson(res,200,{ok:true});
       }catch(error){const known=['rating_scope_frozen','rating_responsibility_changed','department_layout_conflict','department_not_empty','department_inactive','department_sync_running','feishu_not_configured','department_permission_required','department_scope_required','department_scope_empty','department_names_permission_required','department_leader_user_id_required','department_leader_managed_by_feishu','department_ambiguous_names','department_incomplete_tree','department_invalid_pagination','department_upstream_failed','department_hierarchy_cycle','invalid_parent_department','invalid_department','leader_must_be_department_member','department_not_found','invalid_month','score_and_comment_required','department_leader_required','leader_inactive','leader_not_registered','employee_not_employed','self_scoring_forbidden','result_locked'];return sendJson(res,409,{ok:false,error:error.message.includes('UNIQUE')?'department_exists':known.includes(error.message)?error.message:'department_save_failed'});}finally{if(organizationMutation)organizationMutationRunning=false;}
@@ -502,14 +509,27 @@ async function route(req, res) {
     }
     if (!managerForPolicy) return sendJson(res,403,{ok:false,error:'manager_only'});
     if (url.pathname === '/api/management-data' && req.method === 'GET') {
-      if(url.searchParams.get('view')==='bootstrap')return sendJson(res,200,managementBootstrapData(JSON.parse(readFileSync(path.join(config.dataDir,'prototypeData.json'),'utf8'))));
-      const names=['prototypeData','kimiInsights','kimiInsightsByPeriod','monthlyMeetingInsights','scoring360'];
-      const data=Object.fromEntries(names.map(name=>[name,JSON.parse(readFileSync(path.join(config.dataDir,`${name}.json`),'utf8'))]));
-      return sendJson(res,200,url.searchParams.get('view')==='client'?managementClientData(data):data);
+      const view=['bootstrap','client'].includes(url.searchParams.get('view'))?url.searchParams.get('view'):'full';
+      const snapshot=sourceDataCache.snapshot(view==='bootstrap'?['prototypeData']:managementSourceNames);
+      try{
+        const response=await sourceResponseCache.get(view+':'+snapshot.versionKey,()=>view==='bootstrap'?managementBootstrapData(snapshot.data.prototypeData):view==='client'?managementClientData(snapshot.data):snapshot.data);
+        return sendSourceResponse(req,res,response);
+      }catch(error){
+        if(error.code==='source_response_busy')return sendJson(res,503,{ok:false,error:'data_preparing_retry'});
+        throw error;
+      }
     }
     if (url.pathname === '/api/performance/manage' && req.method === 'GET') {
-      const view=await performance.overview({clientSummary:url.searchParams.get('view')==='summary'});
-      return sendJson(res,200,{ok:true,...(url.searchParams.get('view')==='summary'?performanceClientOverview(view):view)});
+      const requestedView=url.searchParams.get('view');
+      const view=await performance.overview({clientSummary:['summary','overview'].includes(requestedView)});
+      return sendJson(res,200,{ok:true,...(requestedView==='overview'?performanceClientOverview(view,{reportMode:'headers'}):requestedView==='summary'?performanceClientOverview(view):view)});
+    }
+    if (url.pathname === '/api/performance/employee-month' && req.method === 'GET') {
+      const employeeId=url.searchParams.get('employeeId'),month=url.searchParams.get('month');
+      if(!employeeId||employeeId.trim()!==employeeId||employeeId.length>200||!/^\d{4}-(0[1-9]|1[0-2])$/.test(month||''))return sendJson(res,400,{ok:false,error:'invalid_employee_month'});
+      const view=await performance.overview({employeeUserId:employeeId,clientSummary:true});
+      const detail=performanceClientEmployeeMonth(view,employeeId,month);
+      return detail.monthly?sendJson(res,200,{ok:true,...detail}):sendJson(res,404,{ok:false,error:'employee_month_not_found'});
     }
     if (url.pathname === '/api/performance/report' && req.method === 'GET') {
       const id=url.searchParams.get('id'),version=url.searchParams.get('version');
@@ -1761,7 +1781,7 @@ async function submitScoring360(req, res) {
     `);
     saved += 1;
   }
-  await performance.overview();
+  await performance.overview({clientSummary:true});
   sendJson(res, 200, { ok: true, saved, skipped });
 }
 

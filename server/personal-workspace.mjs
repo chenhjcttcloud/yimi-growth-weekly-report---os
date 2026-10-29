@@ -11,11 +11,13 @@ export function createPersonalWorkspace({ performance, readData, query, exec, sq
   const keyFor = (user,weekId) => `personal-${hash(`${user.userId}:${weekId}`)}`;
   const validMonth = month => /^\d{4}-(0[1-9]|1[0-2])$/.test(month);
 
-  async function weeksFor(user,month) {
+  async function weeksFor(user,month,reportContext) {
     if(!validMonth(month)) throw Error('invalid_month');
-    const raw=readData('prototypeData');
-    const policy=policyFor?await policyFor(month):{deadlineTime:'20:00'};
-    const mine=(await performance.reports()).filter(r=>r.employeeUserId===user.userId).sort((a,b)=>String(a.end).localeCompare(String(b.end)));
+    const shared=reportContext||await performance.createReportContext?.(user.userId);
+    if(shared)performance.assertReportContext(shared,user.userId);
+    const raw=shared?.data||readData('prototypeData');
+    const policy=shared?await shared.readPolicy(month):policyFor?await policyFor(month):{deadlineTime:'20:00'};
+    const mine=(shared?.reports||await performance.reports({employeeUserId:user.userId})).filter(r=>r.employeeUserId===user.userId).sort((a,b)=>String(a.end).localeCompare(String(b.end)));
     let employee=(raw.employee_summary||[]).find(e=>e.user_id===user.userId);
     if(!employee){const e=(await query(`SELECT name,department FROM employees WHERE user_id=${sql(user.userId)} AND is_active=1;`))[0];if(e)employee={'姓名':e.name,'部门':e.department,user_id:user.userId};}
     // No name-only fallback: a non-directory user must never inherit somebody else's reports.
@@ -57,9 +59,9 @@ export function createPersonalWorkspace({ performance, readData, query, exec, sq
     if(!week) throw Error('week_not_found');
     return {...result,week};
   }
-  function baseTasks(user,week) {
+  function baseTasks(user,week,insights) {
     if(!week.submitted)return [];
-    const source=readData('kimiInsightsByPeriod')?.[week.id];
+    const source=(insights===undefined?readData('kimiInsightsByPeriod'):insights)?.[week.id];
     const insight=source?.employeeInsights?.find(e=>e.userId===user.userId);
     const stored=Array.isArray(insight?.taskCandidates)?insight.taskCandidates:[];
     const nextDate=new Date(`${week.end}T00:00:00Z`);nextDate.setUTCDate(nextDate.getUTCDate()+7);
@@ -70,24 +72,27 @@ export function createPersonalWorkspace({ performance, readData, query, exec, sq
     ];
     return candidates.filter(c=>String(c.description||'').trim()).map((c,i)=>({id:`p-${hash(`${user.userId}:${week.id}:${i}`)}`,title:short(c.title,240),description:short(c.description,10000),priority:['P0','P1','P2'].includes(c.priority)?c.priority:i===1?'P1':'P2',dueDate:c.dueDate||formatDate(nextDate),evidence:short(c.evidence||week.facts.problems,8000),metric:short(c.metric||'附上交付物、完成时间与验证结果。',2000),firstStep:short(c.firstStep||'先核实事实，再确认一个最小可验证动作。',2000),supportNeeded:short(c.supportNeeded||'与相关协作者确认责任及验收口径。',2000),owner:user.name,ownerUserId:user.userId,source:stored.length?'已存档 AI 候选':'周报辅助拆解（非实时 AI）'}));
   }
-  async function tasksFor(user,week) {
+  async function tasksFor(user,week,insights) {
     const rows=await query(`SELECT * FROM personal_task_drafts WHERE owner_user_id=${sql(user.userId)} AND week_id=${sql(week.id)};`);
-    return baseTasks(user,week).map(task=>{
+    return baseTasks(user,week,insights).map(task=>{
       const saved=rows.find(r=>r.id===task.id);
       return {...task,...(saved?JSON.parse(saved.draft_json):{}),id:task.id,owner:user.name,ownerUserId:user.userId,created:Boolean(saved?.feishu_guid),feishuGuid:saved?.feishu_guid||'',url:saved?.feishu_url||'',savedAt:saved?.updated_at||''};
     });
   }
   async function workspace(user,month,weekId) {
-    const raw=readData('prototypeData');
-    const history=await performance.personal(user.name,user.userId);
+    const reportContext=await performance.createReportContext?.(user.userId);
+    if(reportContext)performance.assertReportContext(reportContext,user.userId);
+    const raw=reportContext?.data||readData('prototypeData');
+    const history=await performance.personal(user.name,user.userId,{reportContext});
     const months=[...new Set([new Intl.DateTimeFormat('sv-SE',{timeZone:'Asia/Shanghai'}).format(new Date()).slice(0,7),...(raw.meta?.periods||[]).map(p=>String(p.end).slice(0,7)),...history.history.map(r=>r.month)])].filter(m=>validMonth(m)&&m<=new Intl.DateTimeFormat('sv-SE',{timeZone:'Asia/Shanghai'}).format(new Date()).slice(0,7)).sort().reverse();
     month=month||months[0];
-    const {weeks,employee}=await weeksFor(user,month);
+    const {weeks,employee}=await weeksFor(user,month,reportContext);
     const selected=weeks.find(w=>w.id===weekId)||weeks.filter(w=>w.submitted).at(-1)||weeks[0];
     if(!selected)return {employee:{name:user.name,userId:user.userId},months,month,weeks,selectedWeekId:'',history:history.history};
-    const source=readData('kimiInsightsByPeriod')?.[selected.id];
+    const insights=selected.submitted?readData('kimiInsightsByPeriod'):{};
+    const source=insights?.[selected.id];
     const personalInsight=source?.employeeInsights?.find(e=>e.userId===user.userId);
-    const tasks=await tasksFor(user,selected);
+    const tasks=await tasksFor(user,selected,insights);
     const threadKey=keyFor(user,selected.id);
     const comments=await query(`SELECT id,author_name,hex(body) AS body_hex,created_at FROM comments WHERE target_type='personal_weekly_report' AND target_id=${sql(threadKey)} AND deleted_at IS NULL ORDER BY created_at,id;`);
     const reactions=await query(`SELECT actor_user_id FROM reactions r WHERE target_type='personal_weekly_report' AND target_id=${sql(threadKey)} AND reaction_type='like' AND NOT EXISTS(SELECT 1 FROM personal_reaction_states s WHERE s.target_id=r.target_id AND s.actor_user_id=r.actor_user_id AND s.liked=0);`);
