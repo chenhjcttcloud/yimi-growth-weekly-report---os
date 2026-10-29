@@ -9,7 +9,7 @@ const suites=[
  'security-lifecycle','setup-operations','reminder-reliability','monthly-handoffs','feishu-user-tokens',
  'sso-roster','company-directory','employee-status-api','company-roster-ui','departments','system-settings','personal-scoring-reminders','feishu-leaders','feishu-department-sync','organization-layout',
  'personal-workspace','employee-preview','scoring360-policy','scoring-workbench',
- 'scoring-workbench-ui','authorization-candidates','role-authorization','external-sharing-disabled','hardening-ui','automatic-performance','weighted-monthly-api','manager-reviews-ui','score-month-sync','month-end-reminders-api','app-select','business-workflow',
+ 'scoring-workbench-ui','authorization-candidates','role-authorization','external-sharing-disabled','hardening-ui','automatic-performance','performance-policy-reads','management-client-data','performance-loading','weighted-monthly-api','manager-reviews-ui','score-month-sync','month-end-reminders-api','app-select','business-workflow',
 ];
 const env={...process.env,TEST_STATIC_DIR:dir+'/build',CHINA_CALENDAR_AUTO_UPDATE_ENABLED:'false',LARK_REPORT_AUTO_SYNC_ENABLED:'false',LARK_AUTH_MONITOR_ENABLED:'false',SCORING360_REMINDER_ENABLED:'false',WEEKLY_REMINDER_ENABLED:'false',WEEKLY_UPDATE_REMINDER_ENABLED:'false',FEISHU_APP_ID:'',FEISHU_APP_SECRET:'',MOONSHOT_API_KEY:'',KIMI_API_KEY:''};
 const results=[];

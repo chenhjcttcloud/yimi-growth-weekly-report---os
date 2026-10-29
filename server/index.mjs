@@ -19,10 +19,12 @@ import {createManagementSummary} from './management-summary.mjs';
 import {createScoringWorkbench} from './scoring-workbench.mjs';
 import {createScoringSetup} from './scoring-setup.mjs';
 import {createOperations,ensureOperationsSchema} from './operations.mjs';
+import {performanceClientOverview} from './performance-client-data.mjs';
 import {createFeishuUserTokens} from './feishu-user-tokens.mjs';
 import {createFeishuBotMessenger} from './feishu-bot-messenger.mjs';
 import {weeklyReportSchedule,fridayOfWeek} from './weekly-report-schedule.mjs';
 import { createPerformance } from "./performance.mjs";
+import {managementBootstrapData,managementClientData} from './management-client-data.mjs';
 import { createDecipheriv, createHash, createHmac, randomBytes, randomUUID } from "node:crypto";
 import { spawn, spawnSync } from "node:child_process";
 import { createReadStream, existsSync, readFileSync } from "node:fs";
@@ -500,10 +502,35 @@ async function route(req, res) {
     }
     if (!managerForPolicy) return sendJson(res,403,{ok:false,error:'manager_only'});
     if (url.pathname === '/api/management-data' && req.method === 'GET') {
+      if(url.searchParams.get('view')==='bootstrap')return sendJson(res,200,managementBootstrapData(JSON.parse(readFileSync(path.join(config.dataDir,'prototypeData.json'),'utf8'))));
       const names=['prototypeData','kimiInsights','kimiInsightsByPeriod','monthlyMeetingInsights','scoring360'];
-      return sendJson(res,200,Object.fromEntries(names.map(name=>[name,JSON.parse(readFileSync(path.join(config.dataDir,`${name}.json`),'utf8'))])));
+      const data=Object.fromEntries(names.map(name=>[name,JSON.parse(readFileSync(path.join(config.dataDir,`${name}.json`),'utf8'))]));
+      return sendJson(res,200,url.searchParams.get('view')==='client'?managementClientData(data):data);
     }
-    if (url.pathname === '/api/performance/manage' && req.method === 'GET') return sendJson(res,200,{ok:true,...await performance.overview()});
+    if (url.pathname === '/api/performance/manage' && req.method === 'GET') {
+      const view=await performance.overview({clientSummary:url.searchParams.get('view')==='summary'});
+      return sendJson(res,200,{ok:true,...(url.searchParams.get('view')==='summary'?performanceClientOverview(view):view)});
+    }
+    if (url.pathname === '/api/performance/report' && req.method === 'GET') {
+      const id=url.searchParams.get('id'),version=url.searchParams.get('version');
+      if(!id||id.length>200||version&&!/^[a-f0-9]{64}$/.test(version))return sendJson(res,400,{ok:false,error:'invalid_report_id'});
+      const report=(await performance.reports()).find(item=>item.id===id);
+      if(report&&version&&createHash('sha256').update(JSON.stringify(report.content)).digest('hex')!==version)return sendJson(res,409,{ok:false,error:'report_changed'});
+      return report?sendJson(res,200,{ok:true,detail:report.content}):sendJson(res,404,{ok:false,error:'report_not_found'});
+    }
+    if (url.pathname === '/api/performance/result-evidence' && req.method === 'GET') {
+      const month=url.searchParams.get('month'),employeeId=url.searchParams.get('employeeId'),kind=url.searchParams.get('kind');
+      const confirmedAt=url.searchParams.get('confirmedAt'),rule=url.searchParams.get('rule');
+      if(!/^\d{4}-(0[1-9]|1[0-2])$/.test(month||'')||!employeeId||employeeId.length>200||!['quality','timeliness','collaboration'].includes(kind)||confirmedAt&&confirmedAt.length>64||rule&&!['legacy','weighted_30_70','automatic_report'].includes(rule))return sendJson(res,400,{ok:false,error:'invalid_result_identity'});
+      const where=`month=${sqlValue(month)} AND employee_user_id=${sqlValue(employeeId)} AND kind=${sqlValue(kind)}`;
+      const fixed=confirmedAt?` AND confirmed_at=${sqlValue(confirmedAt)}`:'',automatic=confirmedAt?` AND calculated_at=${sqlValue(confirmedAt)}`:` AND a.rowid=(SELECT MAX(b.rowid) FROM automatic_performance_results b WHERE b.month=a.month AND b.employee_user_id=a.employee_user_id AND b.kind=a.kind)`;
+      const records=await querySqlRows(`SELECT evidence_json FROM (
+        SELECT evidence_json,0 AS priority,0 AS sequence FROM performance_results WHERE ${where}${fixed}${rule&&rule!=='legacy'?' AND 0':''}
+        UNION ALL SELECT evidence_json,1 AS priority,0 AS sequence FROM all_monthly_weighted_results WHERE ${where}${fixed}${rule&&rule!=='weighted_30_70'?' AND 0':''}
+        UNION ALL SELECT evidence_json,2 AS priority,a.rowid AS sequence FROM automatic_performance_results a WHERE ${where}${automatic}${rule&&rule!=='automatic_report'?' AND 0':''}
+      ) ORDER BY priority,sequence DESC LIMIT 1;`);
+      return records.length?sendJson(res,200,{ok:true,detail:JSON.parse(records[0].evidence_json)}):sendJson(res,404,{ok:false,error:'result_not_found'});
+    }
     if (url.pathname === '/api/performance/confirm' && req.method === 'POST') {
       return sendJson(res,409,{ok:false,error:'results_auto_published'});
     }

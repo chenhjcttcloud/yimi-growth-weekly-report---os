@@ -1,0 +1,6 @@
+.app-loading{height:100dvh;display:grid;place-items:center;background:#f3f5f1;color:#183c32;text-align:center;font-size:14px}
+.app-loading strong{font-size:22px;letter-spacing:.04em}.app-loading p{color:#72847b;margin:12px 0 24px}
+.app-loading-track{display:block;height:3px;width:220px;overflow:hidden;border-radius:6px;background:#dfebe3}
+.app-loading-track i{display:block;height:100%;width:40%;border-radius:inherit;background:#087f67;animation:app-loading-progress 1.4s ease-in-out infinite alternate}
+@keyframes app-loading-progress{to{transform:translateX(150%)}}
+@media(prefers-reduced-motion:reduce){.app-loading-track i{animation:none;width:100%}}

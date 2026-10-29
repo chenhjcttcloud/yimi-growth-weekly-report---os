@@ -6,10 +6,38 @@ export function createPerformance({ query, exec, sql, readData, policyFor, manag
   const round = n => Math.round(n * 10) / 10;
   const average = xs => xs.length ? round(xs.reduce((a,b)=>a+b,0)/xs.length) : null;
   const monthOf = value => String(value || '').slice(0,7);
-  async function confirmed() {
-    return (await query(`SELECT *, 'legacy' AS scoring_rule FROM performance_results
-UNION ALL SELECT *, 'weighted_30_70' AS scoring_rule FROM all_monthly_weighted_results
-UNION ALL SELECT a.month,a.employee_user_id,a.employee_name,a.kind,a.result_json,a.evidence_json,'系统自动计算' AS confirmed_by,a.calculated_at AS confirmed_at,'automatic_report' AS scoring_rule FROM automatic_performance_results a
+  // Reuse each month's policy only within the current calculation. A new
+  // request gets a fresh reader, so rule changes cannot leave stale results.
+  function policyReader() {
+    const policies=new Map();
+    return month=>{
+      if(!policies.has(month))policies.set(month,Promise.resolve().then(()=>policyFor?policyFor(month):{weights:[30,25,25,20],deadlineTime:'20:00'}));
+      return policies.get(month);
+    };
+  }
+  // The first pass only checks publication presence and legacy precedence.
+  // Keep large result/evidence snapshots out of that read; final results below
+  // still use confirmed() so callers receive the original complete response.
+  async function publishedKeys() {
+    return query(`SELECT month,employee_user_id,kind,'legacy' AS scoring_rule FROM performance_results
+UNION ALL SELECT month,employee_user_id,kind,'weighted_30_70' AS scoring_rule FROM all_monthly_weighted_results
+UNION ALL SELECT a.month,a.employee_user_id,a.kind,'automatic_report' AS scoring_rule FROM automatic_performance_results a
+WHERE NOT EXISTS(SELECT 1 FROM performance_results p WHERE p.month=a.month AND p.employee_user_id=a.employee_user_id AND p.kind=a.kind)
+GROUP BY a.month,a.employee_user_id,a.kind;`);
+  }
+  async function confirmed(clientSummary=false) {
+    // SQLite reduces snapshots before they leave the process. Keep selected
+    // keys' JSON types and explicit nulls; absent keys stay absent. Invalid
+    // historical evidence becomes an empty summary without changing its row.
+    const evidence=column=>clientSummary?`(SELECT json_group_object(key,CASE type
+WHEN 'true' THEN json('true') WHEN 'false' THEN json('false')
+WHEN 'array' THEN json(value) WHEN 'object' THEN json(value) ELSE value END)
+FROM json_each(CASE WHEN json_valid(${column}) THEN ${column} ELSE '{}' END)
+WHERE key IN ('reviewNote','qualityCandidate','legitimateReason','deduction'))`:column;
+    const columns=alias=>`${alias}.month,${alias}.employee_user_id,${alias}.employee_name,${alias}.kind,${alias}.result_json,${evidence(alias+'.evidence_json')} AS evidence_json,${alias}.confirmed_by,${alias}.confirmed_at`;
+    return (await query(`SELECT ${clientSummary?columns('p'):'*'}, 'legacy' AS scoring_rule FROM performance_results p
+UNION ALL SELECT ${clientSummary?columns('w'):'*'}, 'weighted_30_70' AS scoring_rule FROM all_monthly_weighted_results w
+UNION ALL SELECT a.month,a.employee_user_id,a.employee_name,a.kind,a.result_json,${evidence('a.evidence_json')} AS evidence_json,'系统自动计算' AS confirmed_by,a.calculated_at AS confirmed_at,'automatic_report' AS scoring_rule FROM automatic_performance_results a
 WHERE a.rowid=(SELECT MAX(b.rowid) FROM automatic_performance_results b WHERE b.month=a.month AND b.employee_user_id=a.employee_user_id AND b.kind=a.kind)
 AND NOT EXISTS(SELECT 1 FROM performance_results p WHERE p.month=a.month AND p.employee_user_id=a.employee_user_id AND p.kind=a.kind)
 ORDER BY month DESC, employee_name;`)).map(r=>({...r, result:JSON.parse(r.result_json)}));
@@ -31,14 +59,14 @@ WHERE COALESCE((SELECT calculation_hash FROM automatic_performance_results WHERE
     }
     return statements;
   }
-  async function reports() {
+  async function reports(readPolicy=policyReader()) {
     const data = readData('prototypeData');
     const stored = await query('SELECT * FROM weekly_reports;');
     const rows = new Map();
     for(const r of data.weekly_scores || []) {const employeeUserId=r.user_id || ((data.employee_summary||[]).filter(e=>e['姓名']===r['姓名']).length===1?(data.employee_summary||[]).find(e=>e['姓名']===r['姓名'])?.user_id:''); rows.set(`${employeeUserId}|${r['结束日期']}`, {employeeUserId,id:r['源记录ID'], name:r['姓名'], department:r['部门'], end:r['结束日期'], start:r['开始日期'], submittedAt:r['提交时间'], content:r, status:r['状态']});}
     for(const r of stored) rows.set(`${r.employee_user_id}|${r.week_end}`, {employeeUserId:r.employee_user_id,id:r.id,name:r.employee_name,department:r.department,end:r.week_end,start:r.week_start,submittedAt:r.submitted_at,content:JSON.parse(r.content_json),status:r.status});
     const policies=new Map();
-    for(const r of rows.values())if(!policies.has(monthOf(r.end)))policies.set(monthOf(r.end),policyFor?await policyFor(monthOf(r.end)):{weights:[30,25,25,20],deadlineTime:'20:00'});
+    for(const r of rows.values())if(!policies.has(monthOf(r.end)))policies.set(monthOf(r.end),await readPolicy(monthOf(r.end)));
     return [...rows.values()].map(r=>{
       const policy=policies.get(monthOf(r.end));
       const original=r.content || {};
@@ -55,10 +83,10 @@ WHERE COALESCE((SELECT calculation_hash FROM automatic_performance_results WHERE
       return {...r,status,schedule,scoringPolicy:policy, month:monthOf(r.end), submitted, timestampUnknown:submitted&&!Number.isFinite(ts),late,onTime:submitted&&!schedule.exempt&&!schedule.calendarPending&&Number.isFinite(ts)&&ts<=deadline, candidate:valid?round(scores.reduce((n,s)=>n+s.value*s.w,0)):null, missing, evidence:sections.map(([key])=>({module:key,text:c[key]||''})), anomalies:[...(Array.isArray(c.ai?.anomalies)?c.ai.anomalies:[]),...(c.source?.weekInference?['周次按提交日期推定，请核实补交或跨周汇报的归属']:[]),...missing.map(x=>`缺失：${x}`),...(!valid?['缺少有效的四模块候选分']:[]),...(submitted&&!Number.isFinite(ts)?['提交时间无法解析']:[])], suggestions:c.ai?.summary|| (missing.length?'请补齐缺失模块，并由主管核实事实与结果。':'请主管核实成果证据、问题影响和计划可验证性。')};
     });
   }
-  async function overview() {
-    const data=readData('prototypeData');
-    const rs=await reports();
-    const results=await confirmed();
+  async function overview({clientSummary=false}={}) {
+    const data=readData('prototypeData'),readPolicy=policyReader();
+    const rs=await reports(readPolicy);
+    const results=await publishedKeys();
     const managerState=await managerReviews.snapshot();
     const cycles=await query('SELECT * FROM scoring360_cycles ORDER BY start_date DESC;');
     const collaborations=[];
@@ -89,7 +117,7 @@ WHERE COALESCE((SELECT calculation_hash FROM automatic_performance_results WHERE
     const monthly=[];
     for(const month of months) for(const employee of employees){
       if(!employedInMonth(employee.employmentPeriods,month)&&!results.some(r=>r.month===month&&r.employee_user_id===employee.userId))continue;
-      const monthPolicy=policyFor?await policyFor(month):{deadlineTime:'20:00'};
+      const monthPolicy=await readPolicy(month);
       const weeks=periods.filter(p=>{const schedule=weeklyReportSchedule(p.end,calendar?.()||{},monthPolicy.deadlineTime);return monthOf(p.end)===month&&(!calendar||p.start>=coverageStart)&&employedOn(employee.employmentPeriods,schedule.deadlineDate)&&!schedule.exempt&&Date.parse(schedule.dueAt)<=now().getTime()&&!(p.exempt_people||[]).includes(employee.name);});
       const employeeReports=rs.filter(r=>r.employeeUserId===employee.userId&&r.month===month);
       const counted=employeeReports.filter(r=>employedOn(employee.employmentPeriods,r.schedule.deadlineDate)&&!r.schedule.exempt&&!(periods.find(p=>p.end===r.end)?.exempt_people||[]).includes(employee.name)),expected=new Set([...weeks.map(p=>p.end),...counted.map(r=>r.end)]).size;
@@ -110,11 +138,11 @@ WHERE COALESCE((SELECT calculation_hash FROM automatic_performance_results WHERE
       const snapshot={...row,publicationMode:'weighted_30_70',reviewNote:'负责人或老板评分30%＋同事互评70%，两部分完成后自动发布',reviewer:'系统自动发布'};
       await exec(`INSERT OR IGNORE INTO monthly_person_weighted_results(month,employee_user_id,employee_name,kind,result_json,evidence_json,confirmed_by,confirmed_at) VALUES(${sql(row.month)},${sql(row.userId)},${sql(row.name)},'collaboration',${sql(JSON.stringify({score:row.collaborationCandidate,peerScore:row.peerCandidate,managerScore:row.managerProgress.score,weights:{manager:30,peers:70}}))},${sql(JSON.stringify(snapshot))},'系统自动发布',datetime('now'));`);
     }
-    return {months,employees,monthly,collaborations,results:await confirmed()};
+    return {months,employees,monthly,collaborations,results:await confirmed(clientSummary)};
   }
   async function personal(name, userId) {
-    const view=await overview();
-    const rows=(await confirmed()).filter(r=>r.employee_user_id===userId);
+    const view=await overview({clientSummary:true});
+    const rows=view.results.filter(r=>r.employee_user_id===userId);
     const months=[...new Set(rows.map(r=>r.month))].sort().reverse();
     const history=months.map(month=>{
       const get=kind=>rows.find(r=>r.month===month&&r.kind===kind)?.result;

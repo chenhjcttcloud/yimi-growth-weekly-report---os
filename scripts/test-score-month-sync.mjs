@@ -32,7 +32,7 @@ try{
  browser=await chromium.launchPersistentContext(dir+'/browser',{channel:'chrome',headless:true,viewport:{width:1600,height:1100}});await browser.addCookies([{name:'wos_session',value:cookie('admin'),url:base}]);
  const page=await browser.newPage(),errors=[],writes=[];page.setDefaultTimeout(12000);page.on('pageerror',error=>errors.push(error.message));page.on('request',request=>{if(request.method()==='POST'&&!new URL(request.url()).pathname.startsWith('/api/usage/'))writes.push(new URL(request.url()).pathname);});
  await page.route('**/api/usage/**',route=>route.fulfill({status:200,json:{ok:true}}));
- await page.route('**/api/performance/manage',route=>route.fulfill({status:200,json:management}));
+ await page.route('**/api/performance/manage*',route=>route.fulfill({status:200,json:management}));
  await page.route('**/api/manager-reviews*',async route=>{
   const request=route.request();
   if(request.method()==='GET'){

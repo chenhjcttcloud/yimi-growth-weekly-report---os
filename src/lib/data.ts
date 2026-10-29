@@ -1,5 +1,5 @@
 // Process data is fetched through an authorized server endpoint, never bundled.
-const managementData: Record<string, any> = await fetch('/api/management-data').then(r => r.ok ? r.json() : {}).catch(() => ({}));
+const managementData: Record<string, any> = await fetch('/api/management-data?view=client').then(r => r.ok ? r.json() : {}).catch(() => ({}));
 const rawData = managementData.prototypeData || {};
 const rawKimiInsights = managementData.kimiInsights || {};
 const rawKimiInsightsByPeriod = managementData.kimiInsightsByPeriod || {};

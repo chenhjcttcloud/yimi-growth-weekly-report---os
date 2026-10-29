@@ -1,19 +1,20 @@
 import {DepartmentsPage} from './pages/DepartmentsPage';
-import { useEffect, useMemo, useState } from "react";
+import { lazy, Suspense, useEffect, useMemo, useState } from "react";
 import { AppHeader } from "./components/AppHeader";
 import { Sidebar } from "./components/Sidebar";
-import { appData } from "./lib/data";
+import { bootstrapData as appData } from "./lib/bootstrap-data";
 import type { PageKey } from "./lib/types";
-import { DashboardPage } from "./pages/DashboardPage";
-import { MonthlyMeetingPage } from "./pages/MonthlyMeetingPage";
 import { FinalResultsPage } from "./pages/FinalResultsPage";
 import { PerformanceManagementPage } from "./pages/PerformanceManagementPage";
 import { ScoringTasksPage } from "./pages/ScoringTasksPage";
 import { SettingsPage } from "./pages/SettingsPage";
-import { TasksPage } from "./pages/TasksPage";
-import { TrendsPage } from "./pages/TrendsPage";
 import type { UserAccess } from "./lib/types";
 import {canVisitPage,perspectiveAccess,rememberLocation,requestedPage,resolvePage} from './lib/navigation';
+
+const DashboardPage=lazy(()=>import('./pages/DashboardPage').then(module=>({default:module.DashboardPage})));
+const MonthlyMeetingPage=lazy(()=>import('./pages/MonthlyMeetingPage').then(module=>({default:module.MonthlyMeetingPage})));
+const TasksPage=lazy(()=>import('./pages/TasksPage').then(module=>({default:module.TasksPage})));
+const TrendsPage=lazy(()=>import('./pages/TrendsPage').then(module=>({default:module.TrendsPage})));
 
 const fallbackAccess: UserAccess = {
   role: "member",
@@ -233,7 +234,7 @@ export function App() {
           }}
         />
         {previewEmployee&&<div className="employee-preview-banner" role="status"><span>只读预览 · {previewEmployee.name}（{previewEmployee.department}） · 当前登录：{access?.currentEmployee?.name}</span><button type="button" onClick={()=>changePerspective('management')}>退出预览</button></div>}
-        <div className={`content-shell ${activePage === "settings" ? "content-shell-settings" : ""}`}>{actionMessage&&<p role="status" className="pf-notice app-action-message">{actionMessage}</p>}{access?page:<p role="status">正在恢复页面…</p>}</div>
+        <div className={`content-shell ${activePage === "settings" ? "content-shell-settings" : ""}`}>{actionMessage&&<p role="status" className="pf-notice app-action-message">{actionMessage}</p>}{access?<Suspense fallback={<p role="status">正在读取本页数据…</p>}>{page}</Suspense>:<p role="status">正在恢复页面…</p>}</div>
       </main>
     </div>
   );

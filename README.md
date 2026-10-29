@@ -375,7 +375,7 @@ AI 页面保存服务地址、模型和加密密钥，后端实时追问立即�
 
 ### 完整业务回归
 
-运行 `npm run test:business` 可安全构建并执行37组业务回归（加 TypeScript 检查与构建，共39项）。外部飞书/Kimi请求由测试程序拦截，不发送真实消息、不创建真实任务；数据库、日志、截图和构建文件保留在 `outputs/tests/business-regression-*`。真实服务检查及本轮验证结果见 [完整业务回归报告](docs/BUSINESS_REGRESSION_20261028.md)。
+运行 `npm run test:business` 可安全构建并执行40组业务回归（加 TypeScript 检查与构建，共42项）。外部飞书/Kimi请求由测试程序拦截，不发送真实消息、不创建真实任务；数据库、日志、截图和构建文件保留在 `outputs/tests/business-regression-*`。真实服务检查及本轮验证结果见 [完整业务回归报告](docs/BUSINESS_REGRESSION_20261028.md)。
 
 ### 月度配评入口
 

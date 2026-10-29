@@ -3,7 +3,7 @@ import { AppSelect } from "./AppSelect";
 import { Bell, CheckCircle2, Send, ShieldCheck } from "lucide-react";
 import { DevViewSwitcher } from "./DevViewSwitcher";
 import { PerspectiveSwitcher } from "./PerspectiveSwitcher";
-import { appData } from "../lib/data";
+import { bootstrapData as appData } from "../lib/bootstrap-data";
 import type { PageKey } from "../lib/types";
 
 const titles: Record<PageKey, string> = {

@@ -11,7 +11,6 @@ import { lazy, Suspense, useEffect, useMemo, useRef, useState } from "react";
 import { Activity, CheckCheck, Database, Link2, Settings2, ShieldCheck, UsersRound } from "lucide-react";
 import { ResultEmpty } from "../components/PerformanceUI";
 import type { DragEvent } from "react";
-import { appData } from "../lib/data";
 import type { UserAccess } from "../lib/types";
 import '../styles/company-roster.css';
 const RoleAuthorization = lazy(() => import('../components/RoleAuthorization').then(module=>({default:module.RoleAuthorization})));
