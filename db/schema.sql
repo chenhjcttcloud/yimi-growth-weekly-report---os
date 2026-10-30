@@ -608,6 +608,17 @@ CREATE TABLE IF NOT EXISTS feishu_department_links (
  raw_json TEXT NOT NULL
 );
 
+-- Current Feishu presence is independent from local layout preferences and
+-- immutable score snapshots. Removed departments retain their original rows.
+CREATE TABLE IF NOT EXISTS feishu_department_sync_states (
+ department_id TEXT PRIMARY KEY,
+ state TEXT NOT NULL CHECK(state IN ('active','deleted')),
+ reason TEXT NOT NULL DEFAULT '',
+ checked_at TEXT NOT NULL,
+ deleted_at TEXT,
+ display_name TEXT NOT NULL DEFAULT ''
+);
+
 -- user_id is the only business identity. Other Feishu IDs are interoperability aliases.
 CREATE TABLE IF NOT EXISTS employee_identities (
  user_id TEXT PRIMARY KEY,

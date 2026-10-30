@@ -8,6 +8,7 @@ export function createManagerReviews({query,exec,sql,organization,reports,isBoss
  const validMonth=month=>{if(!/^\d{4}-(0[1-9]|1[0-2])$/.test(month||'')||month>monthNow())throw Error('invalid_month');return month;};
  async function snapshot(){
   const data=await organization(),departments=data.departments.filter(d=>Number(d.is_active)!==0),byId=new Map(departments.map(d=>[d.id,d]));
+  const archivedDepartments=(data.archivedDepartments||[]).filter(d=>d.feishu_deleted===true);
   const roster=await query('SELECT user_id,name,department,manager_user_id,is_active FROM employees;'),periods=await query('SELECT * FROM employee_employment_periods;');
   const people=new Map(roster.map(e=>[e.user_id,{userId:e.user_id,name:e.name,department:e.department,managerUserId:e.manager_user_id,active:Number(e.is_active)===1,employmentPeriods:periods.filter(p=>p.employee_user_id===e.user_id)}]));
   const plans=new Map();
@@ -32,14 +33,17 @@ export function createManagerReviews({query,exec,sql,organization,reports,isBoss
   for(const score of data.scores){const k=key(score.month,score.leader_user_id);if(frozen.has(k))continue;const base=plans.get(score.leader_user_id),employee=people.get(score.leader_user_id);if(employee)frozen.set(k,{...base,employee,kind:'boss',expectedIds:[...new Set([...data.scores.filter(s=>s.month===score.month&&s.leader_user_id===score.leader_user_id).map(s=>s.department_id),...(base?.kind==='boss'?base.expectedIds:[])])],frozenAt:score.created_at});}
   const handoffs=await query('SELECT * FROM monthly_manager_handoffs ORDER BY rowid;');
   const eligibleIds=new Set([...departments.map(d=>d.leader_user_id),...roster.map(e=>e.manager_user_id),...roster.filter(e=>isBossUserId(e.user_id)).map(e=>e.user_id)]);
-  return {plans,people,departments,frozen,handoffs,scores,bossScores:data.scores,eligibleManagers:[...people.values()].filter(e=>e.active&&eligibleIds.has(e.userId))};
+  return {plans,people,departments,archivedDepartments,frozen,handoffs,scores,bossScores:data.scores,eligibleManagers:[...people.values()].filter(e=>e.active&&eligibleIds.has(e.userId))};
  }
  function planFor(state,month,userId){
   const original=state.frozen.get(key(month,userId))||state.plans.get(userId);if(!original)return null;
   const employee=state.people.get(userId)||original.employee,periods=employee.employmentPeriods||[];
   if(periods.length&&!employedInMonth(periods,month))return null;
   let expectedIds=[...original.expectedIds];const taskStartById={};
-  if(original.kind==='boss')expectedIds=[...new Set([...state.bossScores.filter(s=>s.month===month&&s.leader_user_id===userId).map(s=>s.department_id),...expectedIds.filter(id=>state.departments.some(d=>d.id===id&&d.leader_user_id===userId))])];
+  // An archived Feishu department disappears from new organizational plans.
+  // A monthly plan already locked by a submitted score keeps its original
+  // denominator: removing an ungraded department must not complete the month.
+  if(original.kind==='boss')expectedIds=[...new Set([...state.bossScores.filter(s=>s.month===month&&s.leader_user_id===userId).map(s=>s.department_id),...expectedIds.filter(id=>state.departments.some(d=>d.id===id&&d.leader_user_id===userId)||Boolean(original.frozenAt)&&(state.archivedDepartments||[]).some(d=>d.id===id))])];
   if(original.kind==='manager')for(const h of state.handoffs.filter(h=>h.month===month&&h.employee_user_id===userId)){expectedIds=expectedIds.map(id=>id===h.from_user_id?h.to_user_id:id);taskStartById[h.to_user_id]=h.created_at;}
   const start=periods.filter(p=>p.start_date<=month+'-31'&&(!p.end_date||p.end_date>=month+'-01')).map(p=>p.start_date).sort().at(-1);
   return {...original,employee,expectedIds:[...new Set(expectedIds)],taskStartById,taskStartedAt:(start&&start>month+'-01'?start:month+'-01')+'T00:00:00+08:00'};
@@ -48,7 +52,8 @@ export function createManagerReviews({query,exec,sql,organization,reports,isBoss
   const plan=planFor(state,month,userId);if(!plan)return {kind:'unassigned',expectedIds:[],expected:0,submitted:0,complete:false,score:null,records:[],blockedIds:[],handoffRequired:false};
   const records=plan.kind==='boss'?state.bossScores.filter(s=>s.month===month&&s.leader_user_id===userId&&plan.expectedIds.includes(s.department_id)):state.scores.filter(s=>s.month===month&&s.employee_user_id===userId&&plan.expectedIds.includes(s.evaluator_user_id));
   const complete=plan.expectedIds.length>0&&records.length===plan.expectedIds.length,blockedIds=plan.kind==='manager'?plan.expectedIds.filter(id=>!records.some(r=>r.evaluator_user_id===id)&&!state.people.get(id)?.active):[];
-  return {kind:plan.kind,expectedIds:plan.expectedIds,expected:plan.expectedIds.length,submitted:records.length,complete,score:complete?average(records.map(r=>r.score)):null,records,blockedIds,handoffRequired:blockedIds.length>0,taskStartedAt:plan.taskStartedAt,taskStartById:plan.taskStartById,frozen:Boolean(plan.frozenAt)};
+  const blockedDepartmentIds=plan.kind==='boss'?plan.expectedIds.filter(id=>!records.some(r=>r.department_id===id)&&(state.archivedDepartments||[]).some(d=>d.id===id)):[];
+  return {kind:plan.kind,expectedIds:plan.expectedIds,expected:plan.expectedIds.length,submitted:records.length,complete,score:complete?average(records.map(r=>r.score)):null,records,blockedIds,...(blockedDepartmentIds.length?{blockedDepartmentIds,departmentReviewBlocked:true}:{}),handoffRequired:blockedIds.length>0,taskStartedAt:plan.taskStartedAt,taskStartById:plan.taskStartById,frozen:Boolean(plan.frozenAt)};
  }
  async function freeze(month,userId,kind){
   const state=await snapshot(),plan=planFor(state,month,userId);if(!plan)throw Error('employee_not_employed');if(kind&&plan.kind!==kind)throw Error('not_your_subordinate');
