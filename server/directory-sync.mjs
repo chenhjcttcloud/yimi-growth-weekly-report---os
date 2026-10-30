@@ -66,14 +66,15 @@ export function createDirectorySync({query,exec,sql,config,lifecycle,registerIde
         }
       });departmentScanComplete=true;} catch {failedDepartments.add('department_tree');}
       // Cached departments provide a safe additional discovery path when scope is
-      // restricted. Missing users are never interpreted as termination.
+      // restricted. Absence alone is never interpreted as termination.
       for(const id of departments.keys())discoveredDepartments.add(id);
       if(discoveredDepartments.size>10000)throw Error('directory_invalid_response');
       const people=new Map(),memberships=new Map();
       function accept(person,departmentId) {
         const id=person?.user_id;
         if(typeof id!=='string'||!id||id.startsWith('ou_')) {invalidIdentities++;return;}
-        people.set(id,{...people.get(id),...person});
+        const previous=people.get(id);
+        people.set(id,{...previous,...person,...(previous?.status||person.status?{status:{...previous?.status,...person.status}}:{})});
         if(departmentId) {const ids=memberships.get(id)||new Set();ids.add(departmentId);memberships.set(id,ids);}
       }
       async function parallel(items,work) {
@@ -93,15 +94,28 @@ export function createDirectorySync({query,exec,sql,config,lifecycle,registerIde
           if(person?.user_id!==id)throw Error('directory_invalid_identity');accept(person);
         } catch {failedUsers.add(id);}
       });
-      if(!people.size)throw Error(invalidIdentities?'directory_user_id_permission_required':'directory_scope_empty');
+      if(!people.size&&!(expectedCompanyTotal===0&&departmentScanComplete&&!failedDepartments.size&&!invalidIdentities))throw Error(invalidIdentities?'directory_user_id_permission_required':'directory_scope_empty');
       // Fill missing names once, only for identities with no known display name.
       await parallel([...people.values()].filter(person=>!person.name&&!knownNames.has(person.user_id)),async person=>{
         try {const current=(await get('/contact/v3/users/'+encodeURIComponent(person.user_id)+'?user_id_type=user_id&department_id_type=open_department_id'))?.user;
           if(current?.user_id!==person.user_id)throw Error('directory_invalid_identity');accept({...person,...current});
         } catch {failedUsers.add(person.user_id);}
       });
+      // A departed employee can disappear from the departmental lists before the
+      // next sync. Verify the exact former user_id separately, without adding it
+      // to discovered company membership or treating an omitted status as proof.
+      const missingLocal=local.filter(person=>!people.has(person.user_id));
+      const missingInactive=new Map(),unverifiedMissing=new Set();
+      const isInactive=person=>['is_resigned','is_frozen','is_unjoined'].some(key=>person.status?.[key]===true);
+      await parallel(missingLocal,async previous=>{
+        try {
+          const person=(await get('/contact/v3/users/'+encodeURIComponent(previous.user_id)+'?user_id_type=user_id&department_id_type=open_department_id'))?.user;
+          if(person?.user_id!==previous.user_id||!isInactive(person)) {if(Number(previous.is_active)===1)unverifiedMissing.add(previous.user_id);}
+          else missingInactive.set(previous.user_id,person);
+        } catch {if(Number(previous.is_active)===1)unverifiedMissing.add(previous.user_id);}
+      });
       let created=0,updated=0,preservedInactive=0,missingNames=0;
-      const prepared=[],statements=['BEGIN IMMEDIATE;'],finishedAt=new Date().toISOString();
+      const prepared=[],confirmedInactive=new Set(),statements=['BEGIN IMMEDIATE;'],finishedAt=new Date().toISOString();
       for(const person of people.values()) {
         const id=person.user_id,previous=localById.get(id),name=String(person.name||knownNames.get(id)||'').trim();
         const nameMissing=!name;
@@ -110,8 +124,9 @@ export function createDirectorySync({query,exec,sql,config,lifecycle,registerIde
         const departmentNames=departmentIds.filter(id=>id!=='0').map(id=>departments.get(id));
         const departmentComplete=departmentNames.every(Boolean)&&departmentIds.length>0;
         const department=departmentComplete?(departmentNames.join(' / ')||(departmentIds.includes('0')?'公司直属（根部门）':'')):(previous?.department||'');
-        const remoteInactive=['is_resigned','is_frozen','is_unjoined'].some(key=>person.status?.[key]===true);
+        const remoteInactive=isInactive(person);
         const active=previous?.is_active===0||remoteInactive?0:1;
+        if(previous&&Number(previous.is_active)===1&&remoteInactive)confirmedInactive.add(id);
         if(previous) {updated++;if(Number(previous.is_active)===0)preservedInactive++;} else created++;
         const manager=typeof person.leader_user_id==='string'&&!person.leader_user_id.startsWith('ou_')?person.leader_user_id:(previous?.manager_user_id||'');
         const email=person.email||person.enterprise_email||previous?.email||'';
@@ -125,6 +140,11 @@ export function createDirectorySync({query,exec,sql,config,lifecycle,registerIde
           ON CONFLICT(user_id) DO UPDATE SET name_missing=excluded.name_missing,synced_at=excluded.synced_at;`);
         prepared.push({person,active});
       }
+      for(const [id,person] of missingInactive) {
+        statements.push(`UPDATE employees SET is_active=0,updated_at=datetime('now') WHERE user_id=${sql(id)};`);
+        if(Number(localById.get(id)?.is_active)===1)confirmedInactive.add(id);
+        prepared.push({person,active:0});
+      }
       statements.push('COMMIT;');await exec(statements.join('\n'));
       const currentById=new Map((await query('SELECT user_id,is_active FROM employees;')).map(person=>[person.user_id,person]));
       for(const {person,active} of prepared) {
@@ -133,15 +153,17 @@ export function createDirectorySync({query,exec,sql,config,lifecycle,registerIde
           if(Number(currentById.get(person.user_id)?.is_active)===1)await lifecycle?.profile(person.user_id,person.join_time);
           else {
             if(!localById.has(person.user_id))await lifecycle?.observe(person.user_id,undefined,'feishu');
-            if(!localById.has(person.user_id)||Number(localById.get(person.user_id)?.is_active)===1)await lifecycle?.stop(person.user_id);
+            if(!localById.has(person.user_id)||Number(localById.get(person.user_id)?.is_active)===1||isInactive(person))await lifecycle?.stop(person.user_id);
           }
         } catch {failedUsers.add(person.user_id);}
       }
       const scopeComplete=!failedDepartments.size&&!failedUsers.size&&!invalidIdentities&&departmentScanComplete&&(
         expectedCompanyTotal!==null?people.size===expectedCompanyTotal:scopeRead&&scopeDepartments.has('0'));
-      missingNames=Number((await query(`SELECT count(*) AS count FROM employee_directory_profiles WHERE user_id IN (${[...people.keys()].map(sql).join(',')}) AND name_missing=1;`))[0]?.count||0);
+      missingNames=people.size?Number((await query(`SELECT count(*) AS count FROM employee_directory_profiles WHERE user_id IN (${[...people.keys()].map(sql).join(',')}) AND name_missing=1;`))[0]?.count||0):0;
       const notReturnedLocalUserIds=local.filter(person=>!people.has(person.user_id)).map(person=>person.user_id);
       const result={total:people.size,created,updated,preservedInactive,missingNames,notReturnedLocalCount:notReturnedLocalUserIds.length,notReturnedLocalUserIds,failed:failedUsers.size,
+        confirmedInactiveCount:confirmedInactive.size,confirmedInactiveUserIds:[...confirmedInactive].sort(),missingStatusCheckedCount:missingLocal.length,
+        unverifiedMissingCount:unverifiedMissing.size,unverifiedMissingUserIds:[...unverifiedMissing].sort(),
         failedUserIds:[...failedUsers],failedDepartments:[...failedDepartments],invalidIdentities,scannedDepartments:discoveredDepartments.size,
         coverage:scopeComplete?'company':'visible_scope',expectedCompanyTotal,scopeComplete,
         incomplete:!scopeComplete||missingNames>0,finishedAt};

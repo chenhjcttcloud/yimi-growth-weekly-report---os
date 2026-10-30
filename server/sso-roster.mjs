@@ -13,20 +13,26 @@ export function createSsoRoster({query,exec,sql,getJson,registerIdentity=async()
       }));
       department=departments.filter(Boolean).join(' / ');
     } catch(error) {if(error.message==='identity_mismatch')throw error;note='通讯录信息未完整同步，请检查飞书通讯录权限和可见范围。';}
+    // A verified login is not proof of current employment. Only an exact
+    // directory identity with an explicit status may stop the account; missing
+    // fields or directory permissions never restore an existing stopped user.
+    const remoteInactive=profile.user_id===identity.userId&&['is_resigned','is_frozen','is_unjoined'].some(key=>profile.status?.[key]===true);
     await registerIdentity({userId:identity.userId,openId:profile.open_id||identity.feishuOpenId||'',unionId:profile.union_id||identity.unionId||''});
     await exec(`BEGIN;
       INSERT INTO employees(user_id,name,department,email,manager_user_id,is_active,updated_at)
-      VALUES(${sql(identity.userId)},${sql(identity.name)},${sql(department)},${sql(identity.email||profile.email||profile.enterprise_email||'')},${sql(profile.leader_user_id||'')},1,datetime('now'))
+      VALUES(${sql(identity.userId)},${sql(identity.name)},${sql(department)},${sql(identity.email||profile.email||profile.enterprise_email||'')},${sql(profile.leader_user_id||'')},${remoteInactive?0:1},datetime('now'))
       ON CONFLICT(user_id) DO UPDATE SET name=excluded.name,
         department=CASE WHEN excluded.department<>'' THEN excluded.department ELSE employees.department END,
         email=CASE WHEN excluded.email<>'' THEN excluded.email ELSE employees.email END,
         manager_user_id=CASE WHEN excluded.manager_user_id<>'' THEN excluded.manager_user_id ELSE employees.manager_user_id END,
+        is_active=CASE WHEN employees.is_active=0 OR excluded.is_active=0 THEN 0 ELSE employees.is_active END,
         updated_at=datetime('now');
       INSERT INTO employee_sso_logins(user_id,last_login_at,sync_note) VALUES(${sql(identity.userId)},datetime('now'),COALESCE(${sql(note)},''))
       ON CONFLICT(user_id) DO UPDATE SET last_login_at=excluded.last_login_at,sync_note=excluded.sync_note;
       UPDATE employee_directory_profiles SET name_missing=0 WHERE user_id=${sql(identity.userId)};
       COMMIT;`);
     await lifecycle?.profile(identity.userId,profile.join_time);
+    if(remoteInactive)await lifecycle?.stop(identity.userId);
     const employee=(await query(`SELECT * FROM employees WHERE user_id=${sql(identity.userId)};`))[0];
     return {employee,active:Number(employee?.is_active)===1};
   };

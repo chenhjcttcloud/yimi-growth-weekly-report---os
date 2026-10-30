@@ -419,7 +419,7 @@ async function route(req, res) {
         return sendJson(res,200,{ok:true});
       }
       return sendJson(res,405,{ok:false,error:'method_not_allowed'});
-    }catch(error){const known=['invalid_month','employee_not_employed','score_and_comment_required','self_scoring_forbidden','not_your_subordinate','result_locked'];return sendJson(res,error.message==='not_your_subordinate'?403:409,{ok:false,error:error.message.includes('UNIQUE')?'result_locked':known.includes(error.message)?error.message:'manager_review_failed'});}
+    }catch(error){const known=['invalid_month','employee_not_employed','employee_inactive','score_and_comment_required','self_scoring_forbidden','not_your_subordinate','result_locked'];return sendJson(res,error.message==='not_your_subordinate'?403:409,{ok:false,error:error.message.includes('UNIQUE')?'result_locked':known.includes(error.message)?error.message:'manager_review_failed'});}
   }
   if(url.pathname.startsWith('/api/departments')) {
     if(!managerForPolicy)return sendJson(res,403,{ok:false,error:'manager_only'});
@@ -442,7 +442,7 @@ async function route(req, res) {
           await departments.score(body,userForPolicy);await performance.overview({clientSummary:true});await systemSettings.audit(userForPolicy,'老板负责人评分已发布',{departmentId:body.departmentId,month:body.month});
         }else return sendJson(res,404,{ok:false,error:'not_found'});
         return sendJson(res,200,{ok:true});
-      }catch(error){const known=['rating_scope_frozen','rating_responsibility_changed','department_layout_conflict','department_removed','department_not_empty','department_inactive','department_sync_running','feishu_not_configured','department_permission_required','department_scope_required','department_scope_empty','department_names_permission_required','department_leader_user_id_required','department_leader_managed_by_feishu','department_ambiguous_names','department_incomplete_tree','department_invalid_pagination','department_upstream_failed','department_hierarchy_cycle','invalid_parent_department','invalid_department','leader_must_be_department_member','department_not_found','invalid_month','score_and_comment_required','department_leader_required','leader_inactive','leader_not_registered','employee_not_employed','self_scoring_forbidden','result_locked'];return sendJson(res,409,{ok:false,error:error.message.includes('UNIQUE')?'department_exists':known.includes(error.message)?error.message:'department_save_failed'});}finally{if(organizationMutation)organizationMutationRunning=false;}
+      }catch(error){const known=['rating_scope_frozen','rating_responsibility_changed','department_layout_conflict','department_removed','department_not_empty','department_inactive','department_sync_running','feishu_not_configured','department_permission_required','department_scope_required','department_scope_empty','department_names_permission_required','department_leader_user_id_required','department_leader_managed_by_feishu','department_ambiguous_names','department_incomplete_tree','department_invalid_pagination','department_upstream_failed','department_hierarchy_cycle','invalid_parent_department','invalid_department','leader_must_be_department_member','department_not_found','invalid_month','score_and_comment_required','department_leader_required','leader_inactive','leader_not_registered','employee_not_employed','account_inactive','self_scoring_forbidden','result_locked'];return sendJson(res,error.message==='account_inactive'?403:409,{ok:false,error:error.message.includes('UNIQUE')?'department_exists':known.includes(error.message)?error.message:'department_save_failed'});}finally{if(organizationMutation)organizationMutationRunning=false;}
     }
     return sendJson(res,405,{ok:false,error:'method_not_allowed'});
   }
@@ -1684,12 +1684,14 @@ async function getMyScoring360Tasks(req, res, url) {
   const rows = await querySqlRows(`
     SELECT
       a.id, a.cycle_id, a.evaluee_name, a.evaluator_name, a.created_at,
-      r.id AS response_id, r.score, r.comment, r.submitted_at
+      r.id AS response_id, r.score, r.comment, r.submitted_at,
+      COALESCE((SELECT is_active FROM employees WHERE user_id=a.evaluee_user_id),1) AS evaluee_active
     FROM scoring360_assignments a
     LEFT JOIN scoring360_responses r ON r.assignment_id = a.id
     WHERE a.cycle_id = ${sqlValue(cycleId)}
       AND a.evaluator_user_id = ${sqlValue(evaluatorUserId)}
       AND COALESCE(a.status, 'active') = 'active'
+      AND (r.id IS NOT NULL OR NOT EXISTS(SELECT 1 FROM employees WHERE user_id=a.evaluee_user_id AND is_active=0))
     ORDER BY a.evaluee_name ASC;
   `);
   sendJson(res, 200, {
@@ -1705,7 +1707,7 @@ async function getMyScoring360Tasks(req, res, url) {
       comment: row.comment || "",
       submitted: Boolean(row.response_id),
       submittedAt: row.submitted_at || "",
-      locked: !cycleOpen || isScoring360Locked(row.submitted_at),
+      locked: !cycleOpen || Number(row.evaluee_active)===0 || isScoring360Locked(row.submitted_at),
     })),
   });
 }
@@ -1749,7 +1751,8 @@ async function submitScoring360(req, res) {
       continue;
     }
     const assignmentRows = await querySqlRows(`
-      SELECT a.id, a.evaluee_name, a.evaluee_user_id, a.evaluator_name, r.submitted_at
+      SELECT a.id, a.evaluee_name, a.evaluee_user_id, a.evaluator_name, r.submitted_at,
+        COALESCE((SELECT is_active FROM employees WHERE user_id=a.evaluee_user_id),1) AS evaluee_active
       FROM scoring360_assignments a
       LEFT JOIN scoring360_responses r ON r.assignment_id = a.id
       WHERE a.id = ${sqlValue(assignmentId)}
@@ -1763,6 +1766,9 @@ async function submitScoring360(req, res) {
       skipped.push({ assignmentId, reason: "assignment_not_found" });
       continue;
     }
+    if(Number(assignment.evaluee_active)===0){
+      skipped.push({assignmentId,reason:'employee_inactive'});continue;
+    }
     if (publishedNames.has(assignment.evaluee_user_id)) {
       skipped.push({assignmentId,reason:'result_locked'});continue;
     }
@@ -1770,15 +1776,21 @@ async function submitScoring360(req, res) {
       skipped.push({ assignmentId, reason: "locked" });
       continue;
     }
-    await execSql(`
+    const changed=await execSql(`
       INSERT INTO scoring360_responses (id, assignment_id, cycle_id, evaluee_name, evaluator_name, score, comment, submitted_at)
-      VALUES (${sqlValue(randomUUID())}, ${sqlValue(assignment.id)}, ${sqlValue(cycleId)}, ${sqlValue(assignment.evaluee_name)},
-              ${sqlValue(evaluator)}, ${sqlValue(Math.round(score))}, ${sqlValue(comment)}, datetime('now'))
+      SELECT ${sqlValue(randomUUID())}, ${sqlValue(assignment.id)}, ${sqlValue(cycleId)}, ${sqlValue(assignment.evaluee_name)},
+              ${sqlValue(evaluator)}, ${sqlValue(Math.round(score))}, ${sqlValue(comment)}, datetime('now')
+      WHERE NOT EXISTS(SELECT 1 FROM employees WHERE user_id IN (${sqlValue(assignment.evaluee_user_id)},${sqlValue(evaluatorUserId)}) AND is_active=0)
+        AND EXISTS(SELECT 1 FROM scoring360_assignments WHERE id=${sqlValue(assignment.id)} AND COALESCE(status,'active')='active')
       ON CONFLICT(assignment_id) DO UPDATE SET
         score = excluded.score,
         comment = excluded.comment,
         submitted_at = datetime('now');
+      SELECT changes();
     `);
+    // execSql also prints the connection's busy_timeout pragma. Read the final
+    // changes() line, which belongs to this guarded INSERT/UPSERT.
+    if(Number(String(changed).trim().split(/\r?\n/).at(-1))!==1){skipped.push({assignmentId,reason:'assignment_status_changed'});continue;}
     saved += 1;
   }
   await performance.overview({clientSummary:true});

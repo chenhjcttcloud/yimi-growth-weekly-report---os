@@ -1,9 +1,10 @@
 import assert from 'node:assert/strict';
-import {mkdtemp,rm,readFile} from 'node:fs/promises';
+import {mkdtemp,readFile} from 'node:fs/promises';
 import {spawnSync} from 'node:child_process';
 import {tmpdir} from 'node:os';
 import path from 'node:path';
 import {createSsoRoster} from '../server/sso-roster.mjs';
+import {createEmployeeLifecycle} from '../server/employee-lifecycle.mjs';
 const dir=await mkdtemp(path.join(tmpdir(),'sso-roster-')),db=path.join(dir,'test.sqlite');
 function run(sql,json=false){const r=spawnSync('sqlite3',[...(json?['-json']:[]),db,sql],{encoding:'utf8'});if(r.status!==0)throw Error(r.stderr);return json?JSON.parse(r.stdout||'[]'):r.stdout;}
 const sql=v=>"'"+String(v).replaceAll("'","''")+"'";
@@ -25,5 +26,28 @@ try {
  assert(run('SELECT sync_note FROM employee_sso_logins',true)[0].sync_note.includes('权限'));
  const sameName=await sync({userId:'ou_other',name:'新同事'},'test-token');assert(sameName.active);assert.equal(run('SELECT COUNT(*) AS count FROM employees',true)[0].count,2);
  await assert.rejects(sync({name:'无身份'},'test-token'),/invalid_sso_identity/);
- console.log('SSO roster tests passed: first login, profile updates, user_id identity, department permissions, inactive account remains inactive');
+ const lifecycle=createEmployeeLifecycle({query:async s=>run(s,true),exec:async s=>run(s),sql});
+ for(const flag of ['is_resigned','is_frozen','is_unjoined']){
+  const id='sso-'+flag;
+  const guarded=createSsoRoster({query:async s=>run(s,true),exec:async s=>run(s),sql,lifecycle,getJson:async()=>({data:{user:{user_id:id,status:{[flag]:true}}}})});
+  assert.equal((await guarded({userId:id,name:'停用状态测试'},'fixture-token')).active,false,'new verified identity cannot enter while Feishu explicitly reports inactive');
+  assert(run(`SELECT end_date FROM employee_employment_periods WHERE employee_user_id=${sql(id)};`,true)[0].end_date);
+  const before=run(`SELECT * FROM employee_employment_periods WHERE employee_user_id=${sql(id)};`,true);
+  await guarded({userId:id,name:'停用状态测试'},'fixture-token');
+  assert.deepEqual(run(`SELECT * FROM employee_employment_periods WHERE employee_user_id=${sql(id)};`,true),before,'repeated inactive login preserves closed history');
+ }
+ run("INSERT INTO employees(user_id,name,is_active) VALUES('sso-existing','在职转停用',1);");
+ await lifecycle.observe('sso-existing','2026-09-01','manager');
+ const departmentFailure=createSsoRoster({query:async s=>run(s,true),exec:async s=>run(s),sql,lifecycle,getJson:async url=>{if(!url.includes('/users/'))throw Error('department_permission_denied');return {data:{user:{user_id:'sso-existing',status:{is_resigned:true},department_ids:['failing-department']}}};}});
+ assert.equal((await departmentFailure({userId:'sso-existing',name:'在职转停用'},'fixture-token')).active,false,'a later department failure does not discard the exact explicit inactive status');
+ assert(run("SELECT end_date FROM employee_employment_periods WHERE employee_user_id='sso-existing';",true)[0].end_date);
+ for(const [id,profile] of [['absent-status',{user_id:'absent-status'}],['string-status',{user_id:'string-status',status:{is_resigned:'true'}}],['missing-profile-id',{status:{is_resigned:true}}]]){
+  const unknown=createSsoRoster({query:async s=>run(s,true),exec:async s=>run(s),sql,getJson:async()=>({data:{user:profile}})});
+  assert.equal((await unknown({userId:id,name:'无明确停用状态'},'fixture-token')).active,true,'absence or malformed status is not departure evidence');
+ }
+ const mismatch=createSsoRoster({query:async s=>run(s,true),exec:async s=>run(s),sql,getJson:async()=>({data:{user:{user_id:'other-id',status:{is_resigned:true}}}})});
+ await assert.rejects(mismatch({userId:'mismatched-id',name:'不能串号'},'fixture-token'),/identity_mismatch/);
+ assert.equal(run("SELECT count(*) AS n FROM employees WHERE user_id='mismatched-id';",true)[0].n,0);
+ assert.equal(run('PRAGMA integrity_check;').trim(),'ok');
+ console.log('SSO roster tests passed: first login, user_id identity, permissions, sticky inactive, exact explicit departure on new/existing login, closed history, malformed/missing status and identity mismatch');
 } finally {console.log('Test artifacts retained:',dir);}

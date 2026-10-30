@@ -7,7 +7,7 @@ await mkdir('outputs/tests',{recursive:true});const dir=await mkdtemp(path.resol
 const suites=[
  'weekly-report-schedule','report-automation','live-report-sync','month-end-score-reminders','china-work-calendar','weighted-monthly',
  'security-lifecycle','setup-operations','reminder-reliability','monthly-handoffs','feishu-user-tokens',
- 'sso-roster','company-directory','employee-status-api','company-roster-ui','departments','system-settings','personal-scoring-reminders','feishu-leaders','feishu-department-sync','department-mirror-sync','department-mirror-scoring','department-mirror-ui','organization-layout',
+ 'sso-roster','company-directory','employee-status-api','employee-departure-api','employee-departure-manager','company-roster-ui','departments','system-settings','personal-scoring-reminders','feishu-leaders','feishu-department-sync','department-mirror-sync','department-mirror-scoring','department-mirror-ui','organization-layout',
  'personal-workspace','employee-preview','scoring360-policy','scoring-workbench',
  'scoring-workbench-ui','authorization-candidates','role-authorization','external-sharing-disabled','hardening-ui','automatic-performance','performance-policy-reads','personal-loading-scope','source-data-cache','management-client-data','management-transport','performance-loading','scoring-overview-loading','department-summary-loading','weighted-monthly-api','manager-reviews-ui','score-month-sync','month-end-reminders-api','app-select','business-workflow',
 ];

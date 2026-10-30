@@ -99,7 +99,16 @@ export function createDepartments({query,exec,sql,employees,beforeScore,resolveS
   if(!target?.frozen&&!leader.departmentIds.includes(department.id)&&!officialLeader&&local?.leader_mode!=='concurrent')throw Error('leader_must_be_department_member');
   if((await query(`SELECT 1 FROM all_department_leader_scores WHERE department_id=${sql(department.id)} AND month=${sql(body.month)} AND leader_user_id=${sql(department.leader_user_id)};`)).length)throw Error('result_locked');
   await beforeScore?.(body.month,leader.userId);
-  await exec(`INSERT INTO department_person_scores VALUES(${sql(department.id)},${sql(body.month)},${sql(department.leader_user_id)},${value},${sql(comment)},${sql(user.userId)},${sql(user.name)},datetime('now'));`);
+  // Recheck suspension in the write itself: either account can be stopped while
+  // the monthly scope is loading. Injected external rosters remain supported;
+  // normal runtime rosters are backed by employees, whose stopped rows survive.
+  await exec(`INSERT INTO department_person_scores SELECT ${sql(department.id)},${sql(body.month)},${sql(department.leader_user_id)},${value},${sql(comment)},${sql(user.userId)},${sql(user.name)},datetime('now') WHERE NOT EXISTS(SELECT 1 FROM employees WHERE user_id IN(${sql(department.leader_user_id)},${sql(user.userId)}) AND is_active<>1);`);
+  const saved=await query(`SELECT 1 FROM department_person_scores WHERE department_id=${sql(department.id)} AND month=${sql(body.month)} AND leader_user_id=${sql(department.leader_user_id)} AND scorer_user_id=${sql(user.userId)} AND score=${value} AND comment=${sql(comment)};`);
+  if(!saved.length){
+   if((await query(`SELECT 1 FROM employees WHERE user_id=${sql(department.leader_user_id)} AND is_active<>1;`)).length)throw Error('leader_inactive');
+   if((await query(`SELECT 1 FROM employees WHERE user_id=${sql(user.userId)} AND is_active<>1;`)).length)throw Error('account_inactive');
+   throw Error('result_locked');
+  }
  }
  async function dashboard(month,performance){
   const current=new Date().toLocaleDateString('sv-SE',{timeZone:'Asia/Shanghai'}).slice(0,7);

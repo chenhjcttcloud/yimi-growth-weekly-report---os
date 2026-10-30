@@ -61,7 +61,7 @@ export function createManagerReviews({query,exec,sql,organization,reports,isBoss
  }
  const frozenIds=(state,month)=>[...state.frozen.keys()].map(k=>JSON.parse(k)).filter(([m])=>m===month).map(([,id])=>id);
  async function tasks(user,month){
-  month=validMonth(month||monthNow());const state=await snapshot(),mine=[...new Set([...state.plans.keys(),...frozenIds(state,month)])].map(id=>planFor(state,month,id)).filter(p=>p?.kind==='manager'&&p.expectedIds.includes(user.userId)&&state.people.get(user.userId)?.active);
+  month=validMonth(month||monthNow());const state=await snapshot(),mine=[...new Set([...state.plans.keys(),...frozenIds(state,month)])].map(id=>planFor(state,month,id)).filter(p=>p?.kind==='manager'&&p.expectedIds.includes(user.userId)&&state.people.get(user.userId)?.active&&(p.employee.active||state.scores.some(s=>s.month===month&&s.employee_user_id===p.employee.userId&&s.evaluator_user_id===user.userId)));
   const ids=new Set(mine.map(p=>p.employee.userId)),evidence=ids.size&&reports?await reports():[];
   const published=await query(`SELECT employee_user_id FROM all_monthly_weighted_results WHERE month=${sql(month)} UNION SELECT employee_user_id FROM performance_results WHERE month=${sql(month)} AND kind='collaboration';`);
   return {month,canReview:mine.length>0,hasResponsibilities:state.handoffs.some(h=>h.to_user_id===user.userId)||[...state.plans.values(),...state.frozen.values()].some(p=>p.kind==='manager'&&p.expectedIds.includes(user.userId)),weights:{manager:30,peers:70},tasks:mine.map(p=>{const saved=state.scores.find(s=>s.month===month&&s.employee_user_id===p.employee.userId&&s.evaluator_user_id===user.userId);return {employeeUserId:p.employee.userId,name:p.employee.name,department:p.employee.department,score:saved?.score??null,comment:saved?.comment||'',submitted:Boolean(saved),locked:Boolean(saved)||published.some(r=>r.employee_user_id===p.employee.userId),frozen:Boolean(p.frozenAt),reports:evidence.filter(r=>r.employeeUserId===p.employee.userId&&r.month===month).map(r=>({id:r.id,start:r.start,end:r.end,facts:r.evidence,aiReference:r.candidate,status:r.status}))};})};
@@ -72,12 +72,21 @@ export function createManagerReviews({query,exec,sql,organization,reports,isBoss
   if(body.employeeUserId===user.userId)throw Error('self_scoring_forbidden');
   let state=await snapshot(),plan=planFor(state,month,body.employeeUserId);
   if(!plan)throw Error('employee_not_employed');
+  if(!state.people.get(body.employeeUserId)?.active)throw Error('employee_inactive');
   if(!state.people.get(user.userId)?.active||plan.kind!=='manager'||!plan.expectedIds.includes(user.userId))throw Error('not_your_subordinate');
   await freeze(month,body.employeeUserId,'manager');state=await snapshot();plan=planFor(state,month,body.employeeUserId);
-  if(!plan.expectedIds.includes(user.userId))throw Error('not_your_subordinate');
+  if(!state.people.get(body.employeeUserId)?.active)throw Error('employee_inactive');
+  if(!plan)throw Error('employee_not_employed');
+  if(!state.people.get(user.userId)?.active||!plan.expectedIds.includes(user.userId))throw Error('not_your_subordinate');
   const locked=await query(`SELECT 1 FROM monthly_manager_scores WHERE month=${sql(month)} AND employee_user_id=${sql(body.employeeUserId)} AND evaluator_user_id=${sql(user.userId)} UNION SELECT 1 FROM all_monthly_weighted_results WHERE month=${sql(month)} AND employee_user_id=${sql(body.employeeUserId)} UNION SELECT 1 FROM performance_results WHERE month=${sql(month)} AND employee_user_id=${sql(body.employeeUserId)} AND kind='collaboration';`);if(locked.length)throw Error('result_locked');
   const evidence={employee:plan.employee,evaluatorUserId:user.userId,evaluatorName:user.name,expectedIds:plan.expectedIds,weights:{manager:30,peers:70}};
-  await exec(`INSERT INTO monthly_manager_scores(month,employee_user_id,evaluator_user_id,score,comment,snapshot_json) VALUES(${sql(month)},${sql(body.employeeUserId)},${sql(user.userId)},${round(value)},${sql(comment)},${sql(JSON.stringify(evidence))});`);
+  // Preserve frozen scopes and submitted history, but an account stopped while
+  // this request was loading must not receive a new grade.
+  await exec(`INSERT INTO monthly_manager_scores(month,employee_user_id,evaluator_user_id,score,comment,snapshot_json) SELECT ${sql(month)},${sql(body.employeeUserId)},${sql(user.userId)},${round(value)},${sql(comment)},${sql(JSON.stringify(evidence))} WHERE EXISTS(SELECT 1 FROM employees WHERE user_id=${sql(body.employeeUserId)} AND is_active=1) AND EXISTS(SELECT 1 FROM employees WHERE user_id=${sql(user.userId)} AND is_active=1);`);
+  if(!(await query(`SELECT 1 FROM monthly_manager_scores WHERE month=${sql(month)} AND employee_user_id=${sql(body.employeeUserId)} AND evaluator_user_id=${sql(user.userId)};`)).length){
+   if(!(await query(`SELECT 1 FROM employees WHERE user_id=${sql(body.employeeUserId)} AND is_active=1;`)).length)throw Error('employee_inactive');
+   throw Error('not_your_subordinate');
+  }
  }
  async function handoffOverview(month=monthNow()){
   validMonth(month);const state=await snapshot(),published=new Set((await query(`SELECT employee_user_id FROM all_monthly_weighted_results WHERE month=${sql(month)} UNION SELECT employee_user_id FROM performance_results WHERE month=${sql(month)} AND kind='collaboration';`)).map(r=>r.employee_user_id));

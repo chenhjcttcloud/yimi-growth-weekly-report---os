@@ -59,6 +59,11 @@ interface DirectorySyncResult {
   failed:number;
   failedUserIds?:string[];
   notReturnedLocalCount?:number;
+  confirmedInactiveCount?:number;
+  confirmedInactiveUserIds?:string[];
+  missingStatusCheckedCount?:number;
+  unverifiedMissingCount?:number;
+  unverifiedMissingUserIds?:string[];
   missingNames:number;
   scannedDepartments:number;
   coverage:'company'|'visible_scope';
@@ -286,12 +291,12 @@ export function SettingsPage({ access,onOpenScoringSetup }: SettingsPageProps) {
   const [managedEmployeeState, setManagedEmployeeState] = useState<"idle" | "saving" | "saved" | "error">("idle");
   const [employeeMessage,setEmployeeMessage]=useState("");
   const [employeeQuery,setEmployeeQuery]=useState('');
-  const [employeeFilter,setEmployeeFilter]=useState<'all'|'active'|'inactive'>('all');
+  const [employeeFilter,setEmployeeFilter]=useState<'all'|'active'|'inactive'>('active');
   const [employeeLoadError,setEmployeeLoadError]=useState('');
   const [employeeLoading,setEmployeeLoading]=useState(false);
   const [directoryLastSync,setDirectoryLastSync]=useState<DirectorySyncResult|null>(null);
   const [directoryStatusError,setDirectoryStatusError]=useState('');
-  const directoryNeedsAttention=Boolean(directoryLastSync&&(directoryLastSync.incomplete||Number(directoryLastSync.failed)>0||Number(directoryLastSync.missingNames)>0));
+  const directoryNeedsAttention=Boolean(directoryLastSync&&(directoryLastSync.incomplete||Number(directoryLastSync.failed)>0||Number(directoryLastSync.missingNames)>0||Number(directoryLastSync.unverifiedMissingCount)>0));
   const filteredManagedEmployees = useMemo(()=>managedEmployees.filter(employee=>
     (employeeFilter==='all'||employee.active===(employeeFilter==='active'))&&
     `${employee.name} ${employee.department} ${employee.userId}`.toLowerCase().includes(employeeQuery.trim().toLowerCase())
@@ -373,8 +378,8 @@ export function SettingsPage({ access,onOpenScoringSetup }: SettingsPageProps) {
       if(!response.ok||!result.ok)throw Error(result.error||'directory_sync_failed');
       setDirectoryLastSync(result);setDirectoryStatusError('');
       await loadManagedEmployees();await loadDirectoryStatus();
-      const summary=`本次读取 ${Number(result.total)||0} 人，新增 ${Number(result.created)||0} 人，更新 ${Number(result.updated)||0} 人，保留已停用 ${Number(result.preservedInactive)||0} 人。`;
-      const warning=!result.scopeComplete||result.coverage!=='company'?'当前仅覆盖飞书授权范围，尚不能确认全公司已纳入。':result.incomplete||result.failed||result.missingNames?'仍有资料未补全，请查看下方同步详情。':'已完成本次公司人员同步。';
+      const summary=`本次读取 ${Number(result.total)||0} 人，新增 ${Number(result.created)||0} 人，更新 ${Number(result.updated)||0} 人，保留已停用 ${Number(result.preservedInactive)||0} 人。`+(Number(result.confirmedInactiveCount)>0?`根据飞书状态自动停用 ${result.confirmedInactiveCount} 人。`:'');
+      const warning=!result.scopeComplete||result.coverage!=='company'?'当前仅覆盖飞书授权范围，尚不能确认全公司已纳入。':Number(result.unverifiedMissingCount)>0?`另有 ${result.unverifiedMissingCount} 人的账号状态待核查，请查看下方同步详情。`:result.incomplete||result.failed||result.missingNames?'仍有资料未补全，请查看下方同步详情。':'已完成本次公司人员同步。';
       setEmployeeMessage(summary+warning);setManagedEmployeeState('saved');
     }catch(error){
       const code=error instanceof Error?error.message:'';
@@ -676,7 +681,7 @@ export function SettingsPage({ access,onOpenScoringSetup }: SettingsPageProps) {
             {managedEmployeeState==='saving'?'正在同步公司人员…':'同步公司全部人员'}
           </button>
         </div>
-        <p className="company-roster-copy">从飞书收录公司人员，无需先登录成长 OS。可在这里停用或恢复账号；恢复从当天生效，停用期间不补记缺交。飞书同步保留人工停用状态，历史记录继续保留。</p>
+        <p className="company-roster-copy">默认显示在职人员。飞书确认离职或停用后，账号自动停用，不再登录、参与评分任务或接收提醒；周报与成绩保留在「已停用」名单。可手动停用或恢复，恢复从当天生效，停用期间不补记缺交，飞书同步不会自动恢复已停用账号。</p>
         <div className="company-roster-metrics" aria-label="公司人员统计">
           <div><span>已收录人员</span><strong>{managedEmployees.length}<small>人</small></strong></div>
           <div><span>在职</span><strong>{managedEmployees.filter(employee=>employee.active).length}<small>人</small></strong></div>
@@ -689,16 +694,18 @@ export function SettingsPage({ access,onOpenScoringSetup }: SettingsPageProps) {
         </div>
         {directoryStatusError&&<p className="company-roster-warning" role="status">{directoryStatusError}</p>}
         {directoryLastSync&&<div className={`company-roster-result ${directoryNeedsAttention||!directoryLastSync.scopeComplete||directoryLastSync.coverage!=='company'?'is-incomplete':''}`} role="status">
-          <strong>{!directoryLastSync.scopeComplete||directoryLastSync.coverage!=='company'?'当前仅同步了飞书授权范围内人员':directoryNeedsAttention?'人员已收录，部分资料仍待补全':'本次公司人员同步已完成'}</strong>
+          <strong>{!directoryLastSync.scopeComplete||directoryLastSync.coverage!=='company'?'当前仅同步了飞书授权范围内人员':Number(directoryLastSync.unverifiedMissingCount)>0?'人员已收录，部分账号状态待核查':directoryNeedsAttention?'人员已收录，部分资料仍待补全':'本次公司人员同步已完成'}</strong>
           <p>读取 {directoryLastSync.total??0} 人 · 扫描 {directoryLastSync.scannedDepartments??0} 个部门 · 新增 {directoryLastSync.created??0} 人 · 更新 {directoryLastSync.updated??0} 人 · 保留停用 {directoryLastSync.preservedInactive??0} 人</p>
+          {Number(directoryLastSync.confirmedInactiveCount)>0&&<p>根据飞书明确返回的账号状态，已自动停用 {directoryLastSync.confirmedInactiveCount} 人；不再登录、参与评分任务或接收提醒，历史周报与成绩保留。</p>}
           {(!directoryLastSync.scopeComplete||directoryLastSync.coverage!=='company')&&<p>尚不能确认全公司已纳入。请将飞书应用的通讯录可见范围设为「全部员工」，再重新同步。</p>}
           {Number(directoryLastSync.missingNames)>0&&<p>{directoryLastSync.missingNames} 人的姓名待补全，请检查「获取用户基本信息」权限及应用发布状态。已收录的 user_id 和已有姓名会保留。</p>}
           {Number(directoryLastSync.failed)>0&&<p>{directoryLastSync.failed} 人的信息未能完整获取；原有数据保留，请核实权限后重试。</p>}
-          {Number(directoryLastSync.notReturnedLocalCount)>0&&<p>另有 {directoryLastSync.notReturnedLocalCount} 个原有账号本次未返回，已保留，请核实。</p>}
+          {Number(directoryLastSync.unverifiedMissingCount)>0&&<p>{directoryLastSync.unverifiedMissingCount} 个原有在职账号本次未返回，飞书尚未明确其离职或停用状态，已保留待核查；名单缺失不会直接判定为离职。</p>}
+          {directoryLastSync.unverifiedMissingCount==null&&Number(directoryLastSync.notReturnedLocalCount)>0&&<p>另有 {directoryLastSync.notReturnedLocalCount} 个原有账号本次未返回，历史记录已保留；可重新同步核查账号状态。</p>}
         </div>}
         {employeeMessage&&<p role={managedEmployeeState === "error"?"alert":"status"} className={`company-roster-message ${managedEmployeeState==='error'?'is-error':''}`}>{employeeMessage}</p>}
         <div className="company-roster-toolbar">
-          <div className="company-roster-filters" aria-label="筛选员工状态">{([{id:'all',label:'全部',count:managedEmployees.length},{id:'active',label:'在职',count:managedEmployees.filter(employee=>employee.active).length},{id:'inactive',label:'已停用',count:managedEmployees.filter(employee=>!employee.active).length}] as const).map(item=><button type="button" key={item.id} aria-pressed={employeeFilter===item.id} onClick={()=>setEmployeeFilter(item.id)}>{item.label}<span>{item.count}</span></button>)}</div>
+          <div className="company-roster-filters" aria-label="筛选员工状态">{([{id:'active',label:'在职',count:managedEmployees.filter(employee=>employee.active).length},{id:'inactive',label:'已停用',count:managedEmployees.filter(employee=>!employee.active).length},{id:'all',label:'全部',count:managedEmployees.length}] as const).map(item=><button type="button" key={item.id} aria-pressed={employeeFilter===item.id} onClick={()=>setEmployeeFilter(item.id)}>{item.label}<span>{item.count}</span></button>)}</div>
           <input type="search" aria-label="搜索公司员工" placeholder="搜索姓名、部门或 user_id" value={employeeQuery} onChange={event=>setEmployeeQuery(event.target.value)}/>
         </div>
         {employeeLoadError&&<p className="company-roster-message is-error" role="alert">{employeeLoadError}</p>}

@@ -39,10 +39,11 @@ async function fixture(name,mode='complete') {
       ('od-a','local-a','0','[]','缓存负责人',datetime('now'),'{"name":"部门甲","leader_user_id":"cached-leader"}'),
       ('od-b','local-b','0','[]','',datetime('now'),'{"name":"部门乙","leader_user_id":""}');`);
   if(mode==='cached-names')run(`UPDATE app_settings SET value_json='{"members":[{"userId":"unknown","name":"缓存人员姓名"}]}' WHERE key='identity_name_cache';`);
+  if(mode.startsWith('missing-'))run(`INSERT INTO employee_employment_periods(id,employee_user_id,start_date,source) VALUES('former-period','not-returned','2026-08-01','feishu');`);
   const originalRoles=run("SELECT key,value_json FROM app_settings WHERE key IN ('boss_view_members','scoring360_admin_members') ORDER BY key;",true);
   let originalSso=run('SELECT * FROM employee_sso_logins ORDER BY user_id;',true);
   const originalScoring={cycles:run('SELECT * FROM scoring360_cycles;',true),assignments:run('SELECT * FROM scoring360_assignments;',true),responses:run('SELECT * FROM scoring360_responses;',true)};
-  let currentMode=mode,concurrentSsoApplied=false;
+  let currentMode=mode,concurrentSsoApplied=false,stopFailureTriggered=false;
   const profiles={
     existing:{user_id:'existing',name:'已同步同事',department_ids:['od-a'],leader_user_id:'root-person'},
     stopped:{user_id:'stopped',name:'飞书中的停用同事',department_ids:['od-a'],status:{is_resigned:false}},
@@ -57,7 +58,7 @@ async function fixture(name,mode='complete') {
     if(id==='unknown'&&!['missing-names','cached-names','concurrent-sso'].includes(currentMode))value.name='后来补齐的姓名';
     if(id==='existing'&&currentMode==='cached-names')delete value.name;
     if(['existing','unknown'].includes(id)&&currentMode==='concurrent-sso')return {user_id:id,department_ids:['od-unresolved']};
-    if(id==='same-2'&&currentMode==='upstream-inactive')value.status={is_resigned:true};return value;
+    if(id==='same-2'&&currentMode==='upstream-inactive'||id==='existing'&&currentMode==='duplicate-inactive')value.status={is_resigned:true};return value;
   }
   const response=value=>({ok:true,status:200,json:async()=>value});
   const fetcher=async (input,options={})=>{
@@ -70,6 +71,7 @@ async function fixture(name,mode='complete') {
     assert.equal(url.searchParams.get('department_id_type'),'open_department_id','all department references must use open_department_id');
     const page=url.searchParams.get('page_token')||'';
     if(url.pathname==='/open-apis/contact/v3/scopes') {
+      if(currentMode==='missing-empty-company')return response({code:0,data:{department_ids:['0'],user_ids:[],has_more:false}});
       if(currentMode==='concurrent-sso'&&!concurrentSsoApplied) {
         concurrentSsoApplied=true;
         // Simulate verified SSO writes after the synchronizer's initial SELECT,
@@ -84,9 +86,10 @@ async function fixture(name,mode='complete') {
       assert.equal(page,'scope-second');
       return response({code:0,data:{department_ids:['od-b'],user_ids:['scope-only'],has_more:false}});
     }
-    if(url.pathname==='/open-apis/contact/v3/departments/0')return response({code:0,data:{department:{open_department_id:'0',name:'公司',member_count:currentMode==='mismatch-count'?6:7}}});
+    if(url.pathname==='/open-apis/contact/v3/departments/0')return response({code:0,data:{department:{open_department_id:'0',name:'公司',member_count:currentMode==='missing-empty-company'?0:currentMode==='mismatch-count'?6:7}}});
     if(url.pathname==='/open-apis/contact/v3/departments/0/children') {
       assert.equal(url.searchParams.get('fetch_child'),'true');
+      if(currentMode==='missing-empty-company')return response({code:0,data:{items:[],has_more:false}});
       if(currentMode==='repeated-page')return response({code:0,data:{items:[{open_department_id:'od-a',name:'部门甲',parent_department_id:'0'}],has_more:true,page_token:'repeated-token'}});
       if(!page)return response({code:0,data:{items:[{open_department_id:'od-a',name:'部门甲',parent_department_id:'0'}],has_more:true,page_token:'departments-second'}});
       assert.equal(page,'departments-second');
@@ -98,11 +101,12 @@ async function fixture(name,mode='complete') {
     }
     if(url.pathname==='/open-apis/contact/v3/users/find_by_department') {
       const id=url.searchParams.get('department_id');
+      if(currentMode==='missing-empty-company')return response({code:0,data:{items:[],has_more:false}});
       if(id==='0')return response({code:0,data:{items:[person('root-person')],has_more:false}});
       if(id==='od-a') {
         if(!page)return response({code:0,data:{items:[person('existing'),person('same-1')],has_more:true,page_token:'users-second'}});
         assert.equal(page,'users-second');
-        return response({code:0,data:{items:[person('existing'),person('stopped')],has_more:false}});
+        return response({code:0,data:{items:[{...person('existing'),...(currentMode==='duplicate-inactive'?{status:{}}:{})},person('stopped')],has_more:false}});
       }
       if(id==='od-b') {
         if(currentMode==='partial-scope')return {ok:false,status:403,json:async()=>({code:99991672,msg:'fixture permission required'})};
@@ -116,7 +120,25 @@ async function fixture(name,mode='complete') {
       throw Error('Unexpected department: '+id);
     }
     const user=url.pathname.match(/^\/open-apis\/contact\/v3\/users\/([^/]+)$/);
-    if(user)return response({code:0,data:{user:person(decodeURIComponent(user[1]))}});
+    if(user) {
+      const id=decodeURIComponent(user[1]);
+      if(id==='existing'&&currentMode==='missing-empty-company')return response({code:0,data:{user:{user_id:id,status:{is_resigned:true}}}});
+      if(id==='not-returned'&&currentMode.startsWith('missing-')) {
+        if(currentMode==='missing-network')throw Error('fixture network unavailable');
+        if(currentMode==='missing-permission')return {ok:false,status:403,json:async()=>({code:99991672,msg:'fixture permission required'})};
+        if(currentMode==='missing-not-found')return {ok:false,status:404,json:async()=>({code:40007,msg:'fixture user not found'})};
+        const value={user_id:id,name:'上游历史人员',status:{is_resigned:true}};
+        if(currentMode==='missing-status-absent')delete value.status;
+        if(currentMode==='missing-active')value.status={is_resigned:false,is_frozen:false,is_unjoined:false};
+        if(currentMode==='missing-mismatch')value.user_id='someone-else';
+        if(currentMode==='missing-frozen')value.status={is_frozen:true};
+        if(currentMode==='missing-unjoined')value.status={is_unjoined:true};
+        if(currentMode==='missing-string-flag')value.status={is_resigned:'true'};
+        if(currentMode==='missing-http500')return {ok:false,status:500,json:async()=>({code:0,data:{user:value}})};
+        return response({code:0,data:{user:value}});
+      }
+      return response({code:0,data:{user:person(id)}});
+    }
     throw Error('Unexpected external route blocked: '+url.pathname);
   };
   const realLifecycle=createEmployeeLifecycle({query:async statement=>run(statement,true),exec:async statement=>run(statement),sql,now:()=>new Date('2026-10-28T02:00:00Z')});
@@ -126,9 +148,11 @@ async function fixture(name,mode='complete') {
     sql,config:{feishuAppId:'cli_directory_fixture',feishuAppSecret:'fixture-secret'},fetcher,
     registerIdentity:async identity=>identities.push(identity),
     lifecycle:{
-      profile:async (...args)=>{employment.push({kind:'profile',args});if(mode==='upstream-inactive')return realLifecycle.profile(...args);},
-      observe:async (...args)=>{employment.push({kind:'observe',args});if(mode==='upstream-inactive')return realLifecycle.observe(...args);},
-      stop:async (...args)=>{employment.push({kind:'stop',args});if(mode==='upstream-inactive')return realLifecycle.stop(...args);},
+      profile:async (...args)=>{employment.push({kind:'profile',args});if(mode==='upstream-inactive'||mode.startsWith('missing-'))return realLifecycle.profile(...args);},
+      observe:async (...args)=>{employment.push({kind:'observe',args});if(mode==='upstream-inactive'||mode.startsWith('missing-'))return realLifecycle.observe(...args);},
+      stop:async (...args)=>{employment.push({kind:'stop',args});
+        if(mode==='missing-stop-retry'&&args[0]==='not-returned'&&!stopFailureTriggered) {stopFailureTriggered=true;throw Error('fixture employment write failed once');}
+        if(mode==='upstream-inactive'||mode.startsWith('missing-'))return realLifecycle.stop(...args);},
     },
   });
   function unchangedHistory({allowSso=false}={}){
@@ -229,6 +253,65 @@ await check('new departed Feishu accounts are retained without joining active em
   const restart=createEmployeeLifecycle({query:async statement=>test.run(statement,true),exec:async statement=>test.run(statement),sql,now:()=>new Date('2026-11-02T02:00:00Z')});
   await restart.initialize({});
   assert.deepEqual(test.run("SELECT * FROM employee_employment_periods WHERE employee_user_id='same-2';",true),periods,'a November restart cannot shift an October inactive discovery into November');
+  test.unchangedHistory();
+});
+
+for(const mode of ['missing-resigned','missing-frozen','missing-unjoined'])await check(`${mode}: an exact inactive profile stops a former active member without changing discovery totals or history`,async()=>{
+  const test=await fixture(mode,mode),result=await test.service.run();
+  assert.equal(result.total,7);assert.equal(result.scopeComplete,true);assert.equal(result.expectedCompanyTotal,7);
+  assert.equal(result.notReturnedLocalCount,1);assert.deepEqual(result.notReturnedLocalUserIds,['not-returned']);
+  assert.equal(result.confirmedInactiveCount,1);assert.deepEqual(result.confirmedInactiveUserIds,['not-returned']);
+  assert.equal(result.missingStatusCheckedCount,1);assert.equal(result.unverifiedMissingCount,0);assert.deepEqual(result.unverifiedMissingUserIds,[]);
+  assert.equal(test.run("SELECT is_active FROM employees WHERE user_id='not-returned';"),'0');
+  assert.equal(test.run("SELECT name FROM employees WHERE user_id='not-returned';"),'本地历史人员','a status-only verification must not replace historical profile data');
+  assert.deepEqual(test.run("SELECT start_date,end_date FROM employee_employment_periods WHERE employee_user_id='not-returned';",true),[{start_date:'2026-08-01',end_date:'2026-10-28'}]);
+  assert(test.employment.some(event=>event.kind==='stop'&&event.args[0]==='not-returned'));
+  const requests=test.requests.filter(request=>request.pathname.endsWith('/users/not-returned')).length;
+  test.unchangedHistory();
+  const again=await test.service.run();
+  assert.equal(again.confirmedInactiveCount,0);assert.equal(again.missingStatusCheckedCount,1);
+  assert.equal(test.requests.filter(request=>request.pathname.endsWith('/users/not-returned')).length,requests+1,'inactive profiles are rechecked so a failed employment closure can safely retry');
+  assert.equal(test.run("SELECT end_date FROM employee_employment_periods WHERE employee_user_id='not-returned';"),'2026-10-28');
+  test.unchangedHistory();assert.equal(test.run('PRAGMA integrity_check;'),'ok');
+});
+
+for(const mode of ['missing-status-absent','missing-active','missing-permission','missing-network','missing-mismatch','missing-http500','missing-not-found','missing-string-flag'])await check(`${mode}: unverified absence never stops a current employee`,async()=>{
+  const test=await fixture(mode,mode),result=await test.service.run();
+  assert.equal(result.total,7);assert.equal(result.scopeComplete,true,'former-profile uncertainty must not falsify current-directory coverage');
+  assert.equal(result.confirmedInactiveCount,0);assert.deepEqual(result.confirmedInactiveUserIds,[]);
+  assert.equal(result.missingStatusCheckedCount,1);assert.equal(result.unverifiedMissingCount,1);assert.deepEqual(result.unverifiedMissingUserIds,['not-returned']);
+  assert.equal(test.run("SELECT is_active FROM employees WHERE user_id='not-returned';"),'1');
+  assert.equal(test.run("SELECT count(*) FROM employee_employment_periods WHERE employee_user_id='not-returned' AND end_date IS NULL;"),'1');
+  assert(!test.employment.some(event=>event.kind==='stop'&&event.args[0]==='not-returned'));
+  assert.equal(test.run("SELECT is_active FROM employees WHERE user_id='stopped';"),'0','manually stopped profiles remain stopped');
+  test.unchangedHistory();
+});
+
+await check('an independently verified empty company still checks its final former active employees',async()=>{
+  const test=await fixture('missing-empty-company','missing-empty-company'),result=await test.service.run();
+  assert.equal(result.total,0);assert.equal(result.expectedCompanyTotal,0);assert.equal(result.scopeComplete,true);assert.equal(result.missingNames,0);
+  assert.equal(result.confirmedInactiveCount,2);assert.deepEqual(result.confirmedInactiveUserIds,['existing','not-returned']);
+  assert.equal(result.missingStatusCheckedCount,3);assert.equal(result.unverifiedMissingCount,0);
+  assert.equal(test.run('SELECT count(*) FROM employees WHERE is_active=1;'),'0');
+  assert.equal(test.run('SELECT count(*) FROM employees;'),'3','an empty upstream roster must not erase any employee record');
+  test.unchangedHistory();
+});
+
+await check('a sparse duplicate department profile does not erase an explicit inactive flag',async()=>{
+  const test=await fixture('duplicate-inactive','duplicate-inactive'),result=await test.service.run();
+  assert.equal(test.run("SELECT is_active FROM employees WHERE user_id='existing';"),'0');
+  assert.equal(result.confirmedInactiveCount,1);assert.deepEqual(result.confirmedInactiveUserIds,['existing']);
+  assert(test.employment.some(event=>event.kind==='stop'&&event.args[0]==='existing'));
+  test.unchangedHistory();
+});
+
+await check('a transient employment closure failure retries even after the account is already inactive',async()=>{
+  const test=await fixture('missing-stop-retry','missing-stop-retry'),first=await test.service.run();
+  assert.equal(first.confirmedInactiveCount,1);assert(first.failedUserIds.includes('not-returned'));assert.equal(first.incomplete,true);
+  assert.equal(test.run("SELECT is_active FROM employees WHERE user_id='not-returned';"),'0','login must remain blocked even while closure retries');
+  assert.equal(test.run("SELECT count(*) FROM employee_employment_periods WHERE employee_user_id='not-returned' AND end_date IS NULL;"),'1');
+  const second=await test.service.run();assert.equal(second.confirmedInactiveCount,0);assert.equal(second.failed,0);assert.equal(second.unverifiedMissingCount,0);
+  assert.equal(test.run("SELECT end_date FROM employee_employment_periods WHERE employee_user_id='not-returned';"),'2026-10-28');
   test.unchangedHistory();
 });
 

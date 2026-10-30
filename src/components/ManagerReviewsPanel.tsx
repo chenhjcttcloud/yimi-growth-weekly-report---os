@@ -4,7 +4,7 @@ import {scoreText} from './PerformanceUI';
 import {ReviewMonthPicker} from './ReviewMonthPicker';
 import '../styles/manager-reviews.css';
 
-const errors:Record<string,string>={not_your_subordinate:'该员工不在你的评分范围，请刷新名单。',result_locked:'本月评分已提交并锁定。',score_and_comment_required:'请填写 0–100 分和具体评价。',invalid_month:'请选择有效月份。',employee_not_employed:'员工在所选月份未在职，不能录入评分。',self_scoring_forbidden:'不能给自己评分。'};
+const errors:Record<string,string>={not_your_subordinate:'该员工不在你的评分范围，请刷新名单。',result_locked:'本月评分已提交并锁定。',score_and_comment_required:'请填写 0–100 分和具体评价。',invalid_month:'请选择有效月份。',employee_not_employed:'员工在所选月份未在职，不能录入评分。',employee_inactive:'员工已停用，不能继续评分，请刷新名单。',self_scoring_forbidden:'不能给自己评分。'};
 type Filter='all'|'pending'|'done';
 export function ManagerReviewsPanel({previewEmployeeId,month:sharedMonth,onBusyChange}:{previewEmployeeId?:string;month?:string;onBusyChange?:(busy:boolean)=>void}){
  const current=new Date().toLocaleDateString('sv-SE',{timeZone:'Asia/Shanghai'}).slice(0,7);
