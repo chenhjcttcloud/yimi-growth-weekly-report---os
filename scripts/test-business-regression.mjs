@@ -5,7 +5,7 @@ import path from 'node:path';
 const root=path.resolve(path.dirname(fileURLToPath(import.meta.url)),'..');process.chdir(root);
 await mkdir('outputs/tests',{recursive:true});const dir=await mkdtemp(path.resolve('outputs/tests/business-regression-'));
 const suites=[
- 'weekly-report-schedule','report-automation','live-report-sync','month-end-score-reminders','china-work-calendar','weighted-monthly',
+ 'weekly-report-schedule','report-automation','report-quality-scoring','report-quality-publication','report-quality-ui','pending-quality-aggregates','live-report-sync','month-end-score-reminders','china-work-calendar','weighted-monthly',
  'security-lifecycle','setup-operations','operations-runtime-alerts','production-readiness','reminder-reliability','reminder-preview-config','monthly-handoffs','feishu-user-tokens','scoring-timezones',
  'sso-roster','company-directory','employee-status-api','peer-stop-scope','employee-departure-api','employee-departure-manager','company-roster-ui','departments','system-settings','personal-scoring-reminders','feishu-leaders','feishu-department-sync','department-mirror-sync','department-mirror-scoring','department-mirror-ui','organization-layout',
  'personal-workspace','employee-preview','navigation-context','scoring360-policy','scoring-workbench',

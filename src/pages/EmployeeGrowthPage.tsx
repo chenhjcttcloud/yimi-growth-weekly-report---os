@@ -299,7 +299,7 @@ export function EmployeeGrowthPage({ selectedPeriodId, selectedEmployee, onSelec
   const latestClosure = closureInsight?.pairs.find((pair) =>
     pair.currentWeek === selectedPeriod?.label || pair.currentWeek.includes(selectedPeriod?.label || "__missing__"),
   ) ?? (isCurrentPeriod ? closureInsight?.latestPair : undefined);
-  const growthTrendWeeks = chronologicalWeeks.slice(-8);
+  const growthTrendWeeks = chronologicalWeeks.filter((week) => week.qualityAvailable !== false).slice(-8);
   const weeks = [...chronologicalWeeks].reverse();
   const tasks = tasksForEmployee(employee.name).slice(0, 5);
   const insightPeriodId = selectedPeriod?.id || selectedPeriodId;
@@ -676,8 +676,11 @@ export function EmployeeGrowthPage({ selectedPeriodId, selectedEmployee, onSelec
   const selectedWeekIndex = selectedWeek
     ? chronologicalWeeks.findIndex((week) => weekCardId(week) === weekCardId(selectedWeek))
     : -1;
-  const selectedWeekTotal = selectedWeek?.total ?? chronologicalWeeks.at(-1)?.total ?? employee.averageScore;
-  const previousWeekTotal = selectedWeekIndex > 0 ? chronologicalWeeks[selectedWeekIndex - 1]?.total : undefined;
+  const heroWeek = selectedWeek ?? chronologicalWeeks.at(-1);
+  const selectedWeekQualityAvailable = heroWeek?.qualityAvailable !== false;
+  const selectedWeekTotal = heroWeek?.total ?? employee.averageScore;
+  const previousWeek = selectedWeekIndex > 0 ? chronologicalWeeks[selectedWeekIndex - 1] : undefined;
+  const previousWeekTotal = previousWeek?.qualityAvailable === false ? undefined : previousWeek?.total;
   const weekDelta = previousWeekTotal === undefined
     ? (isCurrentPeriod ? employee.trend : 0)
     : Math.round((selectedWeekTotal - previousWeekTotal) * 10) / 10;
@@ -722,7 +725,7 @@ export function EmployeeGrowthPage({ selectedPeriodId, selectedEmployee, onSelec
             </p>
             <h2 className="v2-hero-summary">{truncate(heroSummary, 180)}</h2>
             <div className="v2-hero-chips">
-              <span className="v2-hero-chip">当期等级 {selectedWeek?.level || employee.level}</span>
+              <span className="v2-hero-chip">当期等级 {selectedWeekQualityAvailable ? selectedWeek?.level || employee.level : '待分析'}</span>
               <span className="v2-hero-chip">累计 {employee.reportCount} 周记录</span>
               <span className="v2-hero-chip">累计迟交 {employee.lateCount} 次</span>
               {closureInsight ? <span className="v2-hero-chip">{closureInsight.persona}</span> : null}
@@ -730,11 +733,13 @@ export function EmployeeGrowthPage({ selectedPeriodId, selectedEmployee, onSelec
             </div>
           </div>
           <div className="v2-hero-score">
-            <span className="v2-hero-score-num">{selectedWeekTotal}</span>
+            <span className="v2-hero-score-num">{selectedWeekQualityAvailable ? selectedWeekTotal : '待分析'}</span>
             <span className="v2-hero-score-label">{selectedPeriod?.label || "当期"}评分</span>
             <span className={`v2-hero-score-delta ${weekDelta < 0 ? "is-down" : ""}`}>
-              {previousWeekTotal === undefined ? (
-                "首期记录"
+              {!selectedWeekQualityAvailable ? (
+                '分析完成后自动更新'
+              ) : previousWeekTotal === undefined ? (
+                previousWeek?.qualityAvailable === false ? '上期评分待分析' : '首期记录'
               ) : (
                 <>
                   <TrendingUp size={13} />
@@ -1212,7 +1217,7 @@ export function EmployeeGrowthPage({ selectedPeriodId, selectedEmployee, onSelec
                 <div className="v2-timeline-head">
                   <strong>{week.week}</strong>
                   <span className="v2-pill v2-pill-neutral">{week.status}</span>
-                  <span className="v2-pill v2-pill-green">{week.total} 分</span>
+                  <span className={`v2-pill ${week.qualityAvailable === false ? 'v2-pill-neutral' : 'v2-pill-green'}`}>{week.qualityAvailable === false ? '待分析' : `${week.total} 分`}</span>
                 </div>
                 <p>{expanded ? week.resultSummary : truncate(week.resultSummary, COLLAPSED_RESULT_LENGTH)}</p>
                 <small>{expanded ? problemText : truncate(problemText, COLLAPSED_PROBLEM_LENGTH)}</small>

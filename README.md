@@ -234,7 +234,7 @@ npm run static:validate
 
 ## English Summary
 
-**EMIE Growth OS** turns weekly reports into personal growth trajectories, organizational issue radar, and real-world execution loops. It integrates Feishu reports, Kimi-powered multi-stage analysis, human review, task creation, reminders, collaboration scoring, and cross-period evidence tracking.
+**EMIE Growth OS** turns weekly reports into personal growth trajectories, organizational issue radar, and real-world execution loops. It integrates Feishu reports, Kimi-powered multi-stage analysis, automatic quality scoring with source evidence, task creation, reminders, collaboration scoring, and cross-period evidence tracking.
 
 The system is designed around one principle: AI should not merely write more comments. It should help people identify what matters, convert vague issues into verifiable actions, and preserve execution feedback as context for the next cycle.
 
@@ -253,15 +253,15 @@ The project is open-sourced under the [MIT License](LICENSE).
 
 See the Chinese sections above for architecture, setup, security boundaries, and contribution guidelines.
 
-### 月度结果与人工确认
+### 月度结果与自动评分
 
-- **个人最终结果**通过 `/api/personal/workspace` 按登录身份读取本人的月度最终结果、每周周报、教练分析与行动草稿。月度分数仍只取已确认结果；协作评分人、单条评分与审核过程不对员工公开。未确认结果不填充为 0。
-- **评分工作台**提供 HR/老板的公司级汇总、部门月度趋势、原始周报、提交时间、候选分、缺失与异常、协作明细、未完成评分人员及人工确认。
-- 质量候选按成果 30%、问题 25%、计划 25%、复盘 20% 加权，及时率不计入质量分。既有 AI 分析和摘要仅作候选参考；缺少四模块候选分时不凭空生成分数。
+- **个人最终结果**通过 `/api/personal/workspace` 按登录身份读取本人的月度最终结果、每周周报、教练分析与行动草稿。周报质量分自动生成，协作评分人和单条评分不对被评分员工公开；尚未完成分析或评分的结果不填充为 0。
+- **评分工作台**提供 HR/老板的公司级汇总、部门月度趋势、原始周报、提交时间、质量分、逐项评分理由与原文证据、缺失与异常、协作明细及未完成评分人员。周报质量评分不设置人工审核或确认节点。
+- 四模块各按 100 分标准化，默认按成果 30%、问题 25%、计划 25%、复盘 20% 加权。固定细则、单项得分、理由、原文引用及缺失证据随 AI 分析一起保存；程序校验分值、引用与加总关系后自动发布。及时率独立统计，不计入质量分，也不自动扣分。详见[四模块自动评分规则](docs/WEEKLY_QUALITY_SCORING_20261102.md)。
 - 周报按周期结束日归属月份，周五 20:00（北京时间）为提交截止，及时率分母为应交次数。已发布的周期及实际导入的周期构成应交范围；正式使用前应维护完整周期、在职名单和豁免名单，避免缺少周期导致应交统计不全。
 - 同事互评必须填写分数与评价；月度最终分按负责人或老板30%＋同事互评均分70%计算，两部分完成后自动发布，无需人工确认。
-- 周报质量与及时性审核确认须填写审核意见。及时性正当理由与人工扣分记录在管理快照中，默认扣分 0，系统不自动作出处罚。
-- 确认后保存审核人、时间、原始候选与审核快照，数据库禁止改写、删除历史结果，并锁定已发布月份的协作任务及响应。
+- 周报质量月分取当月已提交周报质量分的算术平均，全部已提交周报分析完成后自动生成。未交不作为质量 0 分计入；缺失模块由程序按 0 分处理。低分、低置信度及异常仅作提示，不触发人工审核或额外扣分；AI 调用失败、格式或证据校验失败时保留原文并重试，未完成前显示待分析。
+- 保存 AI 模型、生成时间、提示词及评分规则版本、来源版本和评分依据；自动结果保留计算快照。历史人工发布结果保持原值，未附细项证据的历史分析明确标记为旧记录，不伪造评分理由。月度协作评分仍按既有规则保存发布快照并锁定任务及响应。
 - 员工的协作评分任务独立于个人结果页，仅能提交本人被分配的任务，不能查看他人对自己的评分过程。
 - 管理原始数据不再打包进公开前端 JS，而由管理权限接口提供。现有 `canManageScoring360` 管理身份作为 HR 权限，范围为全公司。
 
@@ -293,7 +293,7 @@ npm run test:performance
 
 ### 个人月度成长工作区
 
-个人页以月份为节点，列出本月全部周次，保留未交、未到期和免交状态。支持本周焦点、上期承诺与本周证据、周报四模块参考画像，以及周报与互动、AI 教练、行动任务、成长轨迹四个工作区。月度最终分与每周 AI 参考分明确区分，原有确认和锁定规则保持有效。
+个人页以月份为节点，列出本月全部周次，保留未交、未到期和免交状态。支持本周焦点、上期承诺与本周证据、周报四模块参考画像，以及周报与互动、AI 教练、行动任务、成长轨迹四个工作区。周报质量自动评分并展示逐项理由与原文证据，月度质量均分与每周分数明确区分；历史已发布结果及月度协作评分锁定规则保持有效。
 
 评论、点赞、教练对话和任务草稿都按身份与周次隔离并保存到 SQLite。任务可编辑标题、说明、日期、验收指标与证据；关闭飞书创建时仅校验并保存草稿，不显示为已创建。实时 AI 未配置时提供明确提示；回看已存档点评或带有来源标记的辅助整理，不伪造实时回复。
 
@@ -309,7 +309,7 @@ npm run test:performance
 
 ### 协作分自动发布与本人催评
 
-协作分不再人工确认。某员工当月同事互评与负责人或老板评分均完成后，系统按30%/70%自动发布最终分并保存锁定快照；未完成时个人页不暴露候选均分、评分人或单条评分。周报质量、提交及时率及扣分仍按人工审核流程执行。
+协作分不再人工确认。某员工当月同事互评与负责人或老板评分均完成后，系统按30%/70%自动发布最终分并保存锁定快照；未完成时个人页不暴露候选均分、评分人或单条评分。周报质量与提交及时率也自动计算并发布，不设置人工审核节点，及时性不混入质量分、不自动扣分。
 
 个人页催评仅针对本人的未完成任务：发起/新建满 24 小时后可操作，同一评分人 24 小时内最多提醒一次，有数据库防重与发送记录。开放中的逾期未评分任务仍可补评。真实发送要求飞书凭据、机器人消息权限和 `SCORING360_REMINDER_ENABLED=true`；未配置时仅预览，不发送、不记录为已发送。验证：`node scripts/test-personal-scoring-reminders.mjs`。
 
@@ -323,13 +323,13 @@ npm run test:performance
 
 `system_policy_versions` 保存未来月份生效的四模块权重、周五截止时间、本人催评等待与冷却。后端周报候选分、及时性统计及催评读取所属月份版本；已生效规则不可覆盖，已发布快照不回算。定时飞书外发和 SSO 凭据仍由部署环境变量维护，保存规则不会自动开启外发。
 
-AI 页面保存服务地址、模型和加密密钥，后端实时追问立即使用，重启后恢复；密钥不回显、不进入审计日志。在飞书与数据集成中可配置自动收集及分析间隔，失败分析保留原文并在下次同步补算；正文和模型未变时复用缓存。请备份数据库并保持 SESSION_SECRET 稳定，否则无法解密已存密钥。
+AI 页面保存服务地址、模型和加密密钥，后端实时追问立即使用，重启后恢复；密钥不回显、不进入审计日志。在飞书与数据集成中可配置自动收集及分析间隔，失败分析保留原文并在下次同步补算；正文、模型和当前评分／提示词版本一致且详细评分校验通过时复用缓存。请备份数据库并保持 SESSION_SECRET 稳定，否则无法解密已存密钥。
 
 测试：`node scripts/test-system-settings.mjs`、`node scripts/test-departments.mjs`。
 
 ### 飞书官方汇报 → Kimi → 页面
 
-「系统设置 → 飞书与数据集成」保存应用凭据、模板名称、可选规则 ID 和首次同步日期，然后点击「立即同步飞书汇报」。后端直接使用应用身份调用 `report/v1/tasks/query`（需要 `report:task:readonly`），自动翻页并严格匹配模板；不依赖 Python、lark-cli 或前端重建。未填起始日期时读取本月，重复同步复用正文未变化且模型一致的分析。自动采集可在飞书与数据集成中保存开关和间隔；未保存时由 `LARK_REPORT_AUTO_SYNC_ENABLED` 提供默认值。
+「系统设置 → 飞书与数据集成」保存应用凭据、模板名称、可选规则 ID 和首次同步日期，然后点击「立即同步飞书汇报」。后端直接使用应用身份调用 `report/v1/tasks/query`（需要 `report:task:readonly`），自动翻页并严格匹配模板；不依赖 Python、lark-cli 或前端重建。未填起始日期时读取本月，重复同步仅复用正文、模型、评分及提示词版本一致且详细评分有效的分析。自动采集可在飞书与数据集成中保存开关和间隔；未保存时由 `LARK_REPORT_AUTO_SYNC_ENABLED` 提供默认值。
 
 周报和 Kimi 四模块参考分、点评、异常及行动候选保存于 SQLite；同步生成当前数据目录中的管理和个人页面投影。AI 请求有并发限制和 429/5xx 退避；失败记录保留周报原文，重试时只补分析。AI 不自动决定协作分、奖惩或迟交扣分，最终结果继续遵守系统现有发布规则。
 

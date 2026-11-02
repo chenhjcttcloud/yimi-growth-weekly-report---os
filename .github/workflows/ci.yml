@@ -23,6 +23,9 @@ jobs:
       - run: node scripts/test-weekly-report-schedule.mjs
       - run: node scripts/test-report-automation.mjs
       - run: node scripts/test-live-report-sync.mjs
+      - run: node scripts/test-report-quality-scoring.mjs
+      - run: node scripts/test-report-quality-publication.mjs
+      - run: node scripts/test-pending-quality-aggregates.mjs
       - run: node scripts/test-month-end-score-reminders.mjs
       - run: node scripts/test-china-work-calendar.mjs
       - run: node scripts/test-weighted-monthly.mjs

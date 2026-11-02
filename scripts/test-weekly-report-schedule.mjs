@@ -7,6 +7,7 @@ import {weeklyReportSchedule} from '../server/weekly-report-schedule.mjs';
 import {normalizeLiveReport,createLiveReportSync} from '../server/live-report-sync.mjs';
 import {createPerformance} from '../server/performance.mjs';
 import {createPersonalWorkspace} from '../server/personal-workspace.mjs';
+import {makeReportQualityAnalysis} from './report-quality-test-fixtures.mjs';
 const calendar=JSON.parse(await readFile('src/data/chinaWorkCalendar.json','utf8'));
 assert.equal(weeklyReportSchedule('2026-10-30',calendar).deadlineDate,'2026-10-30');
 assert.equal(weeklyReportSchedule('2026-09-25',calendar).deadlineDate,'2026-09-24');
@@ -31,7 +32,7 @@ const query=async s=>run(s,true),exec=async s=>run(s);run(await readFile('db/sch
 let items=[item('eve','2026-09-24T20:00:00+08:00'),item('sat','2026-02-14T20:00:00+08:00'),item('optional','2026-02-20T19:00:00+08:00')],aiCalls=0;
 const config={dataDir:dir,feishuAppId:'cli_test',feishuAppSecret:'fake',moonshotApiKey:'fake',moonshotBaseUrl:'https://ai.example.test',kimiFollowupModel:'fake'};
 const settings={overview:async()=>({report:{templateName:items[0].rule_name,ruleId:'r'}}),policyFor:async()=>({weights:[30,25,25,20],deadlineTime:'20:00'})};
-const fetcher=async url=>{let data;if(url.includes('tenant_access_token'))data={code:0,tenant_access_token:'fake'};else if(url.includes('tasks/query'))data={code:0,data:{items,has_more:false}};else{aiCalls++;data={choices:[{message:{content:JSON.stringify({scores:[80,80,80,80],summary:'测试分析',tasks:[]})}}]};}return {ok:true,status:200,json:async()=>data};};
+const fetcher=async(url,options)=>{let data;if(url.includes('tenant_access_token'))data={code:0,tenant_access_token:'fake'};else if(url.includes('tasks/query'))data={code:0,data:{items,has_more:false}};else{aiCalls++;const facts=JSON.parse(JSON.parse(options.body).messages.at(-1).content).report;data={choices:[{message:{content:JSON.stringify(makeReportQualityAnalysis(facts,{scores:[80,80,80,80],summary:'测试分析'}))}}]};}return {ok:true,status:200,json:async()=>data};};
 const sync=createLiveReportSync({query,exec,sql,config,settings,calendar:()=>calendar,fetcher,pause:async()=>{},writeStatus:async()=>{},refreshDirectory:async()=>{}});
 await sync.run({start:'2026-02-01',end:'2026-10-27'});
 // This fixture is employed for the entire window; inferred report discovery is a separate lifecycle test.

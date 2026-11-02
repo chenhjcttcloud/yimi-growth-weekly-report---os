@@ -23,11 +23,12 @@ const log=dir+'/providers.jsonl',control=dir+'/control.json';await writeFile(con
 const report={task_id:'report-staff',from_user_id:'staff',from_user_name:names.staff,department_name:'团队',rule_id:'weekly',rule_name:'周报（聚焦结果与协作）',commit_time:Date.parse('2026-10-23T19:00:00+08:00')/1000,form_contents:[{field_name:'本周成果',field_value:'完成3项验收，保留验收记录'},{field_name:'问题与挑战',field_value:'跨部门接口需核实验收口径'},{field_name:'下周工作计划与目标',field_value:'与负责人共同完成接口验证'},{field_name:'思考与复盘',field_value:'提前确认验收标准，减少返工'}]};
 await writeFile(dir+'/providers.mjs',`
 import {appendFile,readFile} from 'node:fs/promises';
+import {makeReportQualityAnalysis} from ${JSON.stringify(new URL('./report-quality-test-fixtures.mjs',import.meta.url).href)};
 ${clockSource}
 const names=${JSON.stringify(names)},report=${JSON.stringify(report)};let rotations=0;const expired=new Set();
 globalThis.fetch=async(url,options={})=>{
  const u=new URL(String(url)),body=JSON.parse(options.body||'{}'),flags=JSON.parse(await readFile(${JSON.stringify(control)},'utf8'));let value,status=200,kind='';
- if(u.hostname==='fixture-ai.invalid'){kind='ai';value={choices:[{message:{content:JSON.stringify({scores:[90,80,85,75],summary:'完成实际验收，接口口径需要确认。',questions:['如何验证接口验收标准？'],tasks:[{title:'确认接口验收',description:'与负责人核实验收口径',priority:'P1',metric:'形成验收记录',evidence:'接口需核实验收口径'}]})}}]};}
+ if(u.hostname==='fixture-ai.invalid'){kind='ai';const fields=report.form_contents.map(f=>f.field_value),facts={results:fields[0],problems:fields[1],nextPlan:fields[2],reflection:fields[3]};value={choices:[{message:{content:JSON.stringify(makeReportQualityAnalysis(facts,{summary:'完成实际验收，接口口径需要确认。',questions:['如何验证接口验收标准？'],tasks:[{title:'确认接口验收',description:'与负责人核实验收口径',priority:'P1',metric:'形成验收记录',evidence:'接口需核实验收口径'}]}))}}]};}
  else if(u.hostname!=='open.feishu.cn')throw Error('UNEXPECTED_PROVIDER_BLOCKED');
  else if(u.pathname.includes('/auth/v3/app_access_token')){kind='app_token';value={code:0,app_access_token:'fixture-app'};}
  else if(u.pathname.includes('/auth/v3/tenant_access_token')){kind='tenant_token';value={code:0,tenant_access_token:'fixture-tenant',expire:7200};}

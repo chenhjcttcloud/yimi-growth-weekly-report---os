@@ -766,8 +766,8 @@ export function departmentMeetingBriefsForPeriod(periodId?: string): DepartmentM
     const members = appData.employeeSummary.filter((employee) => employee.department === department);
     const currentRows = selectedPeriod ? weeklyForPeriod(selectedPeriod.id).filter((week) => week.department === department) : [];
     const previousRows = previousPeriod ? weeklyForPeriod(previousPeriod.id).filter((week) => week.department === department) : [];
-    const currentAverage = average(currentRows.map((week) => week.total));
-    const previousAverage = average(previousRows.map((week) => week.total));
+    const currentAverage = average(currentRows.filter((week) => week.qualityAvailable !== false).map((week) => week.total));
+    const previousAverage = average(previousRows.filter((week) => week.qualityAvailable !== false).map((week) => week.total));
     const deptClosure = closureInsights.filter((insight) => insight.department === department && insight.pairs.length > 0);
     const closureScore = average(deptClosure.map((insight) => insight.score));
     const relatedIssues = uniqueDepartmentIssues(
@@ -1189,8 +1189,8 @@ function buildMonthlyDepartmentReview(
     priorityCounts[item.priority] += 1;
     categoryCounts[item.category] += 1;
   });
-  const currentAverage = average(currentRows.map((week) => week.total));
-  const previousAverage = average(previousRows.map((week) => week.total));
+  const currentAverage = average(currentRows.filter((week) => week.qualityAvailable !== false).map((week) => week.total));
+  const previousAverage = average(previousRows.filter((week) => week.qualityAvailable !== false).map((week) => week.total));
   const scoreDelta = Math.round((currentAverage - previousAverage) * 10) / 10;
   const deptClosure = closureInsights.filter((insight) => normalizeDepartmentName(insight.department) === normalizedDepartment && insight.pairs.length > 0);
   const closureScore = average(deptClosure.map((insight) => insight.score));
@@ -1351,8 +1351,8 @@ export function monthlyMeetingBriefForMonth(monthKey = defaultMonthlyMeetingMont
     ...summaryFromInsights,
   ].slice(0, 7);
   const aiRecord = monthlyMeetingAiRecordFor(monthKey);
-  const averageScore = average(targetRows.map((row) => row.total));
-  const previousAverageScore = average(previousRows.map((row) => row.total));
+  const averageScore = average(targetRows.filter((row) => row.qualityAvailable !== false).map((row) => row.total));
+  const previousAverageScore = average(previousRows.filter((row) => row.qualityAvailable !== false).map((row) => row.total));
   const recurringIssues = agenda.filter((item) => agendaMatchesPrevious(item, previousAgenda));
   const newRisks = agenda.filter((item) => !agendaMatchesPrevious(item, previousAgenda));
   const fallbackImprovements = [

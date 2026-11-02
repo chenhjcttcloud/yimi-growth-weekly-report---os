@@ -1,6 +1,7 @@
 import {createHash,randomUUID} from 'node:crypto';
 import {weeklyReportSchedule,monthFridays,shiftDate} from './weekly-report-schedule.mjs';
 import {employedOn,employedInMonth} from './employee-lifecycle.mjs';
+import {REPORT_QUALITY_VERSION,reportQualityAssessment} from './report-quality-scoring.mjs';
 // Quality/statistics calculate automatically; required human ratings publish when complete.
 export function createPerformance({ query, exec, sql, readData, policyFor, managerReviews, calendar, now=()=>new Date() }) {
   const round = n => Math.round(n * 10) / 10;
@@ -92,14 +93,15 @@ WHERE COALESCE((SELECT calculation_hash FROM automatic_performance_results WHERE
       const c={...original,'本周成果摘要':original['本周成果摘要']||original.results||'', '问题摘要':original['问题摘要']||original.problems||'', '下周计划摘要':original['下周计划摘要']||original.nextPlan||'', '思考与复盘摘要':original['思考与复盘摘要']||original.reflection||''};
       const sections=[['本周成果摘要','成果分',.30],['问题摘要','问题分',.25],['下周计划摘要','计划分',.25],['思考与复盘摘要','复盘分',.20]].map(([text,key],index)=>[text,key,policy.weights[index]/100]);
       const missing=sections.filter(([key])=>!String(c[key]||'').trim()).map(([key])=>key);
-      const scores=sections.map(([,key,w])=>({value:c[key]==null||String(c[key]).trim()===''?NaN:Number(c[key]),w}));
-      const valid=scores.every(s=>Number.isFinite(s.value)&&s.value>=0&&s.value<=100);
+      const qualityAssessment=reportQualityAssessment(c);
+      const scores=sections.map(([,key,w],index)=>({value:qualityAssessment?qualityAssessment.scores[index]:c[key]==null||String(c[key]).trim()===''?NaN:Number(c[key]),w}));
+      const valid=scores.every(s=>Number.isFinite(s.value)&&s.value>=0&&s.value<=100)&&(c.ai?.version!==REPORT_QUALITY_VERSION||qualityAssessment!==null);
       const submitted=r.status!=='未交' && (!!r.submittedAt || sections.some(([key])=>String(c[key]||'').trim()));
       const ts=submitted?Date.parse(String(r.submittedAt).replace(' ','T')+(/(?:Z|[+-]\d\d:\d\d)$/.test(r.submittedAt)?'':'+08:00')):NaN;
       const schedule=weeklyReportSchedule(r.end,calendar?.()||{},policy.deadlineTime),deadline=Date.parse(schedule.dueAt||'');
       const late=submitted&&!schedule.exempt&&!schedule.calendarPending&&Number.isFinite(ts)&&ts>deadline;
       const status=schedule.exempt?'免交':schedule.calendarPending?'等待日历':!submitted?'未交':!Number.isFinite(ts)?'待核实时间':late?'迟交':'准时';
-      return {...r,status,schedule,scoringPolicy:policy, month:monthOf(r.end), submitted, timestampUnknown:submitted&&!Number.isFinite(ts),late,onTime:submitted&&!schedule.exempt&&!schedule.calendarPending&&Number.isFinite(ts)&&ts<=deadline, candidate:valid?round(scores.reduce((n,s)=>n+s.value*s.w,0)):null, missing, evidence:sections.map(([key])=>({module:key,text:c[key]||''})), anomalies:[...(Array.isArray(c.ai?.anomalies)?c.ai.anomalies:[]),...(c.source?.weekInference?['周次按提交日期推定，请核实补交或跨周汇报的归属']:[]),...missing.map(x=>`缺失：${x}`),...(!valid?['缺少有效的四模块候选分']:[]),...(submitted&&!Number.isFinite(ts)?['提交时间无法解析']:[])], suggestions:c.ai?.summary|| (missing.length?'请补齐缺失模块，并由主管核实事实与结果。':'请主管核实成果证据、问题影响和计划可验证性。')};
+      return {...r,status,schedule,scoringPolicy:policy,...(qualityAssessment?{qualityAssessment}:{}), month:monthOf(r.end), submitted, timestampUnknown:submitted&&!Number.isFinite(ts),late,onTime:submitted&&!schedule.exempt&&!schedule.calendarPending&&Number.isFinite(ts)&&ts<=deadline, candidate:valid?round(scores.reduce((n,s)=>n+s.value*s.w,0)):null, missing, evidence:sections.map(([key])=>({module:key,text:c[key]||''})), anomalies:[...(Array.isArray(c.ai?.anomalies)?c.ai.anomalies:[]),...(c.source?.weekInference?['周次按提交日期推定，请核实补交或跨周汇报的归属']:[]),...missing.map(x=>`缺失：${x}`),...(!valid?['缺少有效的四模块候选分']:[]),...(submitted&&!Number.isFinite(ts)?['提交时间无法解析']:[])], suggestions:c.ai?.summary|| (missing.length?'请补齐缺失模块，并由主管核实事实与结果。':'请主管核实成果证据、问题影响和计划可验证性。')};
     });
   }
   async function reports(options={}) {

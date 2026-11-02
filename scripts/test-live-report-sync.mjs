@@ -3,6 +3,8 @@ import {mkdtemp,mkdir,readFile} from 'node:fs/promises';
 import path from 'node:path';
 import {spawnSync} from 'node:child_process';
 import {createLiveReportSync,normalizeLiveReport,validateAnalysis} from '../server/live-report-sync.mjs';
+import {REPORT_QUALITY_VERSION} from '../server/report-quality-scoring.mjs';
+import {makeReportQualityAnalysis} from './report-quality-test-fixtures.mjs';
 
 // All upstream calls use fixtures. Databases and projections are retained.
 await mkdir('outputs/tests',{recursive:true});
@@ -19,7 +21,7 @@ try{
  assert.equal(normalizeLiveReport(item).end,'2026-10-16');
  assert.equal(normalizeLiveReport({...item,commit_time:Math.floor(Date.parse('2026-10-19T10:00:00+08:00')/1000)}).end,'2026-10-16');
  assert.throws(()=>validateAnalysis({scores:[101,0,0,0],summary:'invalid'}));
- let calls=0,pages=0,status,failAi=false,incoming=[item,{...item,task_id:'other',rule_id:'other',rule_name:'日报'}],stopOnPause='',stopBeforeImport='',stopAfterAi='',invalidateHistoryOnPause='',invalidateHistoryAfterAi='';
+ let calls=0,pages=0,status,failAi=false,forgeQuotes=false,lowConfidence=false,incoming=[item,{...item,task_id:'other',rule_id:'other',rule_name:'日报'}],stopOnPause='',stopBeforeImport='',stopAfterAi='',invalidateHistoryOnPause='',invalidateHistoryAfterAi='';
  const observed=[],settings={overview:async()=>({report:{templateName:item.rule_name,ruleId:'r1'}}),policyFor:async()=>({deadlineTime:'20:00'})};
  const config={dataDir:dir,feishuAppId:'cli_test',feishuAppSecret:'secret',moonshotApiKey:'key',moonshotBaseUrl:'https://api.example.com/v1',kimiFollowupModel:'test'};
  const fetcher=async(url,options)=>{
@@ -34,7 +36,13 @@ try{
    if(stopAfterAi){run(`UPDATE employees SET is_active=0 WHERE user_id=${sql(stopAfterAi)};`);stopAfterAi='';}
    if(invalidateHistoryAfterAi){run(`UPDATE employee_employment_periods SET end_date='2026-10-15' WHERE employee_user_id=${sql(invalidateHistoryAfterAi)};`);invalidateHistoryAfterAi='';}
    if(failAi)return {ok:false,status:429,json:async()=>({error:{type:'rate_limit'}})};
-   value={choices:[{message:{content:JSON.stringify({scores:[90,80,85,75],summary:'AI 测试点评',questions:['请核实接口验收标准'],tasks:[{title:'确认接口',description:'与负责人确认验收标准',priority:'P1',evidence:'接口待确认'}]})}}]};
+   const messages=JSON.parse(options.body).messages,payload=JSON.parse(messages.at(-1).content);
+   assert(messages[0].content.includes(REPORT_QUALITY_VERSION));
+   assert.deepEqual(Object.keys(payload).sort(),['previousPlan','report','week'],'submission time and timeliness status are not sent to content scoring');
+   const facts=payload.report;
+   const analysis=makeReportQualityAnalysis(facts,{summary:'AI 测试点评',questions:['请核实接口验收标准'],tasks:[{title:'确认接口',description:'与负责人确认验收标准',priority:'P1',evidence:'接口待确认'}],...(lowConfidence?{scores:[40,40,40,40],confidence:.1,anomalies:['数据矛盾待补充说明']}:{})});
+   if(forgeQuotes)analysis.modules[0].criteria[0].evidence=[{quote:'不存在于原文的虚构证据',type:'reported_fact'}];
+   value={choices:[{message:{content:JSON.stringify(analysis)}}]};
   }
   return {ok:true,status:200,json:async()=>value};
  };
@@ -57,8 +65,14 @@ try{
  assert.equal(insights['period-2026-10-16'].employeeInsights[0].coachSummary,'AI 测试点评');
  assert.equal(insights['period-2026-10-16'].attentionQueue.length,1);
  await sync.run(options);assert.equal(calls,1,'unchanged reports reuse cached analysis');assert.equal(count('weekly_reports'),1);
+ const firstContent=JSON.parse(savedReports('ou_1')[0].content_json);
+ assert.equal(firstContent.aiPromptVersion,REPORT_QUALITY_VERSION);assert.equal(firstContent.ai.version,REPORT_QUALITY_VERSION);assert.equal(firstContent.ai.modules.length,4);assert(firstContent.ai.modules[0].criteria[0].reason);assert.equal(firstContent.ai.modules[0].criteria[0].evidence[0].quote,'完成3项验收');
+ run("UPDATE weekly_reports SET content_json=json_set(content_json,'$.aiPromptVersion','old-prompt-version');");
+ const beforePromptChange=calls;await sync.run(options);assert.equal(calls,beforePromptChange+1,'prompt version changes invalidate otherwise unchanged cached analysis');assert.equal(status.analyzed,1);
+ const refreshedContent=JSON.parse(savedReports('ou_1')[0].content_json);assert(refreshedContent.aiAnalysisHistory.some(record=>record.ai.modules[0].criteria[0].reason===firstContent.ai.modules[0].criteria[0].reason&&record.sourceHash===firstContent.sourceHash),'reanalysis retains the prior explanation and source version');
  config.kimiFollowupModel='new-test-model';failAi=true;
  await sync.run(options);assert.equal(status.phase,'partial');assert.equal(status.failed,1);assert.equal(count('weekly_reports'),1,'AI failure retains the source report');
+ const pendingProjection=JSON.parse(await readFile(path.join(dir,'prototypeData.json')));assert.equal(pendingProjection.weekly_scores[0]['总分'],null,'failed AI is projected as pending, never zero');
  failAi=false;await sync.run(options);assert.equal(status.ok,true);assert.equal(status.analyzed,1,'retry completes previously failed analysis');
  await assert.rejects(sync.run({start:'bad',end:'2026-10-23'}),/invalid_sync_dates/);
 
@@ -154,6 +168,12 @@ try{
   assert.equal(run(`SELECT is_active FROM employees WHERE user_id=${sql(id)};`,true)[0].is_active,0);
  }
  for(const table of ['weekly_reminder_sends','monthly_score_reminder_deliveries','scoring360_reminder_sends'])assert.equal(count(table),0,'historical import does not schedule or deliver reminders');
+ // Invalid evidence retries automatically, retains the source, and never turns
+ // a failed analysis into zero. A valid low-confidence result then publishes.
+ incoming=[{...item,task_id:'quality-evidence',from_user_id:'quality-evidence',from_user_name:'证据校验样本'}];forgeQuotes=true;
+ const beforeForgery=calls;await sync.run(options);assert.equal(status.failed,1);assert.equal(calls,beforeForgery+4,'invalid quoted evidence follows the automatic retry path');assert.equal(savedReports('quality-evidence').length,1);assert.equal(JSON.parse(savedReports('quality-evidence')[0].content_json).ai,undefined);
+ forgeQuotes=false;lowConfidence=true;await sync.run(options);assert.equal(status.ok,true);assert.equal(status.analyzed,1);const lowContent=JSON.parse(savedReports('quality-evidence')[0].content_json);assert.deepEqual(lowContent.ai.scores,[40,40,40,40]);assert.equal(lowContent.ai.modules[0].confidence,.1);assert(lowContent.ai.anomalies.includes('数据矛盾待补充说明'));
+ data=JSON.parse(await readFile(path.join(dir,'prototypeData.json')));assert.equal(data.weekly_scores.find(r=>r.user_id==='quality-evidence')['总分'],40,'low scores, confidence and anomalies do not create an approval gate');
  assert.equal(run('PRAGMA integrity_check;').trim(),'ok');
  console.log('live report sync tests passed: pagination, templates, normalization, AI validation, persistence, historical projections, cache/retry, inactive mixed/all batches, no empty imports, pre-import/queued/in-flight stop, closed-history maintenance allowlist and rechecks, no reactivation, zero real upstream requests');
 }finally{console.log('Test artifacts retained:',dir);}

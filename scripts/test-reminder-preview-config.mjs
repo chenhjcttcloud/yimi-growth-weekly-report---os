@@ -5,7 +5,7 @@ import {createHmac,randomUUID} from 'node:crypto';
 import path from 'node:path';
 
 await mkdir('outputs/tests',{recursive:true});const dir=await mkdtemp(path.resolve('outputs/tests/reminder-preview-config-')),db=dir+'/test.sqlite',data=dir+'/data';await mkdir(data);
-const run=(statement,json=false)=>{const r=spawnSync('sqlite3',['-bail',...(json?['-json']:[]),db],{input:statement,encoding:'utf8'});assert.equal(r.status,0,r.stderr);return json?JSON.parse(r.stdout||'[]'):r.stdout.trim();};
+const run=(statement,json=false)=>{const r=spawnSync('sqlite3',['-bail','-cmd','.timeout 5000',...(json?['-json']:[]),db],{input:statement,encoding:'utf8'});assert.equal(r.status,0,r.stderr);return json?JSON.parse(r.stdout||'[]'):r.stdout.trim();};
 run(await readFile('db/schema.sql','utf8'));
 run("INSERT INTO employees(user_id,name,department) VALUES('admin','管理员','团队'),('staff','员工','团队'),('peer','同事','团队'); INSERT INTO scoring360_cycles(id,label,start_date,end_date,status,launch_at) VALUES('oct','十月','2026-10-01','2026-10-31','open','2026-10-01T00:00:00Z'); INSERT INTO scoring360_assignments(id,cycle_id,evaluee_name,evaluator_name,evaluee_user_id,evaluator_user_id) VALUES('old-a','oct','员工','同事','staff','peer');");
 for(const name of ['prototypeData','scoring360','kimiInsights','kimiInsightsByPeriod','monthlyMeetingInsights'])await writeFile(data+'/'+name+'.json',JSON.stringify(name==='prototypeData'?{meta:{periods:[]},employee_summary:[],weekly_scores:[]}:name==='scoring360'?{cycles:[],assignments:[],responses:[]}:{}));
