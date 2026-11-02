@@ -1926,15 +1926,22 @@ async function sendScoring360Reminder(req, res) {
   const kind = body.kind === "followup" ? "followup" : "launch";
   const evaluatorUserId = String(body.evaluatorUserId || "").trim();
   const requestedCycleId = String(body.cycleId || "").trim();
+  const dryRun = body.dryRun !== false;
   const cycleId = requestedCycleId
-    ? await resolveScoring360CycleId(requestedCycleId)
+    ? (await querySqlRows(`SELECT id FROM scoring360_cycles WHERE id=${sqlValue(requestedCycleId)} LIMIT 1;`))[0]?.id
     : kind === "launch"
-      ? await ensureScoring360CycleForLaunchDate(scoring360ActiveDate())
+      ? (await querySqlRows(`SELECT id FROM scoring360_cycles WHERE id=${sqlValue(scoring360CycleForLaunchDate(scoring360ActiveDate()).id)} LIMIT 1;`))[0]?.id
       : await resolveScoring360CycleId("");
+  // Notification previews must never create a month or guess who rates whom.
+  // Manual preparation and explicit configuration belong to the workbench.
+  if (!cycleId) {
+    if (!dryRun) return sendJson(res,409,{ok:false,error:'scoring_cycle_not_prepared'});
+    return sendJson(res,200,{ok:true,dryRun:true,cycle:null,count:0,sent:0,dryRunCount:0,skipped:0,failed:0,results:[],requiresConfiguration:true,reason:'scoring_cycle_not_prepared'});
+  }
   const result = await runScoring360Reminder({
     cycleId,
     kind,
-    dryRun: body.dryRun !== false,
+    dryRun,
     force: Boolean(body.force),
     evaluatorUserId,
     source: "manual",
@@ -2214,7 +2221,7 @@ ${dueText}
 
 function formatChineseDateTime(value) {
   if (!value) return "";
-  const date = new Date(String(value).replace(" ", "T"));
+  const date = new Date(toIsoLike(value));
   if (!Number.isFinite(date.getTime())) return String(value);
   const shanghai = dateInShanghai(date);
   return `${shanghai.getMonth() + 1}月${shanghai.getDate()}日 ${String(shanghai.getHours()).padStart(2, "0")}:${String(shanghai.getMinutes()).padStart(2, "0")}`;
@@ -2222,7 +2229,7 @@ function formatChineseDateTime(value) {
 
 function isScoring360CycleDeadlinePassed(cycle) {
   if (!cycle?.dueAt) return false;
-  const dueTime = new Date(String(cycle.dueAt).replace(" ", "T")).getTime();
+  const dueTime = new Date(toIsoLike(cycle.dueAt)).getTime();
   return Number.isFinite(dueTime) && Date.now() >= dueTime;
 }
 
@@ -3187,7 +3194,7 @@ function scheduleScoring360Reminder() {
     const cycle = await loadScoring360Cycle(cycleId);
     if (!isScoring360CycleForDate(cycle, shanghai)) return;
     if (!cycle?.followupAfterAt) return;
-    const followupTime = new Date(String(cycle.followupAfterAt).replace(" ", "T")).getTime();
+    const followupTime = new Date(toIsoLike(cycle.followupAfterAt)).getTime();
     if (Number.isFinite(followupTime) && Date.now() >= followupTime) {
       const pending = await loadScoring360PendingRecipients(cycleId);
       if (pending.length > 0) {
@@ -3307,7 +3314,7 @@ function getChinaWorkdayStatus(input) {
   }
   if (holidayDates.has(dateKey)) return { dateKey, isWorkday: false, reason: "china_public_holiday" };
   if (workdayOverrides.has(dateKey)) return { dateKey, isWorkday: true, reason: "china_adjusted_workday" };
-  const day = new Date(`${dateKey}T00:00:00+08:00`).getDay();
+  const day = new Date(`${dateKey}T00:00:00Z`).getUTCDay();
   return {
     dateKey,
     isWorkday: day >= 1 && day <= 5,
@@ -4060,7 +4067,7 @@ function scoring360ActiveDate() {
   return new Date();
 }
 
-async function ensureScoring360CycleForLaunchDate(dateLike,{copyAssignments=true}={}) {
+async function ensureScoring360CycleForLaunchDate(dateLike,{copyAssignments=false}={}) {
   const cycle = scoring360CycleForLaunchDate(dateLike);
   const existingRows = await querySqlRows(`SELECT id FROM scoring360_cycles WHERE id = ${sqlValue(cycle.id)} LIMIT 1;`);
   if (existingRows[0]?.id) return existingRows[0].id;
@@ -4297,7 +4304,7 @@ function scoring360Level(score) {
 
 function isScoring360Locked(submittedAt) {
   if (!submittedAt) return false;
-  const time = new Date(String(submittedAt).replace(" ", "T")).getTime();
+  const time = new Date(toIsoLike(submittedAt)).getTime();
   if (!Number.isFinite(time)) return true;
   return Date.now() - time > 4 * 60 * 60 * 1000;
 }

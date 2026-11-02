@@ -4,25 +4,32 @@ import { CalendarDays, CheckCheck, Clock3, FileCheck2, Sprout, UsersRound } from
 import type { PersonalModule } from '../lib/types';
 import { PersonalMonthWorkspace } from '../components/PersonalMonthWorkspace';
 import { monthText, ResultEmpty, ResultMetric, ResultStatus, scoreText, SubmissionCounts } from '../components/PerformanceUI';
+import {locationValue,rememberLocation} from '../lib/navigation';
 
-export function FinalResultsPage({ module, onOpenModule, previewEmployeeId }: { previewEmployeeId?:string; module?: PersonalModule; onOpenModule: (module: PersonalModule) => void }) {
+export function FinalResultsPage({ module, onOpenModule, previewEmployeeId,employeeContextId }: { previewEmployeeId?:string; employeeContextId?:string; module?: PersonalModule; onOpenModule: (module: PersonalModule) => void }) {
+  const owner=employeeContextId||previewEmployeeId||'self';
+  const storedMonth=()=>locationValue('personalUser')===owner&&/^\d{4}-(0[1-9]|1[0-2])$/.test(locationValue('personalMonth'))?locationValue('personalMonth'):'';
+  const storedWeek=()=>locationValue('personalUser')===owner?locationValue('personalWeek'):'';
   const [data, setData] = useState<any>(null);
   const [error, setError] = useState(false);
-  const [month, setMonth] = useState('');
-  const [weekId, setWeekId] = useState('');
+  const [month, setMonth] = useState(storedMonth);
+  const [weekId, setWeekId] = useState(storedWeek);
   const [revision, setRevision] = useState(0);
   const [reminderBusy,setReminderBusy]=useState(false),[reminderMessage,setReminderMessage]=useState('');
   async function remind(){if(previewEmployeeId)return;setReminderBusy(true);setReminderMessage('');try{const r=await fetch('/api/personal/collaboration/remind',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({month:selectedMonth})});const j=await r.json();if(!r.ok)throw Error(j.error==='reminder_not_due'?'尚未达到提醒时间或仍在冷却期，请稍后重试。':'提醒未完成，请稍后重试。');setReminderMessage(j.dryRun?`提醒预览：将通知 ${j.recipientCount} 位尚未评分的人员。当前未开启飞书发送，未发送消息。`:`已发送 ${j.sent} 条提醒${j.failed?`，${j.failed} 条未确认成功，请查看下方状态再处理`:''}。`);setRevision(v=>v+1);}catch(e){setReminderMessage(e instanceof Error?e.message:'提醒未完成');}finally{setReminderBusy(false);}}
   const currentMonth = new Intl.DateTimeFormat('sv-SE', { timeZone:'Asia/Shanghai', year:'numeric', month:'2-digit' }).format(new Date());
   const selectedMonth=month||currentMonth;
+  useEffect(()=>{setMonth(storedMonth());setWeekId(storedWeek());setData(null);setReminderMessage('');},[owner]);
+  useEffect(()=>{rememberLocation('personalUser',owner);rememberLocation('personalMonth',selectedMonth);rememberLocation('personalWeek',weekId);},[owner,selectedMonth,weekId]);
+  useEffect(()=>{const restore=()=>{setMonth(storedMonth());setWeekId(storedWeek());setReminderMessage('');};window.addEventListener('popstate',restore);return()=>window.removeEventListener('popstate',restore);},[owner]);
   useEffect(() => {
     const controller=new AbortController();setError(false);
     const params=new URLSearchParams({month:selectedMonth});if(weekId)params.set('weekId',weekId);
     if(previewEmployeeId)params.set('employeeId',previewEmployeeId);
-    fetch(`${previewEmployeeId?'/api/admin/employee-preview/workspace':'/api/personal/workspace'}?${params}`,{signal:controller.signal}).then(r=>{if(!r.ok)throw Error();return r.json();}).then(setData).catch(error=>{if(error.name!=='AbortError')setError(true);});
+    fetch(`${previewEmployeeId?'/api/admin/employee-preview/workspace':'/api/personal/workspace'}?${params}`,{signal:controller.signal}).then(r=>{if(!r.ok)throw Error();return r.json();}).then(value=>{if(!controller.signal.aborted)setData(value);}).catch(error=>{if(!controller.signal.aborted&&error.name!=='AbortError')setError(true);});
     return ()=>controller.abort();
   },[selectedMonth,weekId,revision,previewEmployeeId]);
-  if (!data || data.month!==selectedMonth) return <section className="v2-card pf-page"><ResultEmpty title={error ? '暂时无法加载结果' : '正在整理你的月度结果'} description={error ? '请刷新页面后重试。' : '已确认的成长记录即将呈现。'}/></section>;
+  if (!data || data.month!==selectedMonth || owner!=='self'&&data.employee?.userId!==owner) return <section className="v2-card pf-page"><ResultEmpty title={error ? '暂时无法加载结果' : '正在整理你的月度结果'} description={error ? '请刷新页面后重试。' : '已确认的成长记录即将呈现。'}/></section>;
   const current = data.history.find((r:any) => r.month === selectedMonth);
   const relevantHistory=data.history.filter((r:any)=>r.month<=selectedMonth);
   const rolling=relevantHistory.filter((r:any)=>r.quality!=null).slice(0,3);

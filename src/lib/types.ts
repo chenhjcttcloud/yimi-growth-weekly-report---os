@@ -2,6 +2,14 @@ import type { LucideIcon } from "lucide-react";
 
 export type PersonalModule = "reports" | "coach" | "actions" | "timeline";
 
+export interface EmployeeResultTarget {
+  userId?: string;
+  name?: string;
+  month?: string;
+  weekId?: string;
+  tab?: "review" | "reports" | "collaboration" | "history";
+}
+
 export type PageKey = PersonalModule | "dashboard" | "monthly" | "scores" | "tasks" | "growth" | "trends" | "settings" | "departments";
 
 export type Priority = "P0" | "P1" | "P2";
@@ -55,6 +63,7 @@ export interface UserAccess {
 }
 
 export interface WeeklyScore {
+  userId?: string;
   qualityAvailable?:boolean;
   name: string;
   department: string;
@@ -97,6 +106,7 @@ export interface ReportPeriod {
 }
 
 export interface AttentionTask {
+  sourceUserId?: string;
   priority: Priority;
   source: string;
   department: string;
@@ -217,6 +227,7 @@ export interface DepartmentMeetingBrief {
 export type MonthlyMeetingCategory = "经营问题" | "业务问题" | "产品问题" | "流程问题" | "制度问题" | "文化问题";
 
 export interface MonthlyMeetingAgendaItem {
+  sourceUserId?: string;
   id: string;
   priority: Priority;
   category: MonthlyMeetingCategory;
@@ -384,6 +395,7 @@ export interface ThemeInsight {
 }
 
 export interface MustReadReport {
+  userId?: string;
   name: string;
   department: string;
   reason: string;
@@ -415,6 +427,7 @@ export interface KimiTaskCandidate {
 }
 
 export interface EmployeeInsight {
+  userId?: string;
   name: string;
   coachSummary: string;
   coachQuestions: string[];
@@ -484,6 +497,7 @@ export interface Scoring360Response {
 }
 
 export interface Scoring360Result {
+  userId?: string;
   name: string;
   expected: number;
   submitted: number;

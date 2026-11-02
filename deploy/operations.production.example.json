@@ -1,0 +1,7 @@
+{
+  "backupEnabled": true,
+  "backupTime": "03:00",
+  "alertsEnabled": true,
+  "recipientUserIds": ["<FEISHU_USER_ID>"],
+  "diskWarningPercent": 85
+}

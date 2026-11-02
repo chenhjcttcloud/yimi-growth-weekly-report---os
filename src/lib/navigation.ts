@@ -1,5 +1,5 @@
 import {useEffect,useState} from 'react';
-import type {PageKey,UserAccess} from './types';
+import type {EmployeeResultTarget,PageKey,UserAccess} from './types';
 
 const pages:PageKey[]=['growth','reports','coach','actions','timeline','scores','dashboard','monthly','tasks','trends','settings','departments'];
 const personalPages:PageKey[]=['growth','reports','coach','actions','timeline'];
@@ -28,6 +28,20 @@ export function perspectiveAccess(access:UserAccess,mode:string):UserAccess {
 
 export function locationValue(key:string):string {
  return new URL(window.location.href).searchParams.get(key)||'';
+}
+
+export function scoreTargetFromLocation():EmployeeResultTarget|undefined {
+ const userId=locationValue('scoreEmployeeId'),name=locationValue('scoreEmployeeName');
+ if(!userId&&!name&&locationValue('scoreTarget')!=='1')return undefined;
+ const requestedTab=locationValue('scoreDetailTab');
+ return {userId,name,month:locationValue('scoreMonth'),weekId:locationValue('scoreWeekId'),tab:['review','reports','collaboration','history'].includes(requestedTab)?requestedTab as EmployeeResultTarget['tab']:'reports'};
+}
+
+export function rememberScoreTarget(target:EmployeeResultTarget):void {
+ rememberLocation('scoreTarget','1');
+ rememberLocation('scoreEmployeeId',target.userId||'');rememberLocation('scoreEmployeeName',target.name||'');
+ rememberLocation('scoreMonth',target.month||'');rememberLocation('scoreWeekId',target.weekId||'');
+ rememberLocation('scoreDetailTab',target.tab||'reports');rememberLocation('scoreTab','results');
 }
 
 export function rememberLocation(key:string,value:string):void {

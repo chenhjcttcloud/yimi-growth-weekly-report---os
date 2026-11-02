@@ -3,13 +3,13 @@ import { lazy, Suspense, useEffect, useMemo, useState } from "react";
 import { AppHeader } from "./components/AppHeader";
 import { Sidebar } from "./components/Sidebar";
 import { bootstrapData as appData } from "./lib/bootstrap-data";
-import type { PageKey } from "./lib/types";
+import type { EmployeeResultTarget, PageKey } from "./lib/types";
 import { FinalResultsPage } from "./pages/FinalResultsPage";
 import { PerformanceManagementPage } from "./pages/PerformanceManagementPage";
 import { ScoringTasksPage } from "./pages/ScoringTasksPage";
 import { SettingsPage } from "./pages/SettingsPage";
 import type { UserAccess } from "./lib/types";
-import {canVisitPage,perspectiveAccess,rememberLocation,requestedPage,resolvePage} from './lib/navigation';
+import {canVisitPage,perspectiveAccess,rememberLocation,rememberScoreTarget,requestedPage,resolvePage} from './lib/navigation';
 
 const DashboardPage=lazy(()=>import('./pages/DashboardPage').then(module=>({default:module.DashboardPage})));
 const MonthlyMeetingPage=lazy(()=>import('./pages/MonthlyMeetingPage').then(module=>({default:module.MonthlyMeetingPage})));
@@ -35,7 +35,10 @@ const fallbackAccess: UserAccess = {
 export function App() {
   const [activePage, setActivePage] = useState<PageKey>(()=>requestedPage()||'growth');
   useEffect(() => { document.querySelector('.content-shell')?.scrollTo({top:0}); }, [activePage]);
-  const [selectedEmployee, setSelectedEmployee] = useState("");
+  function openEmployeeResults(target:EmployeeResultTarget){
+    if(!window.dispatchEvent(new Event('organization-before-leave',{cancelable:true})))return;
+    rememberScoreTarget(target);window.dispatchEvent(new Event('score-result-target'));setActivePage("scores");
+  }
   const [selectedPeriodId, setSelectedPeriodId] = useState(appData.currentWeekId || appData.periods.at(-1)?.id || "");
   const [taskCreated, setTaskCreated] = useState(false);
   const [summaryReady, setSummaryReady] = useState(false);
@@ -50,7 +53,7 @@ export function App() {
   const currentAccess = access?perspectiveAccess(access,adminPerspective):fallbackAccess;
   function changePerspective(next:string){
     if(!window.dispatchEvent(new Event('organization-before-leave',{cancelable:true})))return;
-    setAdminPerspective(next);setSelectedEmployee(access?.currentEmployee?.name||'');
+    setAdminPerspective(next);
     setActivePage(next==='management'?'dashboard':'growth');
     try{localStorage.setItem('admin-perspective:'+access?.currentEmployee?.userId,next);}catch{}
   }
@@ -77,10 +80,7 @@ export function App() {
         }
         const permitted=perspectiveAccess(nextAccess,mode);
         setActivePage(page=>resolvePage(requestedPage()||(page!=='growth'?page:undefined),permitted));
-        setSelectedEmployee((name) => {
-          if (nextAccess.visibleEmployees.some((employee) => employee.name === name)) return name;
-          return nextAccess.currentEmployee?.name || nextAccess.visibleEmployees[0]?.name || "";
-        });
+
       } catch {
         setAccess(fallbackAccess);
         setActivePage(page=>resolvePage(page,fallbackAccess));
@@ -148,25 +148,19 @@ export function App() {
           summaryVersion={summaryVersion}
           selectedPeriodId={selectedPeriodId}
           externalView={externalView}
-          onOpenEmployee={(name) => {
-            setSelectedEmployee(name);
-            setActivePage("scores");
-          }}
+          onOpenEmployee={openEmployeeResults}
         />
       );
     }
 
     if (activePage === "scores") {
-      return currentAccess.canManageScoring360 ? <PerformanceManagementPage /> : <ScoringTasksPage key={previewEmployeeId} previewEmployeeId={previewEmployeeId}/>;
+      return currentAccess.canManageScoring360 ? <PerformanceManagementPage/> : <ScoringTasksPage key={previewEmployeeId} previewEmployeeId={previewEmployeeId}/>;
     }
 
     if (activePage === "monthly" && currentAccess.canViewBossDashboard) {
       return (
         <MonthlyMeetingPage
-          onOpenEmployee={(name) => {
-            setSelectedEmployee(name);
-            setActivePage("scores");
-          }}
+          onOpenEmployee={openEmployeeResults}
         />
       );
     }
@@ -180,13 +174,13 @@ export function App() {
     }
 
     if (["reports", "coach", "actions", "timeline"].includes(activePage) && currentAccess.role !== "boss" && !externalView) {
-      return <FinalResultsPage previewEmployeeId={previewEmployeeId} key={activePage+previewEmployeeId} module={activePage as import("./lib/types").PersonalModule} onOpenModule={setActivePage} />;
+      return <FinalResultsPage previewEmployeeId={previewEmployeeId} key={previewEmployeeId||currentAccess.currentEmployee?.userId||'self'} employeeContextId={previewEmployeeId||currentAccess.currentEmployee?.userId||'self'} module={activePage as import("./lib/types").PersonalModule} onOpenModule={setActivePage} />;
     }
 
-    if (!currentAccess.canViewBossDashboard) return <FinalResultsPage previewEmployeeId={previewEmployeeId} key={activePage+previewEmployeeId} onOpenModule={setActivePage} />;
+    if (!currentAccess.canViewBossDashboard) return <FinalResultsPage previewEmployeeId={previewEmployeeId} key={previewEmployeeId||currentAccess.currentEmployee?.userId||'self'} employeeContextId={previewEmployeeId||currentAccess.currentEmployee?.userId||'self'} onOpenModule={setActivePage} />;
 
     if (activePage === "growth") {
-      return currentAccess.role !== "system_admin" && currentAccess.canViewBossDashboard ? <DashboardPage selectedPeriodId={selectedPeriodId} externalView={externalView} onOpenEmployee={(name)=>{setSelectedEmployee(name);setActivePage("scores");}}/> : <FinalResultsPage previewEmployeeId={previewEmployeeId} key={activePage+previewEmployeeId} onOpenModule={setActivePage} />;
+      return currentAccess.role !== "system_admin" && currentAccess.canViewBossDashboard ? <DashboardPage selectedPeriodId={selectedPeriodId} externalView={externalView} onOpenEmployee={openEmployeeResults}/> : <FinalResultsPage previewEmployeeId={previewEmployeeId} key={previewEmployeeId||currentAccess.currentEmployee?.userId||'self'} employeeContextId={previewEmployeeId||currentAccess.currentEmployee?.userId||'self'} onOpenModule={setActivePage} />;
     }
 
     if (activePage === "trends") {
@@ -194,8 +188,8 @@ export function App() {
     }
 
 
-    return <FinalResultsPage previewEmployeeId={previewEmployeeId} key={activePage+previewEmployeeId} onOpenModule={setActivePage} />;
-  }, [activePage, selectedEmployee, selectedPeriodId, summaryReady,summaryVersion, taskCreated, currentAccess, externalView, previewEmployeeId]);
+    return <FinalResultsPage previewEmployeeId={previewEmployeeId} key={previewEmployeeId||currentAccess.currentEmployee?.userId||'self'} employeeContextId={previewEmployeeId||currentAccess.currentEmployee?.userId||'self'} onOpenModule={setActivePage} />;
+  }, [activePage, selectedPeriodId, summaryReady,summaryVersion, taskCreated, currentAccess, externalView, previewEmployeeId]);
 
   return (
     <div className="app-shell">
@@ -229,8 +223,8 @@ export function App() {
           }}
           onGenerateSummary={()=>void generateSummary()}
           onOpenNotificationTarget={(employeeName) => {
-            setSelectedEmployee(employeeName);
-            setActivePage("scores");
+            const period=appData.periods.find(p=>p.id===selectedPeriodId);
+            openEmployeeResults({name:employeeName,month:period?.end?.slice(0,7),weekId:period?.id,tab:'reports'});
           }}
         />
         {previewEmployee&&<div className="employee-preview-banner" role="status"><span>只读预览 · {previewEmployee.name}（{previewEmployee.department}） · 当前登录：{access?.currentEmployee?.name}</span><button type="button" onClick={()=>changePerspective('management')}>退出预览</button></div>}

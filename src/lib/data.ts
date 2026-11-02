@@ -84,6 +84,7 @@ function mapEmployee(row: RawRecord): EmployeeSummary {
 
 function mapWeekly(row: RawRecord): WeeklyScore {
   return {
+    userId: toText(row.user_id),
     qualityAvailable:['成果分','问题分','计划分','复盘分'].every(k=>row[k]!=null&&String(row[k]).trim()!==''&&Number.isFinite(Number(row[k]))&&Number(row[k])>=0&&Number(row[k])<=100),
     name: toText(row["姓名"]),
     department: toText(row["部门"]),
@@ -224,6 +225,7 @@ function toPriority(value: unknown) {
 
 function mapInsightAttention(row: RawRecord): AttentionTask {
   return {
+    sourceUserId: toText(row.sourceUserId || row.userId || ((row.source === row.owner || row.source === '飞书周报 · Kimi 分析') ? row.ownerUserId : '')),
     priority: toPriority(row.priority),
     source: toText(row.source),
     department: toText(row.department),
@@ -257,6 +259,7 @@ function mapThemeInsight(row: RawRecord): ThemeInsight {
 
 function mapMustRead(row: RawRecord): MustReadReport {
   return {
+    userId: toText(row.userId || row.user_id),
     name: toText(row.name),
     department: toText(row.department),
     reason: toText(row.reason),
@@ -339,6 +342,7 @@ function mapKimiInsights(rawInsightValue: RawRecord): KimiInsights {
     mustReadReports: toRecordArray(rawInsights.mustReadReports).map(mapMustRead),
     themes: toRecordArray(rawInsights.themes).map(mapThemeInsight),
     employeeInsights: toRecordArray(rawInsights.employeeInsights).map((item) => ({
+      userId: toText(item.userId || item.user_id),
       name: toText(item.name),
       coachSummary: toText(item.coachSummary),
       coachQuestions: toArray(item.coachQuestions).map(toText),
@@ -1086,6 +1090,7 @@ function buildMonthlyAgendaItem(task: AttentionTask, periodId: string, index: nu
   const departments = uniqText([...responsibleDepartments, ...impactedDepartments]);
   const managementBranch = branchForDepartment(responsibleDepartments[0] || sourceDepartment || departments[0] || "").name;
   return {
+    sourceUserId: task.sourceUserId,
     id: `${periodId}-${index}-${task.priority}-${task.source}-${task.title}`.replace(/\s+/g, "-"),
     priority: task.priority,
     category,

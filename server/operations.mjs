@@ -83,7 +83,16 @@ UPDATE operations_alert_attempts SET status='uncertain',finished_at='${stamp}',e
    await exec(`UPDATE backup_runs SET verified_at=${sql(now().toISOString())},verification_status='passed' WHERE id=${sql(id)};`);return {id,status:'passed',files:manifest.files.length,restoreDirectory:destination};
   }catch(e){if(id)await exec(`UPDATE backup_runs SET verification_status='failed' WHERE id=${sql(id)} AND status='completed';`);throw Error(e.message==='backup_not_found'?e.message:'backup_integrity_failed');}finally{busy=false;}
  }
- async function overview(){return {config:await config(),backupDirectory:root,busy,disk:await disk(),backups:await query('SELECT id,kind,status,started_at,finished_at,file_count,error,verified_at,verification_status FROM backup_runs ORDER BY started_at DESC,rowid DESC LIMIT 30;'),alerts:await query('SELECT id,issue_key,message,status,created_at,attempts,next_attempt_at,last_error FROM operations_alerts ORDER BY created_at DESC,rowid DESC LIMIT 50;'),recipients:(await query('SELECT user_id,name,department FROM employees WHERE is_active=1 ORDER BY name;')).map(r=>({userId:r.user_id,name:r.name,department:r.department||''}))};}
+ async function overview(){
+  const [c,usage,backups,alerts,people]=await Promise.all([config(),disk(),query('SELECT id,kind,status,started_at,finished_at,file_count,error,verified_at,verification_status FROM backup_runs ORDER BY started_at DESC,rowid DESC LIMIT 30;'),query('SELECT id,issue_key,message,status,created_at,attempts,next_attempt_at,last_error FROM operations_alerts ORDER BY created_at DESC,rowid DESC LIMIT 50;'),query('SELECT user_id,name,department FROM employees WHERE is_active=1 ORDER BY name;')]);
+  const recipients=people.map(r=>({userId:r.user_id,name:r.name,department:r.department||''})),capacityWarning=usage.usedPercent>=c.diskWarningPercent,hasAlertRecipient=c.recipientUserIds.some(id=>recipients.some(person=>person.userId===id));
+  const issues=[];
+  if(capacityWarning)issues.push({code:'disk_capacity',message:'磁盘已达到告警阈值。请先扩容或准备独立备份存储，再安排持续保留的自动备份。'});
+  if(!c.backupEnabled)issues.push({code:'backup_disabled',message:'每天自动备份未开启；已有手动或发布备份不会因此自动按日更新。'});
+  if(!c.alertsEnabled)issues.push({code:'alerts_disabled',message:'飞书故障通知未开启；运行问题仍会保留在下方记录中。'});
+  else if(!hasAlertRecipient)issues.push({code:'alert_recipients_missing',message:'缺少有效的在职告警接收人，请重新选择接收人并保存。'});
+  return {config:c,backupDirectory:root,busy,disk:usage,backups,alerts,recipients,readiness:{capacityWarning,automaticBackupEnabled:c.backupEnabled,externalAlertsEnabled:c.alertsEnabled,hasAlertRecipient,latestBackupRestoreVerified:backups[0]?.status==='completed'&&backups[0]?.verification_status==='passed',issues}};
+ }
  async function check(){
   if(checking)return {issues:0,skipped:'running'};checking=true;
   try{
@@ -99,7 +108,10 @@ UPDATE operations_alert_attempts SET status='uncertain',finished_at='${stamp}',e
   for(const issue of issues){
    const message=String(issue.message).slice(0,1000),recipients=c.alertsEnabled?c.recipientUserIds:[''];
    for(const recipient of recipients){
-    const inserted=randomUUID(),claim=randomUUID();await exec(`INSERT OR IGNORE INTO operations_alerts(id,issue_key,alert_date,recipient_user_id,message,status) VALUES(${sql(inserted)},${sql(issue.key)},${sql(day)},${sql(recipient)},${sql(message)},${sql(recipient?'ready':'recorded')});`);
+    // The runtime SQL adapter encodes an empty string as NULL. Internal-only
+    // alerts use an empty recipient as their stable deduplication identity;
+    // keep that value non-null so INSERT OR IGNORE cannot silently lose them.
+    const inserted=randomUUID(),claim=randomUUID();await exec(`INSERT OR IGNORE INTO operations_alerts(id,issue_key,alert_date,recipient_user_id,message,status) VALUES(${sql(inserted)},${sql(issue.key)},${sql(day)},COALESCE(${sql(recipient)},''),${sql(message)},${sql(recipient?'ready':'recorded')});`);
     if(!recipient)continue;
     await exec(`UPDATE operations_alerts SET status='pending',claim_token=${sql(claim)},attempts=attempts+1,first_attempt_at=COALESCE(first_attempt_at,${sql(stamp)}),last_attempt_at=${sql(stamp)},next_attempt_at=NULL WHERE issue_key=${sql(issue.key)} AND alert_date=${sql(day)} AND recipient_user_id=${sql(recipient)} AND attempts<3 AND (status='ready' OR status='failed' AND next_attempt_at IS NOT NULL AND julianday(next_attempt_at)<=julianday(${sql(stamp)}) AND julianday(first_attempt_at)>=julianday(${sql(cutoff)}));`);
     const owned=`claim_token=${sql(claim)} AND status='pending'`,row=(await query(`SELECT id,attempts FROM operations_alerts WHERE ${owned};`))[0];if(!row)continue;

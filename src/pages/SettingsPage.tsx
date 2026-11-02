@@ -200,6 +200,7 @@ interface Scoring360ReminderResult {
   dryRunCount?: number;
   skipped?: number;
   failed?: number;
+  requiresConfiguration?: boolean;
 }
 
 interface RosterAuditStatus {
@@ -524,7 +525,7 @@ export function SettingsPage({ access,onOpenScoringSetup }: SettingsPageProps) {
         }),
       });
       const result = await response.json();
-      if (!response.ok || !result.ok) throw new Error(result.error || "send_scoring360_reminder_failed");
+      if (!response.ok || !result.ok) throw new Error(result.error==='scoring_cycle_not_prepared'?'该月份尚未准备评分周期，请先在月度配评中配置并开放。':result.error || "send_scoring360_reminder_failed");
       setScoring360ReminderResult(result);
       await loadScoring360ReminderStatus();
       setScoring360ReminderState("done");
@@ -784,7 +785,7 @@ export function SettingsPage({ access,onOpenScoringSetup }: SettingsPageProps) {
         </div>
         {scoring360ReminderState === "done" ? (
           <p className="settings-success">
-            {scoring360ReminderResult?.dryRun ? "预览完成" : "发送完成"}：目标 {scoring360ReminderResult?.count || 0} 人，成功 {scoring360ReminderResult?.sent || 0}，预览 {scoring360ReminderResult?.dryRunCount || 0}，跳过 {scoring360ReminderResult?.skipped || 0}，失败 {scoring360ReminderResult?.failed || 0}。
+            {scoring360ReminderResult?.requiresConfiguration ? '该月份尚未准备评分周期，请先在月度配评中手动配置；本次未创建或复制评分关系。' : <>{scoring360ReminderResult?.dryRun ? "预览完成" : "发送完成"}：目标 {scoring360ReminderResult?.count || 0} 人，成功 {scoring360ReminderResult?.sent || 0}，预览 {scoring360ReminderResult?.dryRunCount || 0}，跳过 {scoring360ReminderResult?.skipped || 0}，失败 {scoring360ReminderResult?.failed || 0}。</>}
           </p>
         ) : null}
         {scoring360ReminderError ? <p className="settings-error">360 提醒失败：{scoring360ReminderError}</p> : null}

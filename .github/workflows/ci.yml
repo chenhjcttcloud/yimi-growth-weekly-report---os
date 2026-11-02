@@ -38,7 +38,11 @@ jobs:
       - run: BUSINESS_TEST_SKIP_BROWSER=true TEST_STATIC_DIR=outputs/ci-preview node scripts/test-performance-loading.mjs
       - run: node scripts/test-security-lifecycle.mjs
       - run: node scripts/test-setup-operations.mjs
+      - run: node scripts/test-operations-runtime-alerts.mjs
+      - run: node scripts/test-production-readiness.mjs
       - run: node scripts/test-reminder-reliability.mjs
+      - run: node scripts/test-reminder-preview-config.mjs
+      - run: node scripts/test-scoring-timezones.mjs
       - run: node scripts/test-monthly-handoffs.mjs
       - run: node scripts/test-feishu-user-tokens.mjs
       - run: node scripts/test-scoring-workbench.mjs
@@ -46,6 +50,7 @@ jobs:
       - run: node scripts/test-company-directory.mjs
       - run: node scripts/test-sso-roster.mjs
       - run: node scripts/test-employee-status-api.mjs
+      - run: node scripts/test-peer-stop-scope.mjs
       - run: node scripts/test-employee-departure-api.mjs
       - run: node scripts/test-employee-departure-manager.mjs
       - run: BUSINESS_TEST_SKIP_BROWSER=true TEST_STATIC_DIR=outputs/ci-preview node scripts/test-external-sharing-disabled.mjs

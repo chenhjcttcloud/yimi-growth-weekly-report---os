@@ -10,7 +10,7 @@ INSERT INTO scoring360_cycles(id,label,start_date,end_date,status,launch_at) VAL
 INSERT INTO scoring360_assignments(id,cycle_id,evaluee_name,evaluator_name,evaluee_user_id,evaluator_user_id) VALUES('staff-a','oct','同名员工','负责人','staff','head'),('staff-b','oct','同名员工','同事','staff','peer'),('head-a','oct','负责人','同事','head','peer'),('zero-a','oct','同名员工','同事','zero','peer');`);
 const employees=async()=> (await query('SELECT * FROM employees WHERE is_active=1;')).map(e=>({userId:e.user_id,name:e.name,department:e.department,managerUserId:e.manager_user_id}));
 const departments=createDepartments({query,exec,sql,employees});const reviews=createManagerReviews({query,exec,sql,organization:departments.overview,reports:()=>performance.reports(),isBossUserId:id=>id==='boss',now:()=>new Date('2026-10-26T00:00:00Z')});
-const performance=createPerformance({query,exec,sql,readData:()=>({meta:{periods:[]},employee_summary:[]}),managerReviews:reviews});
+const performance=createPerformance({query,exec,sql,readData:()=>({meta:{periods:[]},employee_summary:[]}),managerReviews:reviews,now:()=>new Date('2026-10-26T00:00:00Z')});
 const peer=(id,target,score)=>run(`INSERT INTO scoring360_responses(id,assignment_id,cycle_id,evaluee_name,evaluator_name,score,comment) VALUES(${sql('r-'+id)},${sql(id)},'oct',${sql(target)},'评分人',${score},'具体协作评价');`);
 let view=await performance.overview();assert.equal(view.monthly.find(r=>r.userId==='staff').collaborationComplete,false);
 peer('staff-a','同名员工',90);peer('staff-b','同名员工',100);view=await performance.overview();assert.equal(view.monthly.find(r=>r.userId==='staff').peerComplete,true);assert.equal((await performance.personal('同名员工','staff')).history.length,0,'peer completion alone cannot publish');

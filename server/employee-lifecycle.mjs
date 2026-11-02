@@ -70,11 +70,22 @@ export function createEmployeeLifecycle({query,exec,sql,now=()=>new Date()}){
     UPDATE scoring360_assignments SET status='inactive',updated_at=datetime('now')
     WHERE status='active' AND (evaluee_user_id=${sql(userId)} OR evaluator_user_id=${sql(userId)})
       AND NOT EXISTS(SELECT 1 FROM scoring360_responses r WHERE r.assignment_id=scoring360_assignments.id)
+      AND NOT EXISTS(SELECT 1 FROM scoring360_cycles current_cycle
+        JOIN scoring360_cycles peer_cycle ON substr(peer_cycle.start_date,1,7)=substr(current_cycle.start_date,1,7)
+        JOIN scoring360_assignments peer ON peer.cycle_id=peer_cycle.id
+        JOIN scoring360_responses r ON r.assignment_id=peer.id
+        WHERE current_cycle.id=scoring360_assignments.cycle_id AND peer.evaluee_user_id=scoring360_assignments.evaluee_user_id)
+      AND NOT EXISTS(SELECT 1 FROM monthly_review_plans p JOIN scoring360_cycles c ON p.month=substr(c.start_date,1,7) WHERE c.id=scoring360_assignments.cycle_id AND p.employee_user_id=scoring360_assignments.evaluee_user_id)
+      AND NOT EXISTS(SELECT 1 FROM monthly_manager_scores p JOIN scoring360_cycles c ON p.month=substr(c.start_date,1,7) WHERE c.id=scoring360_assignments.cycle_id AND p.employee_user_id=scoring360_assignments.evaluee_user_id)
+      AND NOT EXISTS(SELECT 1 FROM all_department_leader_scores p JOIN scoring360_cycles c ON p.month=substr(c.start_date,1,7) WHERE c.id=scoring360_assignments.cycle_id AND p.leader_user_id=scoring360_assignments.evaluee_user_id)
       AND NOT EXISTS(SELECT 1 FROM performance_results p JOIN scoring360_cycles c ON p.month=substr(c.start_date,1,7) WHERE c.id=scoring360_assignments.cycle_id AND p.kind='collaboration' AND p.employee_user_id=scoring360_assignments.evaluee_user_id)
       AND NOT EXISTS(SELECT 1 FROM all_monthly_weighted_results p JOIN scoring360_cycles c ON p.month=substr(c.start_date,1,7) WHERE c.id=scoring360_assignments.cycle_id AND p.employee_user_id=scoring360_assignments.evaluee_user_id);`;
   // Keep state, employment dates, pending assignments and the audit in one
   // transaction. The in-transaction guard prevents concurrent restores from
-  // creating multiple open periods; closed history is never reopened.
+  // creating multiple open periods; closed history is never reopened. Only
+  // unused monthly peer scopes are canceled. Once any peer/manager/boss score
+  // or frozen plan exists, suspension must not shrink that month's denominator
+  // and turn an incomplete result into an automatically published final score.
   await exec(`BEGIN IMMEDIATE;${periodChange}
     UPDATE employees SET is_active=${active?1:0},updated_at=datetime('now') WHERE user_id=${sql(userId)};
     ${assignmentChange}

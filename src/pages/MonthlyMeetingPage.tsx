@@ -14,12 +14,12 @@ import {
 } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 import { PriorityBadge } from "../components/PriorityBadge";
-import { defaultMonthlyMeetingMonthKey, monthlyMeetingBriefForMonth, monthlyMeetingPeriodOptions } from "../lib/data";
+import { defaultMonthlyMeetingMonthKey, monthlyMeetingBriefForMonth, monthlyMeetingPeriodOptions, reportPeriods } from "../lib/data";
 import { truncate } from "../lib/format";
-import type { MonthlyDepartmentReview, MonthlyMeetingAgendaItem, MonthlyMeetingCategory } from "../lib/types";
+import type { EmployeeResultTarget, MonthlyDepartmentReview, MonthlyMeetingAgendaItem, MonthlyMeetingCategory } from "../lib/types";
 
 interface MonthlyMeetingPageProps {
-  onOpenEmployee: (name: string) => void;
+  onOpenEmployee: (target: EmployeeResultTarget) => void;
 }
 
 const categoryOrder: MonthlyMeetingCategory[] = ["经营问题", "业务问题", "产品问题", "流程问题", "制度问题", "文化问题"];
@@ -40,7 +40,8 @@ function meetingIssueKey(issue: MonthlyMeetingAgendaItem) {
   return `${issue.periodId}-${issue.priority}-${issue.category}-${issue.title}-${issue.source}`;
 }
 
-function DepartmentReviewCard({ review, onOpenEmployee }: { review: MonthlyDepartmentReview; onOpenEmployee: (name: string) => void }) {
+const issueTarget=(issue:MonthlyMeetingAgendaItem):EmployeeResultTarget=>({userId:issue.sourceUserId,name:issue.source,month:reportPeriods.find(period=>period.id===issue.periodId)?.end?.slice(0,7)||/\d{4}-\d{2}/.exec(issue.periodId)?.[0],weekId:issue.periodId,tab:'reports'});
+function DepartmentReviewCard({ review, onOpenEmployee }: { review: MonthlyDepartmentReview; onOpenEmployee: (target: EmployeeResultTarget) => void }) {
   return (
     <article className="monthly-department-card">
       <div className="monthly-department-title">
@@ -75,7 +76,7 @@ function DepartmentReviewCard({ review, onOpenEmployee }: { review: MonthlyDepar
           <h4>长期建设项</h4>
           {review.longTermTasks.length > 0 ? (
             review.longTermTasks.slice(0, 2).map((issue) => (
-              <button className="monthly-mini-issue" type="button" key={meetingIssueKey(issue)} onClick={() => onOpenEmployee(issue.source)}>
+              <button className="monthly-mini-issue" type="button" key={meetingIssueKey(issue)} onClick={() => onOpenEmployee(issueTarget(issue))}>
                 <PriorityBadge priority={issue.priority} />
                 <span>{truncate(issue.title, 42)}<small>责任：{issue.responsibleDepartments.join(" / ") || review.department}</small></span>
               </button>
@@ -88,7 +89,7 @@ function DepartmentReviewCard({ review, onOpenEmployee }: { review: MonthlyDepar
       <div className="monthly-source-strip">
         {review.externalSignals.length > 0 ? (
           review.externalSignals.slice(0, 3).map((issue) => (
-            <button type="button" key={`${meetingIssueKey(issue)}-external`} onClick={() => onOpenEmployee(issue.source)}>
+            <button type="button" key={`${meetingIssueKey(issue)}-external`} onClick={() => onOpenEmployee(issueTarget(issue))}>
               外部输入：{issue.source} · {truncate(issue.title, 28)}
             </button>
           ))
@@ -306,7 +307,7 @@ export function MonthlyMeetingPage({ onOpenEmployee }: MonthlyMeetingPageProps) 
                 {items.length > 0 ? (
                   <>
                     {visibleItems.map((item) => (
-                      <button className="monthly-agenda-card" type="button" key={meetingIssueKey(item)} onClick={() => onOpenEmployee(item.source)}>
+                      <button className="monthly-agenda-card" type="button" key={meetingIssueKey(item)} onClick={() => onOpenEmployee(issueTarget(item))}>
                         <span className="monthly-agenda-head">
                           <PriorityBadge priority={item.priority} />
                           <strong>{item.title}</strong>
@@ -400,7 +401,7 @@ export function MonthlyMeetingPage({ onOpenEmployee }: MonthlyMeetingPageProps) 
           </div>
           <div className="monthly-fact-list">
             {brief.factJumps.map((item) => (
-              <button type="button" key={`${meetingIssueKey(item)}-fact`} onClick={() => onOpenEmployee(item.source)}>
+              <button type="button" key={`${meetingIssueKey(item)}-fact`} onClick={() => onOpenEmployee(issueTarget(item))}>
                 <span>
                   <PriorityBadge priority={item.priority} />
                   <strong>{item.source || "周报"}</strong>

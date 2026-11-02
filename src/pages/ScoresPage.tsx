@@ -8,6 +8,7 @@ import {
   scoring360VisibleResults,
 } from "../lib/data";
 import type { Scoring360Result, UserAccess, VisibleEmployee } from "../lib/types";
+import { parseServerTimestamp } from "../lib/format";
 
 interface ScoresPageProps {
   visibleEmployees?: VisibleEmployee[];
@@ -44,7 +45,7 @@ function formatScore(score: number | null) {
 
 function isLocked(submittedAt?: string) {
   if (!submittedAt) return false;
-  const time = new Date(submittedAt.replace(" ", "T")).getTime();
+  const time = parseServerTimestamp(submittedAt);
   if (!Number.isFinite(time)) return true;
   return Date.now() - time > 4 * 60 * 60 * 1000;
 }

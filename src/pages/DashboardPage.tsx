@@ -30,12 +30,12 @@ import {
   weeklyForPeriod,
 } from "../lib/data";
 import { cnNumber, truncate } from "../lib/format";
-import type { Scoring360Result } from "../lib/types";
+import type { EmployeeResultTarget, Scoring360Result } from "../lib/types";
 
 interface DashboardPageProps {
   summaryVersion?:number;
   selectedPeriodId: string;
-  onOpenEmployee: (name: string) => void;
+  onOpenEmployee: (target: EmployeeResultTarget) => void;
   externalView?: boolean;
 }
 
@@ -52,6 +52,7 @@ function collaborationSignal(result: Scoring360Result) {
 
 export function DashboardPage({ selectedPeriodId, onOpenEmployee, externalView = false,summaryVersion=0 }: DashboardPageProps) {
   const selectedPeriod = reportPeriods.find((period) => period.id === selectedPeriodId) ?? reportPeriods.at(-1);
+  const openEmployee=(name:string,userId?:string)=>onOpenEmployee({userId,name,month:selectedPeriod?.end?.slice(0,7),weekId:selectedPeriod?.id,tab:'reports'});
   const periodInsights = insightsForPeriod(selectedPeriod?.id || selectedPeriodId);
   const hasPeriodInsights = hasInsightsForPeriod(selectedPeriod?.id || selectedPeriodId);
   const periodAttentionQueue = attentionQueueForInsights(periodInsights);
@@ -434,7 +435,7 @@ export function DashboardPage({ selectedPeriodId, onOpenEmployee, externalView =
                   <p className="v2-card-sub v2-section-gap">跨周闭环观察</p>
                   {activeDepartmentBrief.closureSignals.length > 0 ? (
                     activeDepartmentBrief.closureSignals.slice(0, 3).map((signal) => (
-                      <button className="v2-person-row" type="button" key={`${signal.name}-${signal.status}`} onClick={() => onOpenEmployee(signal.name)}>
+                      <button className="v2-person-row" type="button" key={`${signal.name}-${signal.status}`} onClick={() => openEmployee(signal.name)}>
                         <span>
                           <span className="v2-person-name">{signal.name}</span>
                           <span className="v2-person-sub">
@@ -473,7 +474,7 @@ export function DashboardPage({ selectedPeriodId, onOpenEmployee, externalView =
               </div>
               <p className="v2-card-sub">闭环标杆</p>
               {organizationClosureRadar.leaders.slice(0, 3).map((insight) => (
-                <button className="v2-person-row" type="button" key={insight.name} onClick={() => onOpenEmployee(insight.name)}>
+                <button className="v2-person-row" type="button" key={insight.name} onClick={() => openEmployee(insight.name)}>
                   <span>
                     <span className="v2-person-name">{insight.name}</span>
                     <span className="v2-person-sub">
@@ -486,7 +487,7 @@ export function DashboardPage({ selectedPeriodId, onOpenEmployee, externalView =
               <p className="v2-card-sub v2-section-gap">重复空转风险</p>
               {organizationClosureRadar.risks.length > 0 ? (
                 organizationClosureRadar.risks.slice(0, 3).map((insight) => (
-                  <button className="v2-person-row is-risk" type="button" key={insight.name} onClick={() => onOpenEmployee(insight.name)}>
+                  <button className="v2-person-row is-risk" type="button" key={insight.name} onClick={() => openEmployee(insight.name)}>
                     <span>
                       <span className="v2-person-name">{insight.name}</span>
                       <span className="v2-person-sub">
@@ -517,7 +518,7 @@ export function DashboardPage({ selectedPeriodId, onOpenEmployee, externalView =
               </div>
               <p className="v2-card-sub">高协作贡献者</p>
               {collaborationLeaders.slice(0, 3).map((result) => (
-                <button className="v2-person-row" type="button" key={result.name} onClick={() => onOpenEmployee(result.name)}>
+                <button className="v2-person-row" type="button" key={result.name} onClick={() => openEmployee(result.name,result.userId)}>
                   <span>
                     <span className="v2-person-name">{result.name}</span>
                     <span className="v2-person-sub">
@@ -529,7 +530,7 @@ export function DashboardPage({ selectedPeriodId, onOpenEmployee, externalView =
               ))}
               <p className="v2-card-sub v2-section-gap">协作孤岛风险</p>
               {collaborationRisks.slice(0, 2).map((result) => (
-                <button className="v2-person-row is-risk" type="button" key={result.name} onClick={() => onOpenEmployee(result.name)}>
+                <button className="v2-person-row is-risk" type="button" key={result.name} onClick={() => openEmployee(result.name,result.userId)}>
                   <span>
                     <span className="v2-person-name">{result.name}</span>
                     <span className="v2-person-sub">{collaborationSignal(result)} · 建议谈话校准</span>
@@ -555,7 +556,7 @@ export function DashboardPage({ selectedPeriodId, onOpenEmployee, externalView =
             </div>
             {mustRead.length === 0 ? <p className="v2-empty-hint">本周暂无必读周报。</p> : null}
             {mustRead.slice(0, showAllMustRead ? undefined : 4).map((report, index) => (
-              <button className="v2-mustread-card" key={report.name} type="button" onClick={() => onOpenEmployee(report.name)}>
+              <button className="v2-mustread-card" key={report.name} type="button" onClick={() => openEmployee(report.name,report.userId)}>
                 <span className="v2-mustread-rank">{index + 1}</span>
                 <span>
                   <strong>{report.name}</strong>

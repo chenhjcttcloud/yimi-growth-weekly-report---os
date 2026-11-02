@@ -5,6 +5,11 @@ import {createHmac} from 'node:crypto';
 import path from 'node:path';
 import {chromium} from 'playwright';
 await mkdir('outputs/tests',{recursive:true});const dir=await mkdtemp(path.resolve('outputs/tests/automatic-results-')),db=dir+'/test.sqlite',data=dir+'/data';await mkdir(data);
+// These October deadline assertions describe an in-progress month. Keep the
+// isolated service and browser on that same date when this test runs later.
+const fixtureNow=Date.parse('2026-10-26T02:00:00Z');
+const clockSource=`const RealDate=Date;globalThis.Date=class extends RealDate{constructor(...args){super(...(args.length?args:[${fixtureNow}]));}static now(){return ${fixtureNow};}};`;
+await writeFile(dir+'/clock.mjs',clockSource+"globalThis.fetch=async()=>{throw Error('automatic_fixture_external_request_blocked');};");
 const quote=v=>"'"+String(v).replaceAll("'","''")+"'";
 const run=s=>{const r=spawnSync('sqlite3',['-bail','-json',db],{input:s,encoding:'utf8'});if(r.status)throw Error(r.stderr);return s.trim().toUpperCase().startsWith('SELECT')?JSON.parse(r.stdout||'[]'):[];};run(await readFile('db/schema.sql','utf8'));
 const content=score=>({'本周成果摘要':'完成实际交付','问题摘要':'已定位问题','下周计划摘要':'验证交付指标','思考与复盘摘要':'沉淀复用流程','成果分':score,'问题分':score,'计划分':score,'复盘分':score});
@@ -18,8 +23,8 @@ INSERT INTO scoring360_cycles(id,label,start_date,end_date,status,launch_at) VAL
 INSERT INTO scoring360_assignments(id,cycle_id,evaluee_name,evaluator_name,evaluee_user_id,evaluator_user_id) VALUES('a','oct','测试员工','测试负责人','staff','head'),('b','oct','测试员工','测试同事','staff','peer');`);
 const port=9200+Math.floor(Math.random()*300),base='http://127.0.0.1:'+port,secret='isolated-automatic-test';let logs='',browser;
 const env={...process.env,AUTH_MODE:'mock',SESSION_SECRET:secret,SERVER_PORT:String(port),BASE_URL:base,STATIC_DIR:process.env.TEST_STATIC_DIR||'outputs/automatic-results-preview-20261027',APP_DATA_DIR:data,WEEKLY_REPORT_DB_PATH:db,WEEKLY_REPORT_UPLOAD_DIR:dir+'/uploads',BOSS_VIEW_USER_IDS:'boss',SCORING360_CONFIG_MANAGER_USER_IDS:'admin',CHINA_CALENDAR_AUTO_UPDATE_ENABLED:'false',LARK_REPORT_AUTO_SYNC_ENABLED:'false',LARK_AUTH_MONITOR_ENABLED:'false',SCORING360_REMINDER_ENABLED:'false',WEEKLY_REMINDER_ENABLED:'false',WEEKLY_UPDATE_REMINDER_ENABLED:'false',DEV_VIEW_SWITCH_ENABLED:'false',FEISHU_APP_ID:'',FEISHU_APP_SECRET:''};
-const server=spawn(process.execPath,['server/index.mjs'],{env,stdio:['ignore','pipe','pipe']});server.stderr.on('data',x=>logs+=x);
-const cookie=id=>{const body=Buffer.from(JSON.stringify({user:{userId:id,name:({staff:'测试员工',head:'测试负责人',peer:'测试同事',admin:'测试管理员',boss:'测试老板'})[id]},issuedAt:Date.now()})).toString('base64url');return body+'.'+createHmac('sha256',secret).update(body).digest('base64url');};
+const server=spawn(process.execPath,['--import',dir+'/clock.mjs','server/index.mjs'],{env,stdio:['ignore','pipe','pipe']});server.stderr.on('data',x=>logs+=x);
+const cookie=id=>{const body=Buffer.from(JSON.stringify({user:{userId:id,name:({staff:'测试员工',head:'测试负责人',peer:'测试同事',admin:'测试管理员',boss:'测试老板'})[id]},issuedAt:fixtureNow})).toString('base64url');return body+'.'+createHmac('sha256',secret).update(body).digest('base64url');};
 async function call(route,id='staff',body){const r=await fetch(base+route,{method:body?'POST':'GET',headers:{cookie:'wos_session='+cookie(id),'content-type':'application/json'},body:body?JSON.stringify(body):undefined});return {status:r.status,body:await r.json()};}
 const personal=async()=> (await call('/api/performance/me')).body.history.find(r=>r.month==='2026-10');
 try{
@@ -44,7 +49,7 @@ try{
  assert.equal(run("SELECT count(*) AS n FROM performance_results WHERE month='2026-10';")[0].n,0,'no manual results created');
  assert.equal((await call('/api/system-settings','admin')).body.publication.quality,'automatic_ai_monthly');
  assert.equal((await call('/api/system-settings/report-automation','staff')).status,403);assert.equal((await call('/api/system-settings/report-automation','admin',{enabled:false,intervalMinutes:4})).body.error,'invalid_report_automation');assert.equal((await call('/api/system-settings/report-automation','admin',{enabled:true,intervalMinutes:5})).body.error,'feishu_required');assert.equal((await call('/api/system-settings/report-automation','admin',{enabled:false,intervalMinutes:5})).status,200);
- browser=await chromium.launchPersistentContext(dir+'/browser-profile',{channel:'chrome',headless:true,viewport:{width:1440,height:1100}});await browser.addCookies([{name:'wos_session',value:cookie('admin'),url:base}]);
+ browser=await chromium.launchPersistentContext(dir+'/browser-profile',{channel:'chrome',headless:true,viewport:{width:1440,height:1100}});await browser.addInitScript({content:clockSource});await browser.addCookies([{name:'wos_session',value:cookie('admin'),url:base}]);
  const page=await browser.newPage(),errors=[];page.on('pageerror',e=>errors.push(e.message));await page.goto(base+'/?page=scores');await page.getByText('评分完成，结果自动呈现',{exact:true}).waitFor();assert.equal(await page.getByRole('button',{name:'确认质量分',exact:true}).count(),0);assert.equal(await page.getByRole('button',{name:'确认提交统计',exact:true}).count(),0);assert.equal(await page.getByLabel('审核意见与调整说明').count(),0);
  await page.getByRole('button').filter({hasText:'测试员工'}).first().click();await page.getByText('周报质量 · 60.0 分',{exact:true}).waitFor();await page.screenshot({path:dir+'/automatic-management.png',fullPage:true});
  await browser.addCookies([{name:'wos_session',value:cookie('staff'),url:base}]);await page.goto(base+'/?page=growth');await page.getByText('周报质量与提交统计自动计算，无需人工确认；',{exact:false}).waitFor();await page.screenshot({path:dir+'/automatic-personal.png',fullPage:true});assert.deepEqual(errors,[]);
