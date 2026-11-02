@@ -46,6 +46,8 @@ jobs:
       - run: node scripts/test-monthly-handoffs.mjs
       - run: node scripts/test-feishu-user-tokens.mjs
       - run: node scripts/test-scoring-workbench.mjs
+      - run: node scripts/test-scoring-recurrence.mjs
+      - run: node scripts/test-scoring-recurrence-api.mjs
       - run: node scripts/test-authorization-candidates.mjs
       - run: node scripts/test-company-directory.mjs
       - run: node scripts/test-sso-roster.mjs

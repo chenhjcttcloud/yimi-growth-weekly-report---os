@@ -18,6 +18,7 @@ import {createAuthorizationCandidates} from './authorization-candidates.mjs';
 import {createManagementSummary} from './management-summary.mjs';
 import {createScoringWorkbench} from './scoring-workbench.mjs';
 import {createScoringSetup} from './scoring-setup.mjs';
+import {createScoringRecurrence} from './scoring-recurrence.mjs';
 import {createOperations,ensureOperationsSchema} from './operations.mjs';
 import {performanceClientOverview,performanceClientEmployeeMonth} from './performance-client-data.mjs';
 import {createSourceDataCache,createSourceResponseCache} from './source-data-cache.mjs';
@@ -180,6 +181,7 @@ const performance = createPerformance({managerReviews,calendar:()=>chinaWorkCale
 const reportAutomation=createReportAutomation({query:querySqlRows,exec:execSql,sql:sqlValue,getConfig:systemSettings.reportAutomationConfig,isRunning:()=>liveReportSync.isRunning(),start:options=>liveReportSync.start(options)});
 const scoringSetup=createScoringSetup({query:querySqlRows,exec:execSql,sql:sqlValue,isBoss:id=>bossAccessState.userIds.has(id)||(config.authMode==='mock'&&id==='mock_owner')});
 const scoringWorkbench=createScoringWorkbench({query:querySqlRows,exec:execSql,sql:sqlValue,setup:scoringSetup,managerReviews,bossMembers:()=>[...bossAccessState.userIds].map(userId=>({userId,name:bossAccessState.members.find(m=>m.userId===userId)?.name||'老板'}))});
+const scoringRecurrence=createScoringRecurrence({query:querySqlRows,exec:execSql,sql:sqlValue,setup:scoringSetup,managerReviews,bossMembers:()=>[...bossAccessState.userIds].map(userId=>({userId,name:bossAccessState.members.find(m=>m.userId===userId)?.name||'老板'}))});
 const personalScoringReminders=createPersonalScoringReminders({managerReviews,bossUserIds:()=>[...bossAccessState.userIds],policyFor:systemSettings.policyFor,query:querySqlRows,exec:execSql,sql:sqlValue,
  enabled:systemSettings.scoringRemindersEnabled,deliver:(userId,text,id)=>botMessenger.send(userId,text,id)});
 
@@ -222,6 +224,8 @@ scheduleMonthEndScoreReminders();
 scheduleLarkAuthMonitor();
 const activateScoring=()=>scoringSetup.activateDue().catch(()=>console.error('scheduled scoring activation failed'));
 setInterval(activateScoring,60000).unref();void activateScoring();
+const generateRecurringScoring=()=>scoringRecurrence.tick().catch(()=>console.error('recurring scoring generation failed'));
+setInterval(generateRecurringScoring,60000).unref();void generateRecurringScoring();
 const checkOperations=()=>operations.tick().catch(()=>console.error('operations check failed'));
 setInterval(checkOperations,60000).unref();void checkOperations();
 
@@ -372,6 +376,16 @@ async function route(req, res) {
     }
     await systemSettings.audit(userForPolicy,body.action==='open'?'月度互评已开放（未发送通知）':'月度互评周期已准备（手动配置关系）',{cycleId});
     return sendJson(res,200,{ok:true,cycle:await loadScoring360Cycle(cycleId),messagesSent:0});
+  }
+  if(url.pathname==='/api/scoring360/recurring-plan'){
+    if(!managerForPolicy)return sendJson(res,403,{ok:false,error:'manager_only'});
+    res.setHeader('cache-control','no-store');
+    try{
+      if(req.method==='GET')return sendJson(res,200,{ok:true,...await scoringRecurrence.overview()});
+      if(req.method!=='POST')return sendJson(res,405,{ok:false,error:'method_not_allowed'});
+      if(req.headers.origin&&new URL(req.headers.origin).host!==req.headers.host)return sendJson(res,403,{ok:false,error:'invalid_origin'});
+      const body=await readJsonBody(req,{limitBytes:8000});return sendJson(res,200,{ok:true,...await scoringRecurrence.mutate(body,userForPolicy)});
+    }catch(error){const known=['invalid_recurring_month','invalid_recurring_config','invalid_recurring_action','recurring_source_empty','recurring_source_invalid','recurring_source_too_large','recurring_plan_required','recurring_plan_changed','recurring_plan_busy','self_scoring_forbidden'];return sendJson(res,409,{ok:false,error:known.includes(error.message)?error.message:'recurring_plan_failed'});}
   }
   if(url.pathname==='/api/scoring360/workbench'){
     if(!managerForPolicy)return sendJson(res,403,{ok:false,error:'manager_only'});

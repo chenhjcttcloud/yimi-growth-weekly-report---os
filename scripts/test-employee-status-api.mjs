@@ -15,7 +15,7 @@ const dir=await mkdtemp(path.resolve('outputs/tests/employee-status-')),db=dir+'
 await mkdir(data);
 const sql=value=>value==null?'NULL':"'"+String(value).replaceAll("'","''")+"'";
 const run=(statement,json=false)=>{
- const result=spawnSync('sqlite3',['-bail',...(json?['-json']:[]),db],{input:statement,encoding:'utf8',maxBuffer:8*1024*1024});
+ const result=spawnSync('sqlite3',['-bail','-cmd','.timeout 5000',...(json?['-json']:[]),db],{input:statement,encoding:'utf8',maxBuffer:8*1024*1024});
  assert.equal(result.status,0,result.stderr);
  return json?JSON.parse(result.stdout||'[]'):result.stdout.trim();
 };

@@ -1,0 +1,76 @@
+import assert from 'node:assert/strict';
+import {mkdir,mkdtemp,readFile,writeFile} from 'node:fs/promises';
+import {spawnSync} from 'node:child_process';
+import path from 'node:path';
+import {createDepartments} from '../server/departments.mjs';
+import {createManagerReviews} from '../server/manager-reviews.mjs';
+import {createScoringSetup} from '../server/scoring-setup.mjs';
+import {createScoringRecurrence} from '../server/scoring-recurrence.mjs';
+import {createPerformance} from '../server/performance.mjs';
+
+// Every identity is fictional. Keep all fixtures, snapshots and diagnostics.
+await mkdir('outputs/tests',{recursive:true});
+const root=await mkdtemp(path.resolve('outputs/tests/scoring-recurrence-'));
+const schema=await readFile('db/schema.sql','utf8'),actor={userId:'fixture-admin',name:'测试管理员'},checks=[];
+let externalRequests=0;const realFetch=globalThis.fetch;globalThis.fetch=async()=>{externalRequests++;throw Error('recurrence_tests_must_not_contact_providers');};
+const quote=value=>value===null||value===undefined||value===''?'NULL':"'"+String(value).replaceAll("'","''")+"'";
+async function fixture(label,at='2026-11-01T00:05:00+08:00'){
+ const dir=root+'/'+label;await mkdir(dir);const db=dir+'/test.sqlite';let time=new Date(at);
+ const raw=(statement,json=false)=>{const r=spawnSync('sqlite3',['-bail','-cmd','.timeout 5000',...(json?['-json']:[]),db],{input:statement,encoding:'utf8',maxBuffer:32*1024*1024});assert.equal(r.status,0,r.stderr);return json?JSON.parse(r.stdout||'[]'):r.stdout.trim();};
+ const query=async statement=>raw(statement,true).map(row=>Object.fromEntries(Object.entries(row).map(([k,v])=>[k,v==null?'':String(v)]))),exec=async statement=>raw(statement);
+ raw(schema);raw(`INSERT INTO employees(user_id,name,department,manager_user_id) VALUES('boss','测试老板','管理',''),('head','测试负责人','团队',''),('staff','测试员工','团队','head'),('peer','测试同事','团队','head');
+ INSERT INTO organization_departments VALUES('team','团队','head',datetime('now')),('management','管理','boss',datetime('now'));
+ INSERT INTO employee_employment_periods(id,employee_user_id,start_date,source) SELECT 'employment-'||user_id,user_id,'2026-08-01','fixture' FROM employees;
+ INSERT INTO scoring360_cycles(id,label,start_date,end_date,status) VALUES('2026-10-360','十月草稿','2026-10-01','2026-10-31','draft');
+ INSERT INTO scoring360_assignments(id,cycle_id,evaluee_name,evaluator_name,evaluee_user_id,evaluator_user_id) VALUES('oct-staff','2026-10-360','测试员工','测试同事','staff','peer'),('oct-peer','2026-10-360','测试同事','测试员工','peer','staff'),('oct-head','2026-10-360','测试负责人','测试同事','head','peer');`);
+ const employees=async()=> (await query('SELECT * FROM employees WHERE is_active=1;')).map(e=>({userId:e.user_id,name:e.name,department:e.department,managerUserId:e.manager_user_id}));
+ const departments=createDepartments({query,exec,sql:quote,employees});
+ const reviews=createManagerReviews({query,exec,sql:quote,organization:departments.overview,reports:async()=>[],isBossUserId:id=>id==='boss',now:()=>time});
+ const setup=createScoringSetup({query,exec,sql:quote,isBoss:id=>id==='boss',now:()=>time});
+ const options={query,exec,sql:quote,setup,managerReviews:reviews,bossMembers:()=>[{userId:'boss',name:'测试老板'}],now:()=>time};
+ const service=createScoringRecurrence(options);
+ const cycle=month=>raw(`SELECT * FROM scoring360_cycles WHERE substr(start_date,1,7)=${quote(month)} ORDER BY id;`,true);
+ const links=month=>raw(`SELECT evaluee_user_id,evaluator_user_id,status FROM scoring360_assignments WHERE cycle_id IN(SELECT id FROM scoring360_cycles WHERE substr(start_date,1,7)=${quote(month)}) ORDER BY evaluee_user_id,evaluator_user_id;`,true);
+ const scope=month=>JSON.stringify(['scoring360_cycles','scoring360_assignments','scoring360_responses'].map((table,i)=>raw(`SELECT * FROM ${table} WHERE ${i===0?'substr(start_date,1,7)='+quote(month):'cycle_id IN(SELECT id FROM scoring360_cycles WHERE substr(start_date,1,7)='+quote(month)+')'} ORDER BY rowid;`,true)));
+ const business=()=>JSON.stringify(['scoring360_cycles','scoring360_assignments','scoring360_responses','performance_results','monthly_review_plans','monthly_manager_scores','department_person_scores','app_settings','system_operation_logs'].map(table=>raw('SELECT * FROM '+table+' ORDER BY rowid;',true)));
+ const adopted=(extra={})=>service.mutate({action:'adoptMonth',sourceMonth:'2026-10',startMonth:'2026-11',enabled:true,...extra},actor);
+ return {dir,db,raw,query,exec,service,options,reviews,setup,departments,cycle,links,scope,business,adopted,time:()=>time,setTime:value=>{time=new Date(value);}};
+}
+try{
+ const f=await fixture('normal');
+ const before=f.business(),read=await f.service.overview();assert.equal(read.configured,false);assert.equal(read.config.enabled,false);assert.equal((await f.service.tick()).skipped,'disabled');assert.equal(f.business(),before,'reading or a disabled scheduler must not prepare a month');
+ const sourceBefore=f.scope('2026-10'),enabled=await f.adopted();assert(enabled.config.enabled&&enabled.configured);assert.equal(enabled.config.sourceMonth,'2026-10');assert.equal(enabled.config.pairCount,3);assert.equal(enabled.config.targetCount,3);assert.equal(f.cycle('2026-11')[0].status,'open');assert.equal(f.links('2026-11').length,3);assert.equal(f.scope('2026-10'),sourceBefore,'explicitly confirming a draft source preserves that draft and all old tasks');
+ assert.equal(f.raw("SELECT count(*) AS n FROM scoring360_responses WHERE cycle_id='2026-11-360';",true)[0].n,0);assert.equal(f.raw("SELECT count(*) AS n FROM all_monthly_weighted_results WHERE month='2026-11';",true)[0].n,0);assert(f.cycle('2026-11')[0].launch_at);assert(!f.links('2026-11').some(p=>p.evaluee_user_id==='boss'||p.evaluee_user_id===p.evaluator_user_id));
+ const initialMonth=f.scope('2026-11');await Promise.all([f.service.tick(),createScoringRecurrence(f.options).tick()]);await f.service.mutate({action:'run'},actor);assert.equal(f.scope('2026-11'),initialMonth,'repeated scheduler/manual checks cannot overwrite generated tasks');checks.push('explicit_draft_confirmation_and_new_empty_month');
+ // A current-month edit becomes the fixed future template only when confirmed.
+ f.raw("UPDATE scoring360_assignments SET status='inactive' WHERE cycle_id='2026-11-360' AND evaluee_user_id='peer'; INSERT INTO scoring360_assignments(id,cycle_id,evaluee_name,evaluator_name,evaluee_user_id,evaluator_user_id) VALUES('nov-peer-new','2026-11-360','测试同事','测试负责人','peer','head'); INSERT INTO scoring360_responses(id,assignment_id,cycle_id,evaluee_name,evaluator_name,score,comment) SELECT 'nov-response',id,cycle_id,evaluee_name,evaluator_name,80,'当月实际评分' FROM scoring360_assignments WHERE cycle_id='2026-11-360' AND evaluee_user_id='staff' AND status='active';");
+ await f.reviews.submit({userId:'head',name:'测试负责人'},{month:'2026-11',employeeUserId:'staff',score:90,comment:'当月负责人评分'});
+ const performance=createPerformance({query:f.query,exec:f.exec,sql:quote,readData:()=>({meta:{periods:[]},employee_summary:[],weekly_scores:[]}),managerReviews:f.reviews,now:f.time});await performance.overview();assert.equal((await performance.personal('测试员工','staff')).history.find(r=>r.month==='2026-11').collaboration,83);
+ const frozenMonth=f.scope('2026-11'),frozenResults=JSON.stringify(f.raw('SELECT * FROM all_monthly_weighted_results ORDER BY month,employee_user_id,kind;',true)),firstVersion=enabled.config.versionId;
+ const revised=await f.service.mutate({action:'adoptMonth',sourceMonth:'2026-11',startMonth:'2026-11',enabled:true},actor);assert.notEqual(revised.config.versionId,firstVersion);assert.equal(f.scope('2026-11'),frozenMonth);assert.equal(JSON.stringify(f.raw('SELECT * FROM all_monthly_weighted_results ORDER BY month,employee_user_id,kind;',true)),frozenResults);assert.equal(f.raw("SELECT count(*) AS n FROM app_settings WHERE key LIKE 'scoring360_recurring_plan_version_%';",true)[0].n,2);
+ // UTC Nov 30 becomes December in Shanghai; two instances must claim it once.
+ f.setTime('2026-11-30T16:00:00Z');await Promise.all([f.service.tick(),createScoringRecurrence(f.options).tick()]);assert.equal(f.cycle('2026-12').length,1);assert.equal(f.cycle('2026-12')[0].status,'open');assert.equal(f.links('2026-12').length,3);assert(f.links('2026-12').some(p=>p.evaluee_user_id==='peer'&&p.evaluator_user_id==='head'));assert.equal(f.raw("SELECT count(*) AS n FROM scoring360_responses WHERE cycle_id='2026-12-360';",true)[0].n,0);assert.equal(f.scope('2026-11'),frozenMonth);assert.equal(JSON.stringify(f.raw('SELECT * FROM all_monthly_weighted_results ORDER BY month,employee_user_id,kind;',true)),frozenResults);
+ assert.equal(f.raw("SELECT count(*) AS n FROM system_operation_logs WHERE action='固定配评：自动生成本月任务' AND json_extract(details_json,'$.month')='2026-12';",true)[0].n,1);checks.push('shanghai_rollover_concurrent_claim_and_published_history');
+ await f.service.mutate({action:'setEnabled',enabled:false},actor);f.setTime('2026-12-31T16:00:00Z');assert.equal((await f.service.tick()).skipped,'disabled');assert.equal(f.cycle('2027-01').length,0);checks.push('disable_prevents_next_month');
+ const future=await fixture('future','2026-10-31T15:59:59Z');const old=future.scope('2026-10');await future.adopted();assert.equal(future.cycle('2026-11').length,0);assert.equal(future.scope('2026-10'),old);future.setTime('2026-10-31T16:00:00Z');await future.service.tick();assert.equal(future.cycle('2026-11')[0].status,'open');checks.push('start_month_never_opens_early');
+ for(const type of ['draft','partial']){
+  const manual=await fixture('manual-'+type);manual.raw(`INSERT INTO scoring360_cycles(id,label,start_date,end_date,status,launch_at) VALUES('manual-nov','人工当前周期','2026-11-01','2026-11-30','${type==='draft'?'draft':'open'}',${type==='draft'?'NULL':"'2026-11-01T00:00:00+08:00'"}); INSERT INTO scoring360_assignments(id,cycle_id,evaluee_name,evaluator_name,evaluee_user_id,evaluator_user_id) VALUES('manual-link','manual-nov','测试员工','测试同事','staff','peer');`);
+  if(type==='partial')manual.raw("INSERT INTO scoring360_responses(id,assignment_id,cycle_id,evaluee_name,evaluator_name,score,comment) VALUES('manual-response','manual-link','manual-nov','测试员工','测试同事',91,'保留已提交分数');");
+  const snapshot=manual.scope('2026-11');await manual.adopted();assert.equal(manual.scope('2026-11'),snapshot);await manual.service.tick();assert.equal(manual.scope('2026-11'),snapshot);assert.equal(manual.cycle('2026-11').length,1);
+ }
+ checks.push('manual_and_partially_graded_months_never_overwritten');
+ const newcomer=await fixture('new-employee');newcomer.raw("INSERT INTO employees(user_id,name,department,manager_user_id) VALUES('new','新入职员工','团队','head'); INSERT INTO employee_employment_periods(id,employee_user_id,start_date,source) VALUES('new-employment','new','2026-11-01','fixture');");const pending=await newcomer.adopted();assert.equal(newcomer.cycle('2026-11')[0].status,'draft');assert.equal(pending.current.missingEmployeesCount,1);assert(pending.current.issueCount>0);assert(!newcomer.links('2026-11').some(p=>p.evaluee_user_id==='new'));assert.equal(newcomer.raw('SELECT count(*) AS n FROM scoring360_responses;',true)[0].n,0);checks.push('new_hire_not_assigned_guessed_raters');
+ const stopped=await fixture('stopped-rater');stopped.raw("UPDATE employees SET is_active=0 WHERE user_id='peer';");const blocked=await stopped.adopted();assert.equal(stopped.cycle('2026-11')[0].status,'draft');assert(blocked.current.issueCount>0);assert(!stopped.links('2026-11').some(p=>p.evaluee_user_id==='peer'||p.evaluator_user_id==='peer'));checks.push('inactive_accounts_excluded_missing_raters_need_attention');
+ const spare=await fixture('one_of_two_raters_stopped');spare.raw("INSERT INTO employees(user_id,name,department,manager_user_id,is_active) VALUES('stopped-extra','已停用的第二评分人','团队','head',0); INSERT INTO scoring360_assignments(id,cycle_id,evaluee_name,evaluator_name,evaluee_user_id,evaluator_user_id) VALUES('extra-staff-rater','2026-10-360','测试员工','已停用的第二评分人','staff','stopped-extra');");
+ const spareResult=await spare.adopted();assert.equal(spare.cycle('2026-11')[0].status,'draft');assert.equal(spareResult.current.missingEmployeesCount,0,'every employee still has a valid peer');assert(spareResult.current.issues.some(i=>i.type==='templateInactiveRater'&&i.userId==='staff'),'a filtered stopped second rater remains visible as a fixed-template issue');
+ const refreshed=await spare.service.overview();assert(refreshed.current.issues.some(i=>i.type==='templateInactiveRater'&&i.userId==='staff'));checks.push('stopped_second_rater_warning_survives_overview_refresh');
+ const managerMissing=await fixture('missing-manager');managerMissing.raw("UPDATE organization_departments SET leader_user_id='' WHERE id='team'; UPDATE employees SET manager_user_id='' WHERE user_id IN('staff','peer');");const managerial=await managerMissing.adopted();assert.equal(managerMissing.cycle('2026-11')[0].status,'draft');assert(managerial.current.issues.some(i=>i.type==='manager'));checks.push('missing_thirty_percent_scope_keeps_draft');
+ // A directory suspension landing after validation must invalidate the atomic claim.
+ const race=await fixture('directory-race');await race.adopted({enabled:false});let changedDuringCommit=false;
+ const racing=createScoringRecurrence({...race.options,exec:async statement=>{if(!changedDuringCommit&&statement.includes('固定配评：自动生成本月任务')){changedDuringCommit=true;race.raw("UPDATE employees SET is_active=0 WHERE user_id='peer';");}return race.exec(statement);}});
+ await racing.mutate({action:'setEnabled',enabled:true},actor);assert(changedDuringCommit);assert.equal(race.cycle('2026-11').length,0,'stale validated scopes cannot be claimed after a directory change');
+ await racing.tick();assert.equal(race.cycle('2026-11')[0].status,'draft');assert(!race.links('2026-11').some(p=>p.evaluee_user_id==='peer'||p.evaluator_user_id==='peer'));checks.push('directory_change_invalidates_stale_monthly_claim');
+ const invalid=await fixture('invalid-template');invalid.raw("INSERT INTO scoring360_assignments(id,cycle_id,evaluee_name,evaluator_name,evaluee_user_id,evaluator_user_id) VALUES('self','2026-10-360','测试员工','测试员工','staff','staff');");await assert.rejects(()=>invalid.adopted(),/self_scoring_forbidden/);assert.equal(invalid.cycle('2026-11').length,0);assert.equal((await invalid.service.overview()).configured,false);await assert.rejects(()=>invalid.service.mutate({action:'setEnabled',enabled:true},actor),/recurring_plan_required/);checks.push('invalid_template_cannot_enable');
+ assert.equal(externalRequests,0);assert.equal(f.raw('PRAGMA integrity_check;'),'ok');
+ const result={ok:true,checks,realRuntimeSqlAdapter:true,sourceDraftRequiresExplicitConfirmation:true,monthlyRelationshipsReusedWithoutScores:true,historicalAndPublishedResultsPreserved:true,concurrentMonthlyCreationIdempotent:true,personnelChangesRequireAttention:true,externalRequests,realMessagesSent:0,artifacts:root};await writeFile(root+'/result.json',JSON.stringify(result,null,2));console.log(JSON.stringify(result));
+}catch(error){await writeFile(root+'/failure.json',JSON.stringify({error:error.stack,checks,externalRequests},null,2));throw error;}finally{globalThis.fetch=realFetch;console.log('Artifacts retained:',root);}
