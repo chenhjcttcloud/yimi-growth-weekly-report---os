@@ -34,6 +34,8 @@
     "test:personal": "node scripts/test-personal-workspace.mjs",
     "test:live-sync": "node scripts/test-live-report-sync.mjs",
     "test:report-quality": "node scripts/test-report-quality-scoring.mjs && node scripts/test-report-quality-publication.mjs && node scripts/test-pending-quality-aggregates.mjs && node scripts/test-live-report-sync.mjs && node scripts/test-report-quality-ui.mjs",
+    "test:report-rescore": "node scripts/test-report-rescore-state.mjs && node scripts/test-report-rescore.mjs && node scripts/test-report-rescore-api.mjs && node scripts/test-rescore-display.mjs && node scripts/test-report-rescore-ui.mjs",
+    "test:boss-scoring": "node scripts/test-boss-leader-scoring-ui.mjs",
     "test:organization": "node scripts/test-departments.mjs && node scripts/test-organization-layout.mjs && node scripts/test-feishu-department-sync.mjs",
     "test:organization:ui": "npm run build && node scripts/test-organization-ui.mjs",
     "test:select": "node scripts/test-app-select.mjs",

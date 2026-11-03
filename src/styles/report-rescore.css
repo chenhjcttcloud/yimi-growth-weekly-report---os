@@ -1,0 +1,19 @@
+.report-rescore{margin-top:24px;padding-top:20px;border-top:1px solid var(--v2-line,#dfe8e1);min-width:0}
+.report-rescore-heading{display:flex;justify-content:space-between;align-items:flex-start;gap:12px;flex-wrap:wrap}
+.report-rescore-heading h3{margin:0;font-size:15px;color:var(--v2-ink,#263d33)}
+.report-rescore-heading p,.report-rescore-note{margin:8px 0 14px;color:var(--v2-ink-3,#73877d);font-size:12px;line-height:1.85;overflow-wrap:anywhere}
+.report-rescore-controls{display:flex;gap:10px;align-items:flex-end;flex-wrap:wrap}
+.report-rescore-controls label{display:grid;gap:6px;font-size:12px;color:var(--v2-ink-2,#486055)}
+.report-rescore-controls input{min-width:150px;max-width:100%;padding:9px 11px;border:1px solid var(--v2-line,#dfe8e1);border-radius:7px;background:var(--v2-surface,#fff);color:var(--v2-ink,#263d33)}
+.report-rescore-progress{display:grid;grid-template-columns:repeat(6,minmax(0,1fr));gap:8px;margin:16px 0}
+.report-rescore-progress>div{padding:12px;border:1px solid var(--v2-line,#dfe8e1);border-radius:8px;background:var(--v2-bg-soft,#f8faf7);min-width:0}
+.report-rescore-progress dt{font-size:11px;color:var(--v2-ink-3,#73877d);margin-bottom:7px}
+.report-rescore-progress dd{margin:0;font-size:21px;font-variant-numeric:tabular-nums;color:var(--v2-ink,#263d33)}
+.report-rescore-diagnostics{margin-top:15px;border:1px solid var(--v2-line,#dfe8e1);border-radius:8px;padding:12px;font-size:12px}
+.report-rescore-diagnostics summary{cursor:pointer;color:var(--v2-ink,#263d33)}
+.report-rescore-diagnostics ul{display:grid;gap:10px;padding:0;list-style:none;margin:13px 0}
+.report-rescore-diagnostics li{padding:11px;background:var(--v2-bg-soft,#f8faf7);border-radius:6px;overflow-wrap:anywhere}
+.report-rescore-diagnostics strong{font-size:12px;color:var(--v2-ink-2,#486055)}
+.report-rescore-diagnostics p{margin:5px 0;font-size:11px;color:var(--v2-ink-3,#73877d);line-height:1.8}
+.report-rescore-diagnostics small{font-size:10px;color:var(--v2-ink-3,#73877d);overflow-wrap:anywhere}
+@media(max-width:700px){.report-rescore-progress{grid-template-columns:repeat(3,minmax(0,1fr))}.report-rescore-controls{display:grid;grid-template-columns:minmax(0,1fr);align-items:stretch}.report-rescore-controls input{width:100%;box-sizing:border-box}.report-rescore-controls button{width:100%}.report-rescore-heading .pf-status{white-space:normal}}

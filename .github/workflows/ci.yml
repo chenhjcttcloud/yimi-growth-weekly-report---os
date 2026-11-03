@@ -25,6 +25,10 @@ jobs:
       - run: node scripts/test-live-report-sync.mjs
       - run: node scripts/test-report-quality-scoring.mjs
       - run: node scripts/test-report-quality-publication.mjs
+      - run: node scripts/test-report-rescore-state.mjs
+      - run: node scripts/test-report-rescore.mjs
+      - run: node scripts/test-report-rescore-api.mjs
+      - run: node scripts/test-rescore-display.mjs
       - run: node scripts/test-pending-quality-aggregates.mjs
       - run: node scripts/test-month-end-score-reminders.mjs
       - run: node scripts/test-china-work-calendar.mjs

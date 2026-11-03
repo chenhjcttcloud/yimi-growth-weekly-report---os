@@ -59,7 +59,7 @@ try{
  assert.deepEqual(managementViews,['bootstrap'],'reviewing scores and evidence must not import the full historical dashboard module');
  const dashboardResponse=page.waitForResponse(response=>{const u=new URL(response.url());return u.pathname==='/api/management-data'&&u.searchParams.get('view')==='client';});
  await page.getByRole('button',{name:'老板驾驶舱',exact:true}).click();assert((await dashboardResponse).ok());await page.locator('.v3-workbench-page').waitFor();assert.deepEqual(managementViews,['bootstrap','client'],'historical management data should load once when its page is opened');
- await page.getByRole('button',{name:'评分工作台',exact:true}).click();await selector.waitFor();assert.deepEqual(managementViews,['bootstrap','client'],'returning to scores must not redownload dashboard data');
+ await page.getByRole('button',{name:'得分页',exact:true}).click();await selector.waitFor();assert.deepEqual(managementViews,['bootstrap','client'],'returning to scores must not redownload dashboard data');
  await page.screenshot({path:dir+'/03-returned-scoring-without-data-refetch.png',fullPage:true});assert.deepEqual(errors,[]);assert.deepEqual(writes,[]);
  }
  assert.equal(sql("SELECT count(*) FROM scoring360_responses; SELECT count(*) FROM monthly_manager_scores; SELECT count(*) FROM department_leader_scores;"),humanBefore);assert.equal(sql('SELECT count(*) FROM automatic_performance_results;'),autoBefore);assert.equal(sql('SELECT count(*) FROM weekly_reminder_sends;'),'0');assert.equal(sql('SELECT count(*) FROM monthly_score_reminder_deliveries;'),'0');assert.equal(sql('PRAGMA integrity_check;'),'ok');const blocked=await readFile(dir+'/blocked-outbound.log','utf8').catch(e=>{if(e.code==='ENOENT')return '';throw e;});assert.equal(blocked,'');

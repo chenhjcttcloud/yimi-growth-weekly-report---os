@@ -42,7 +42,7 @@ try{
  await page.evaluate(id=>localStorage.setItem('admin-perspective:'+id,'employee:'+id),admin.userId);await page.goto(base+'?page=coach');await title('AI 教练');await page.reload();await title('AI 教练');
  await page.goto(base+'?page=settings');await title('个人最终结果');await urlValue('page','growth');
  role='member';protectedRequests.length=0;await page.goto(base+'?page=departments&departmentTab=organization');await title('个人最终结果');await urlValue('page','growth');assert.deepEqual(protectedRequests,[],'an inaccessible restored route must not mount management pages');
- await page.goto(base+'/scores?tab=my360');await title('评分工作台');await urlValue('page','scores');await page.reload();await title('评分工作台');
+ await page.goto(base+'/scores?tab=my360');await title('得分页');await urlValue('page','scores');await page.reload();await title('得分页');
  role='boss';await page.goto(base+'?page=invalid-page');await title('老板驾驶舱');await urlValue('page','dashboard');
  assert.deepEqual(errors,[]);console.log(JSON.stringify({ok:true,settingsAndSection:true,selectedDepartment:true,departmentTabs:true,adminManagement:true,adminPersonalAndPreview:true,permissionFallback:true,legacyScoresLink:true,invalidRouteFallback:true,consoleErrors:0,artifacts:directory}));
 }catch(error){const page=context.pages().at(-1);if(page)await page.screenshot({path:directory+'/failure.png'}).catch(()=>{});throw error;}

@@ -121,13 +121,76 @@ try{
  assert.equal(quality.result.status,'ready');
  assert.equal(ownMonth(view).reports.find(report=>report.id==='pending-score').candidate,0);
  assert.equal(run(`SELECT evidence_json FROM automatic_performance_results WHERE id=${sql(firstPublicationId)};`),firstSnapshot,'later automatic publications retain the original explanation snapshot');
- assert.equal(run('SELECT count(*) FROM performance_results;'),'0');
+
+ // Existing finals remain visible while the current target analysis is pending.
+ // Completed employees publish independently of another employee's rescore.
+ const updateContent=(id,update)=>{
+  const row=run(`SELECT content_json FROM weekly_reports WHERE id=${sql(id)};`,true)[0];
+  const next=update(JSON.parse(row.content_json));
+  run(`UPDATE weekly_reports SET content_json=${sql(JSON.stringify(next))} WHERE id=${sql(id)};`);
+ };
+ const queue=id=>updateContent(id,content=>{
+  const {ai,...body}=content;
+  const previousQuality={ai,aiModel:content.aiModel,aiPromptVersion:content.aiPromptVersion,aiGeneratedAt:content.aiGeneratedAt,sourceHash:content.sourceHash||'synthetic-publication-source',facts:{results:content.results,problems:content.problems,nextPlan:content.nextPlan,reflection:content.reflection},scoringWeights:weights};
+  return {...body,previousQuality,qualityRefresh:{state:'queued',targetVersion:REPORT_QUALITY_VERSION,attempts:0}};
+ });
+ const complete=(id,score)=>updateContent(id,content=>({...content,...contentFor(facts,{scores:[score,score,score,score]}),qualityRefresh:{...content.qualityRefresh,state:'ready'}}));
+ for(const id of ['low-score','legacy-score','pending-score','other-report'])queue(id);
+ view=await performance.overview();quality=qualityRow(view);
+ assert.equal(quality.result.score,40.3,'rescore keeps the last fully published month visible');
+ assert.equal(quality.result.status,'rescoring');assert.equal(quality.result.pendingAnalysis,3);assert(quality.result.previousResultAt);
+ const oldWeek=ownMonth(view).reports.find(report=>report.id==='legacy-score');
+ assert.equal(oldWeek.candidate,null,'previous weekly scores are not candidates for new monthly publication');
+ assert.equal(oldWeek.displayQualityScore,85);assert.equal(oldWeek.qualityDisplaySource,'previous');
+ workspace=await personal.workspace({userId:'staff',name:'评分测试员工'},month,'period-2026-09-11');
+ const displayedWeek=workspace.weeks.find(week=>week.end==='2026-09-11');
+ assert.equal(displayedWeek.qualityReference,85);assert.equal(displayedWeek.qualityCandidate,null);assert.equal(displayedWeek.qualityDisplaySource,'previous');
+ assert.equal(workspace.history.find(row=>row.month===month).qualityStatus,'rescoring');
+ complete('low-score',100);view=await performance.overview();
+ assert.equal(qualityRow(view).result.score,40.3,'one newly scored report must not replace the complete prior monthly score');
+ assert.equal(qualityRow(view).result.pendingAnalysis,2);
+ updateContent('legacy-score',content=>({...content,qualityRefresh:{...content.qualityRefresh,state:'failed',attempts:4}}));
+ view=await performance.overview();quality=qualityRow(view);
+ assert.equal(quality.result.score,40.3);assert.equal(quality.result.status,'rescore_failed');assert.equal(quality.result.failedAnalysis,1);
+ complete('legacy-score',60);complete('pending-score',20);view=await performance.overview();quality=qualityRow(view);
+ assert.equal(quality.result.score,60,'the employee automatically switches once all own reports are validated');
+ assert.equal(quality.result.status,'ready');assert.equal(quality.result.pendingAnalysis,0);
+ const otherQuality=view.results.find(row=>row.employee_user_id==='other'&&row.month===month&&row.kind==='quality');
+ assert.equal(otherQuality.result.score,95);assert.equal(otherQuality.result.status,'rescoring','another employee can remain in progress without blocking the ready employee');
+ // Recover the deployed pre-fix form: ai was removed but its archived snapshot
+ // and a previously published month still exist behind later pending rows.
+ const otherContent=run("SELECT content_json FROM weekly_reports WHERE id='other-report';",true)[0];
+ const archivedOther=JSON.parse(otherContent.content_json),archived=archivedOther.previousQuality;
+ const {qualityRefresh,previousQuality,...unmarked}=archivedOther;
+ run(`UPDATE weekly_reports SET content_json=${sql(JSON.stringify({...unmarked,aiAnalysisHistory:[{ai:archived.ai,model:archived.aiModel,promptVersion:archived.aiPromptVersion,generatedAt:archived.aiGeneratedAt,sourceHash:archived.sourceHash,facts:archived.facts}]}))} WHERE id='other-report';`);
+ view=await performance.overview();
+ assert.equal(view.results.find(row=>row.employee_user_id==='other'&&row.month===month&&row.kind==='quality').result.score,95,'archived previous AI restores display for already blanked records');
+ assert.equal(view.results.find(row=>row.employee_user_id==='other'&&row.month===month&&row.kind==='quality').result.status,'rescoring');
+ assert.equal(run(`SELECT evidence_json FROM automatic_performance_results WHERE id=${sql(firstPublicationId)};`),firstSnapshot,'rescore preserves every historical publication snapshot');
+
+ // Having an earlier weekly snapshot is not a previously published monthly
+ // final. A first-time employee still waits for a complete valid new result.
+ run("INSERT INTO employees(user_id,name,department,is_active) VALUES('new-staff','首次评分测试','测试团队',1); INSERT INTO employee_employment_periods(id,employee_user_id,start_date,source) VALUES('new-staff-hire','new-staff','2026-08-31','manager');");
+ store('new-staff-report','new-staff','2026-08-31','2026-09-04',{...facts,previousQuality:{ai:{scores:[73,73,73,73],summary:'原周报参考分'},facts,scoringWeights:weights},qualityRefresh:{state:'failed',targetVersion:REPORT_QUALITY_VERSION,attempts:4}});
+ view=await performance.overview();
+ const firstMonthly=view.results.find(row=>row.employee_user_id==='new-staff'&&row.month===month&&row.kind==='quality');
+ assert.equal(firstMonthly.result.score,null,'do not invent a monthly final from one previous weekly reference');
+ assert.equal(firstMonthly.result.status,'pending_ai');assert.equal(firstMonthly.result.failedAnalysis,1);
+ // A pre-existing manually confirmed final remains authoritative even when a
+ // report in that same month is queued for automatic rescore.
+ run("INSERT INTO performance_results VALUES('2026-08','staff','评分测试员工','quality','{\"score\":77}','{\"reviewNote\":\"历史人工确认，不可改写\"}','历史确认人','2026-08-31');");
+ store('manual-month-report','staff','2026-08-24','2026-08-28',{...facts,qualityRefresh:{state:'failed',targetVersion:REPORT_QUALITY_VERSION}});
+ const manualBefore=run("SELECT * FROM performance_results WHERE month='2026-08';",true);
+ view=await performance.overview();
+ assert.equal(view.results.find(row=>row.employee_user_id==='staff'&&row.month==='2026-08'&&row.kind==='quality').result.score,77);
+ assert.deepEqual(run("SELECT * FROM performance_results WHERE month='2026-08';",true),manualBefore,'rescore never edits historical human-confirmed results');
+ assert.equal(run('SELECT count(*) FROM performance_results;'),'1');
  assert.equal(run('SELECT count(*) FROM scoring360_responses;'),'0');
  assert.equal(run('SELECT count(*) FROM monthly_manager_scores;'),'0');
  assert.equal(run('SELECT count(*) FROM feishu_tasks;'),'0');
  assert.equal(run('PRAGMA integrity_check;'),'ok');
  assert.equal(outboundRequests,0);
- const result={ok:true,lowScoreAutomaticallyPublished:true,lowConfidenceAndAnomaliesDoNotBlock:true,exactEvidenceAndReasonsPreserved:true,monthlySnapshotsRetained:true,pendingAnalysisIsNull:true,forgedStoredEvidenceRejected:true,validZeroPublished:true,legacyScoresCompatible:true,personalEvidenceScoped:true,overviewHeadersRemainLean:true,humanApprovalRequired:false,externalRequests:outboundRequests,messagesSent:0,artifacts:dir};
+ const result={ok:true,lowScoreAutomaticallyPublished:true,lowConfidenceAndAnomaliesDoNotBlock:true,exactEvidenceAndReasonsPreserved:true,monthlySnapshotsRetained:true,pendingAnalysisIsNull:true,forgedStoredEvidenceRejected:true,validZeroPublished:true,legacyScoresCompatible:true,oldMonthlyFinalPreservedDuringRescore:true,failedRescoreKeepsPriorScore:true,individualEmployeePublishesIndependently:true,archivedBlankedScoreRecovered:true,noInventedFirstMonthlyFinal:true,manualHistoricalFinalImmutable:true,personalEvidenceScoped:true,overviewHeadersRemainLean:true,humanApprovalRequired:false,externalRequests:outboundRequests,messagesSent:0,artifacts:dir};
  await writeFile(path.join(dir,'result.json'),JSON.stringify(result,null,2));
  console.log(JSON.stringify(result));
 }finally{

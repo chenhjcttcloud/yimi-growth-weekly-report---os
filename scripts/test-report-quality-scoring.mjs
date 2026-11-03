@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import {REPORT_QUALITY_VERSION,REPORT_QUALITY_RUBRIC,buildReportQualityPrompt,validateReportQualityAnalysis,reportQualityAssessment} from '../server/report-quality-scoring.mjs';
+import {REPORT_QUALITY_VERSION,REPORT_QUALITY_PROMPT_VERSION,REPORT_QUALITY_RUBRIC,buildReportQualityPrompt,validateReportQualityAnalysis,reportQualityAssessment,qualityAnalysisDiagnostic} from '../server/report-quality-scoring.mjs';
 import {validateAnalysis} from '../server/live-report-sync.mjs';
 import {makeReportQualityAnalysis} from './report-quality-test-fixtures.mjs';
 
@@ -9,7 +9,7 @@ const clone=value=>structuredClone(value);
 const expectedScores=[90,80,85,75];
 const checked=validateReportQualityAnalysis(fixture(),facts);
 assert.equal(checked.version,REPORT_QUALITY_VERSION);
-assert.equal(checked.promptVersion,REPORT_QUALITY_VERSION);
+assert.equal(checked.promptVersion,REPORT_QUALITY_PROMPT_VERSION);
 assert.deepEqual(checked.scores,expectedScores,'program derives normalized module scores from criterion points');
 assert.equal(checked.modules.length,4);
 for(const [index,module] of checked.modules.entries()){
@@ -78,7 +78,37 @@ for(const [moduleIndex,module] of storedAssessment.modules.entries()){
  assert(module.missing.length<=10,'module-level display summary stays bounded');
  for(const [criterionIndex,criterion] of module.criteria.entries())assert.deepEqual(criterion.missing,detailedMissing.modules[moduleIndex].criteria[criterionIndex].missing,'every original criterion-level missing evidence detail is retained');
 }
+// Diagnostic locations are stable schema identifiers, never excerpts of employee
+// content or provider responses. Corrective retries can address exactly one cause.
+function diagnosticFor(change) {
+ const value=fixture();change(value);
+ try{validateReportQualityAnalysis(value,facts);assert.fail('invalid fixture must be rejected');}
+ catch(error){assert.equal(error.message,'invalid_ai_quality_analysis');assert.equal(error.code,'invalid_ai_quality_analysis');return qualityAnalysisDiagnostic(error);}
+}
+const criterionContext={moduleId:'results',criterionId:'result',retryable:true};
+assert.deepEqual(diagnosticFor(value=>{value.modules=value.modules.slice(0,3);}),{code:'missing_module',path:'modules.reflection',moduleId:'reflection',retryable:true});
+assert.deepEqual(diagnosticFor(value=>{value.modules[0].reason=' ';}),{code:'required_text',path:'modules.results.reason',moduleId:'results',retryable:true});
+assert.deepEqual(diagnosticFor(value=>{value.modules[0].criteria[0].reason=undefined;}),{code:'required_text',path:'modules.results.criteria.result.reason',...criterionContext});
+assert.deepEqual(diagnosticFor(value=>{value.modules[0].criteria[0].score=11;}),{code:'invalid_score',path:'modules.results.criteria.result.score',...criterionContext});
+assert.deepEqual(diagnosticFor(value=>{value.modules[0].criteria[0].evidence=[{quote:'PRIVATE_EMPLOYEE_RESULT_DO_NOT_LOG',type:'reported_fact'}];}),{code:'evidence_not_in_source',path:'modules.results.criteria.result.evidence[0].quote',...criterionContext});
+assert.deepEqual(diagnosticFor(value=>{value.modules[0].confidence=undefined;}),{code:'invalid_confidence',path:'modules.results.confidence',moduleId:'results',retryable:true});
+assert.deepEqual(diagnosticFor(value=>{value.modules[0].missing=Array(11).fill('PRIVATE_EMPLOYEE_MISSING_DETAIL');}),{code:'too_many_missing',path:'modules.results.missing',moduleId:'results',retryable:true});
+assert.deepEqual(diagnosticFor(value=>{value.modules[0].criteria[0].evidence=Array(9).fill({quote:facts.results,type:'reported_fact'});}),{code:'too_many_evidence',path:'modules.results.criteria.result.evidence',...criterionContext});
+assert.deepEqual(diagnosticFor(value=>{value.modules[0].criteria[0].evidence=[{quote:facts.results,type:'PRIVATE_PROVIDER_VALUE'}];}),{code:'invalid_evidence_type',path:'modules.results.criteria.result.evidence[0].type',...criterionContext});
+assert.deepEqual(diagnosticFor(value=>{value.modules[0].criteria=value.modules[0].criteria.slice(1);}),{code:'missing_criterion',path:'modules.results.criteria.result',...criterionContext});
+const spoofed=Object.assign(Error('PRIVATE_RESPONSE_OR_API_KEY'),{code:'evidence_not_in_source',path:'PRIVATE_EMPLOYEE_QUOTE',moduleId:'PRIVATE_NAME',criterionId:'PRIVATE_ID',retryable:true});
+assert.deepEqual(qualityAnalysisDiagnostic(spoofed),{code:'analysis_failed',path:'$',retryable:false});
+assert.deepEqual(qualityAnalysisDiagnostic(new SyntaxError('PRIVATE_TRUNCATED_PROVIDER_JSON')),{code:'invalid_json',path:'$',retryable:true});
+assert(!JSON.stringify(qualityAnalysisDiagnostic(spoofed)).includes('PRIVATE_'),'opaque exception text and forged diagnostic properties cannot reach logs or retry feedback');
+const oldPromptAssessment=reportQualityAssessment({...facts,ai:{...checked,promptVersion:REPORT_QUALITY_VERSION},aiPromptVersion:REPORT_QUALITY_VERSION});
+assert.equal(oldPromptAssessment.promptVersion,REPORT_QUALITY_VERSION,'old saved scoring evidence keeps its actual prompt provenance');
 const prompt=buildReportQualityPrompt();
 for(const module of REPORT_QUALITY_RUBRIC){assert(prompt.includes(module.module));for(const criterion of module.criteria){assert(prompt.includes(criterion.id));assert(prompt.includes(criterion.standard));}}
 assert(prompt.includes(REPORT_QUALITY_VERSION),'request includes a versioned scoring rule');
+assert(prompt.includes(REPORT_QUALITY_PROMPT_VERSION),'request includes the new corrective prompt version');
+for(const module of REPORT_QUALITY_RUBRIC){
+ const occurrences=prompt.split('\"id\":\"'+module.id+'\"').length-1;
+ assert(occurrences>=2,'each module appears in both fixed rubric and complete response template');
+ for(const criterion of module.criteria){assert(prompt.split('\"id\":\"'+criterion.id+'\"').length-1>=2,'every criterion is present in the response template');}
+}
 console.log('report quality scoring tests passed: normalized criterion scoring, exact evidence and offsets, score/reason/schema validation, forced missing-module zero, low-confidence automatic results, legacy compatibility and versioned rubric prompt; no upstream calls or data writes');

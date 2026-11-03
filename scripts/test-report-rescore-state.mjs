@@ -1,0 +1,41 @@
+import assert from 'node:assert/strict';
+import {REPORT_QUALITY_VERSION,REPORT_QUALITY_PROMPT_VERSION,validateReportQualityAnalysis} from '../server/report-quality-scoring.mjs';
+import {reportFacts,usableQuality,previousQualitySnapshot,currentQualityCached,archivedQuality} from '../server/report-rescore-state.mjs';
+import {makeReportQualityAnalysis} from './report-quality-test-fixtures.mjs';
+
+// Pure synthetic state tests: no database, upstream requests, employee records,
+// cleanup, production access or file writes are involved.
+const facts={results:'【虚构样本】完成3项接口验收。',problems:'【虚构样本】接口范围存在争议，已邀请双方确认。',nextPlan:'【虚构样本】优先在周五前交付3项通过的验收记录。',reflection:'【虚构样本】先确认范围减少返工，下次复用检查清单。'};
+const model='synthetic-rescore-model',sourceHash='synthetic-rescore-source',weights=[30,25,25,20];
+const normalized=validateReportQualityAnalysis(makeReportQualityAnalysis(facts),facts);
+const ai={...makeReportQualityAnalysis(facts),...normalized};
+const ready={...facts,ai,aiModel:model,aiPromptVersion:REPORT_QUALITY_PROMPT_VERSION,aiGeneratedAt:'2026-11-02T00:00:00Z',sourceHash,scoringWeights:weights};
+assert(currentQualityCached(ready,sourceHash,model));
+assert(currentQualityCached({...ready,aiPromptVersion:REPORT_QUALITY_VERSION,ai:{...ai,promptVersion:REPORT_QUALITY_VERSION}},sourceHash,model),'valid earlier prompt output under unchanged scoring rule remains reusable');
+assert.equal(currentQualityCached({...ready,aiPromptVersion:'unknown-prompt'},sourceHash,model),false,'unknown prompt version must be stale');
+assert.equal(currentQualityCached(ready,'changed-source',model),false,'changed report cannot reuse old current grade');
+assert.equal(currentQualityCached(ready,sourceHash,'changed-model'),false,'changed model invalidates current cached analysis');
+assert.equal(currentQualityCached({...ready,ai:{...ai,version:'unknown-rule'}},sourceHash,model),false,'unknown scoring rule cannot be a current grade');
+assert.deepEqual(reportFacts({'本周成果摘要':facts.results,'问题摘要':facts.problems,'下周计划摘要':facts.nextPlan,'思考与复盘摘要':facts.reflection}),facts);
+assert(usableQuality(ai,facts));
+const forged=structuredClone(ready);forged.ai.modules[0].criteria[0].evidence[0].quote='伪造原文，不属于任何本模块正文';
+assert.equal(currentQualityCached(forged,sourceHash,model),false,'forged stored citation cannot be reused');
+assert.equal(previousQualitySnapshot(forged),null,'forged current-rule citation cannot masquerade as a published fallback');
+const old={scores:[73,74,75,76],summary:'旧版虚构评分，没有逐项证据。'};
+const history=[{ai:old,model:'old-model',promptVersion:'legacy',generatedAt:'2026-10-31T00:00:00Z',sourceHash:'old-source',facts,scoringWeights:weights}];
+const deployedPending={...facts,sourceHash,aiAnalysisHistory:history};
+const recovered=previousQualitySnapshot(deployedPending);
+assert.deepEqual(recovered.ai,old,'deployed pending rows recover their previous displayed grade from archived analysis');
+assert.equal(recovered.aiModel,'old-model');assert.equal(recovered.sourceHash,'old-source');assert.deepEqual(recovered.facts,facts);assert.deepEqual(recovered.scoringWeights,weights);
+const previous={ai:old,aiModel:'prior-model',aiPromptVersion:'legacy',aiGeneratedAt:'2026-10-30',sourceHash:'prior-source',facts,scoringWeights:weights};
+assert.equal(previousQualitySnapshot({...deployedPending,previousQuality:previous}).sourceHash,'prior-source','explicit last published snapshot takes precedence over older archive entries');
+assert.equal(previousQualitySnapshot({...ready,previousQuality:previous}).sourceHash,sourceHash,'valid current result is preferred over fallback');
+const archived=archivedQuality(ready),archivedAgain=archivedQuality({...ready,aiAnalysisHistory:archived});
+assert.equal(archived.length,1);assert.deepEqual(archivedAgain,archived,'repeated failures do not duplicate the same prior successful analysis');
+assert.deepEqual(archived[0].facts,facts);assert.deepEqual(archived[0].ai,ai);assert.deepEqual(archived[0].scoringWeights,weights);
+assert.equal(previousQualitySnapshot({...deployedPending,aiAnalysisHistory:[...history,{ai:forged.ai,model,facts,sourceHash}]}).ai.summary,old.summary,'a newer invalid archived analysis cannot hide an older usable grade');
+assert.deepEqual(previousQualitySnapshot({...deployedPending,aiAnalysisHistory:[null,...history]}).ai,old,'null legacy archive entries cannot hide an older usable snapshot');
+assert.equal(previousQualitySnapshot({...facts,aiAnalysisHistory:[]}),null,'never-scored report has no invented fallback');
+assert.equal(previousQualitySnapshot({...facts,ai:{scores:[0,0,0,0],summary:'有效的历史0分'}}).ai.scores[0],0,'valid zero grade remains eligible as previous result');
+assert.deepEqual(previousQualitySnapshot({...facts,aiAnalysisHistory:{invalid:'not-an-array'}}),null,'malformed legacy archive does not crash report reads or batch preparation');
+console.log('report rescore state tests passed: old-prompt compatibility, stale source/model detection, exact stored evidence, archived previous-grade recovery, idempotent history, valid zero, and malformed legacy archive handling; no data writes or upstream calls');

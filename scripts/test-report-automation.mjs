@@ -19,7 +19,7 @@ const item={task_id:'test-task',from_user_id:'test-staff',from_user_name:'测试
 const fetcher=async(url,options)=>{
  let result;if(url.includes('tenant_access_token'))result={code:0,tenant_access_token:'fake-token'};
  else if(url.includes('tasks/query')){queries++;result={code:0,data:{items:[item],has_more:false}};}
- else{aiCalls++;if(fail)return {ok:false,status:429,json:async()=>({error:{type:'test-rate-limit'}})};const facts=JSON.parse(JSON.parse(options.body).messages.at(-1).content).report;result={choices:[{message:{content:JSON.stringify(makeReportQualityAnalysis(facts,{summary:'真实输入链路的模拟AI点评',questions:['如何验证交付？']}))}}]};}
+ else{aiCalls++;if(fail)return {ok:false,status:429,json:async()=>({error:{type:'test-rate-limit'}})};const facts=JSON.parse(JSON.parse(options.body).messages.find(message=>message.role==='user').content).report;result={choices:[{message:{content:JSON.stringify(makeReportQualityAnalysis(facts,{summary:'真实输入链路的模拟AI点评',questions:['如何验证交付？']}))}}]};}
  return {ok:true,status:200,json:async()=>result};
 };
 const managerReviews={snapshot:async()=>({plans:new Map(),scores:[],bossScores:[]}),progress:()=>({kind:'unassigned',expected:0,submitted:0,complete:false,score:null})};
@@ -31,11 +31,11 @@ const scheduler=createReportAutomation(options);
 assert.equal((await scheduler.tick()).skipped,'disabled');assert.equal(aiCalls,0);
 await assert.rejects(settings.saveReportAutomation({enabled:true,intervalMinutes:1},{userId:'admin',name:'管理员'}),/invalid_report_automation/);
 await settings.saveReportAutomation({enabled:true,intervalMinutes:5},{userId:'admin',name:'管理员'});
-const results=await Promise.all([scheduler.tick(),createReportAutomation(options).tick()]);assert.equal(results.filter(r=>r.status==='started').length,1);assert.equal(aiCalls,1);assert.equal(queries,1);assert.equal(published,1);
+const results=await Promise.all([scheduler.tick(),createReportAutomation(options).tick()]);assert.equal(results.filter(r=>r.status==='started').length,1);assert.equal(aiCalls,1);assert.equal(queries,1);assert.equal(published,3,'initial queue, each completed report and final state publish independently');
 let personal=await performance.personal('测试员工','test-staff');assert.equal(personal.history[0].quality,83.3);assert.equal(personal.history[0].timeliness.rate,100);assert.equal(personal.history[0].collaboration,null,'AI must not generate collaboration ratings');
 assert.equal((await createReportAutomation(options).tick()).skipped,'not_due','restart uses persisted interval');
 const generatedAt=JSON.parse(run('SELECT content_json FROM weekly_reports;',true)[0].content_json).aiGeneratedAt;assert(generatedAt);now=new Date('2026-10-27T02:05:00Z');await scheduler.tick();assert.equal(JSON.parse(run('SELECT content_json FROM weekly_reports;',true)[0].content_json).aiGeneratedAt,generatedAt,'cache retains original AI generation time');assert.equal(queries,2);assert.equal(aiCalls,1,'unchanged report content/model reuses analysis');
-item.form_contents[0].field_value='新增验收结果，内容发生变化';now=new Date('2026-10-27T02:10:00Z');fail=true;await scheduler.tick();assert.equal(status.failed,1);assert.equal(run('SELECT count(*) AS n FROM weekly_reports;',true)[0].n,1,'AI failure retains report source');assert.equal((await performance.personal('测试员工','test-staff')).history[0].quality,null,'failed AI analysis must not invent or reuse stale scores');
+item.form_contents[0].field_value='新增验收结果，内容发生变化';now=new Date('2026-10-27T02:10:00Z');fail=true;await scheduler.tick();assert.equal(status.failed,1);assert.equal(run('SELECT count(*) AS n FROM weekly_reports;',true)[0].n,1,'AI failure retains report source');const duringFailure=(await performance.personal('测试员工','test-staff')).history[0];assert.equal(duringFailure.quality,83.3,'failed reanalysis retains the last published score');assert.equal(duringFailure.qualityStatus,'rescore_failed','retained score is explicitly marked as old, never presented as a new result');
 fail=false;now=new Date('2026-10-27T02:15:00Z');await scheduler.tick();assert.equal((await performance.personal('测试员工','test-staff')).history[0].quality,83.3);assert.equal(status.failed,0);
 const before=aiCalls;lock=true;now=new Date('2026-10-27T02:20:00Z');assert.equal((await scheduler.tick()).skipped,'sync_running');assert.equal(aiCalls,before);lock=false;
 // Corrupt/incomplete cached analysis is retried instead of trusted as a complete grade.

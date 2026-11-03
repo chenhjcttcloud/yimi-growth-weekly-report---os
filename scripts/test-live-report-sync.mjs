@@ -3,7 +3,7 @@ import {mkdtemp,mkdir,readFile} from 'node:fs/promises';
 import path from 'node:path';
 import {spawnSync} from 'node:child_process';
 import {createLiveReportSync,normalizeLiveReport,validateAnalysis} from '../server/live-report-sync.mjs';
-import {REPORT_QUALITY_VERSION} from '../server/report-quality-scoring.mjs';
+import {REPORT_QUALITY_VERSION,REPORT_QUALITY_PROMPT_VERSION} from '../server/report-quality-scoring.mjs';
 import {makeReportQualityAnalysis} from './report-quality-test-fixtures.mjs';
 
 // All upstream calls use fixtures. Databases and projections are retained.
@@ -36,7 +36,7 @@ try{
    if(stopAfterAi){run(`UPDATE employees SET is_active=0 WHERE user_id=${sql(stopAfterAi)};`);stopAfterAi='';}
    if(invalidateHistoryAfterAi){run(`UPDATE employee_employment_periods SET end_date='2026-10-15' WHERE employee_user_id=${sql(invalidateHistoryAfterAi)};`);invalidateHistoryAfterAi='';}
    if(failAi)return {ok:false,status:429,json:async()=>({error:{type:'rate_limit'}})};
-   const messages=JSON.parse(options.body).messages,payload=JSON.parse(messages.at(-1).content);
+   const messages=JSON.parse(options.body).messages,payload=JSON.parse(messages.find(message=>message.role==='user').content);
    assert(messages[0].content.includes(REPORT_QUALITY_VERSION));
    assert.deepEqual(Object.keys(payload).sort(),['previousPlan','report','week'],'submission time and timeliness status are not sent to content scoring');
    const facts=payload.report;
@@ -66,7 +66,7 @@ try{
  assert.equal(insights['period-2026-10-16'].attentionQueue.length,1);
  await sync.run(options);assert.equal(calls,1,'unchanged reports reuse cached analysis');assert.equal(count('weekly_reports'),1);
  const firstContent=JSON.parse(savedReports('ou_1')[0].content_json);
- assert.equal(firstContent.aiPromptVersion,REPORT_QUALITY_VERSION);assert.equal(firstContent.ai.version,REPORT_QUALITY_VERSION);assert.equal(firstContent.ai.modules.length,4);assert(firstContent.ai.modules[0].criteria[0].reason);assert.equal(firstContent.ai.modules[0].criteria[0].evidence[0].quote,'完成3项验收');
+ assert.equal(firstContent.aiPromptVersion,REPORT_QUALITY_PROMPT_VERSION);assert.equal(firstContent.ai.version,REPORT_QUALITY_VERSION);assert.equal(firstContent.ai.modules.length,4);assert(firstContent.ai.modules[0].criteria[0].reason);assert.equal(firstContent.ai.modules[0].criteria[0].evidence[0].quote,'完成3项验收');
  run("UPDATE weekly_reports SET content_json=json_set(content_json,'$.aiPromptVersion','old-prompt-version');");
  const beforePromptChange=calls;await sync.run(options);assert.equal(calls,beforePromptChange+1,'prompt version changes invalidate otherwise unchanged cached analysis');assert.equal(status.analyzed,1);
  const refreshedContent=JSON.parse(savedReports('ou_1')[0].content_json);assert(refreshedContent.aiAnalysisHistory.some(record=>record.ai.modules[0].criteria[0].reason===firstContent.ai.modules[0].criteria[0].reason&&record.sourceHash===firstContent.sourceHash),'reanalysis retains the prior explanation and source version');

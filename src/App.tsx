@@ -154,7 +154,7 @@ export function App() {
     }
 
     if (activePage === "scores") {
-      return currentAccess.canManageScoring360 ? <PerformanceManagementPage/> : <ScoringTasksPage key={previewEmployeeId} previewEmployeeId={previewEmployeeId}/>;
+      return currentAccess.canManageScoring360 ? <PerformanceManagementPage isBoss={currentAccess.role==='boss'}/> : <ScoringTasksPage key={previewEmployeeId} previewEmployeeId={previewEmployeeId}/>;
     }
 
     if (activePage === "monthly" && currentAccess.canViewBossDashboard) {

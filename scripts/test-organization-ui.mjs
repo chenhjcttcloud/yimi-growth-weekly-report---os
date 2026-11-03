@@ -81,7 +81,7 @@ try{
  await page.screenshot({path:'outputs/organization-mobile-detail.png',fullPage:false});
  await page.setViewportSize({width:1440,height:1000});
  // Other system entries use the same component, including the former native datalist.
- await page.getByRole('button',{name:'评分工作台',exact:true}).click();
+ await page.getByRole('button',{name:'得分页',exact:true}).click();
  await page.getByRole('combobox',{name:'选择绩效月份',exact:true}).click();
  await page.getByRole('listbox',{name:'选择绩效月份',exact:true}).getByRole('option').first().click();
  await page.getByRole('button',{name:'系统设置',exact:true}).click();

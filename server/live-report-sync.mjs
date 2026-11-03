@@ -2,7 +2,8 @@ import {createHash,randomUUID} from 'node:crypto';
 import {readFile,writeFile,rename,mkdir} from 'node:fs/promises';
 import path from 'node:path';
 import {weeklyReportSchedule,fridayOfWeek} from './weekly-report-schedule.mjs';
-import {REPORT_QUALITY_VERSION,buildReportQualityPrompt,validateReportQualityAnalysis} from './report-quality-scoring.mjs';
+import {REPORT_QUALITY_VERSION,REPORT_QUALITY_PROMPT_VERSION,buildReportQualityPrompt,validateReportQualityAnalysis,qualityAnalysisDiagnostic} from './report-quality-scoring.mjs';
+import {reportFacts,previousQualitySnapshot,currentQualityCached,archivedQuality} from './report-rescore-state.mjs';
 const digest=v=>createHash('sha256').update(JSON.stringify(v)).digest('hex');
 const date=d=>new Intl.DateTimeFormat('sv-SE',{timeZone:'Asia/Shanghai'}).format(d);
 const shift=(s,n)=>{const d=new Date(s+'T00:00:00Z');d.setUTCDate(d.getUTCDate()+n);return d.toISOString().slice(0,10);};
@@ -18,7 +19,7 @@ export function normalizeLiveReport(item,calendar={}){
  return {id:'lark-report-'+item.task_id,userId:item.from_user_id,name:item.from_user_name,department:item.department_name||'',start,end,weekId:'period-'+end,label:`${end.slice(0,4)}年${Number(end.slice(5,7))}月第${Math.ceil(Number(end.slice(8))/7)}周`,submittedAt:new Date(time*1000).toISOString(),facts,sourceHash:digest({task:item.task_id,time,facts}),source:{provider:'feishu-report',taskId:item.task_id,ruleId:item.rule_id,ruleName:item.rule_name,commitTime:time,formContents:fields,weekInference:holidayMonday?'假前最后工作日为周一，归属当前工作周':'提交日期推定；普通周一归属上一工作周，周末按本周周五归档'}};
 }
 export function validateAnalysis(value,facts){
- const a=value;if(!a||typeof a.summary!=='string'||!a.summary.trim())throw Error('invalid_ai_analysis');
+ const a=value;if(!a||typeof a.summary!=='string'||!a.summary.trim())throw Object.assign(Error('invalid_ai_analysis'),{code:'invalid_summary'});
  const quality=facts?validateReportQualityAnalysis(a,facts):{scores:a.scores};
  if(!Array.isArray(quality.scores)||quality.scores.length!==4||quality.scores.some(x=>typeof x!=='number'||!Number.isFinite(x)||x<0||x>100))throw Error('invalid_ai_analysis');
  return {...quality,summary:a.summary.slice(0,6000),questions:(Array.isArray(a.questions)?a.questions:[]).filter(x=>typeof x==='string').slice(0,5),anomalies:(Array.isArray(a.anomalies)?a.anomalies:[]).filter(x=>typeof x==='string').slice(0,10),tasks:(Array.isArray(a.tasks)?a.tasks:[]).filter(x=>x&&typeof x.title==='string'&&typeof x.description==='string').slice(0,4).map(x=>({title:x.title.slice(0,240),description:x.description.slice(0,6000),evidence:String(x.evidence||'').slice(0,4000),metric:String(x.metric||'').slice(0,2000),firstStep:String(x.firstStep||'').slice(0,2000),supportNeeded:String(x.supportNeeded||'').slice(0,2000),priority:['P0','P1','P2'].includes(x.priority)?x.priority:'P2'}))};
@@ -29,30 +30,48 @@ export function createLiveReportSync({query,exec,sql,config,settings,refreshDire
  const jsonFile=async name=>{try{return JSON.parse(await readFile(path.join(config.dataDir,name+'.json'),'utf8'));}catch{return {};}};
  const saveFile=async(name,value)=>{await mkdir(config.dataDir,{recursive:true});const p=path.join(config.dataDir,name+'.json'),tmp=p+'.tmp';await writeFile(tmp,JSON.stringify(value,null,2));await rename(tmp,p);};
  const inactive=async userId=>Number((await query(`SELECT is_active FROM employees WHERE user_id=${sql(userId)};`))[0]?.is_active)===0;
- async function request(url,body,token){const response=await fetcher(url,{method:'POST',headers:{'content-type':'application/json',...(token?{authorization:'Bearer '+token}:{})},body:JSON.stringify(body),signal:AbortSignal.timeout(120000)});const value=await response.json();if(!response.ok||value.code&&value.code!==0){const error=Error(`upstream_${response.status}_${value.code||value.error?.code||value.error?.type||'failed'}`);error.http=response.status;throw error;}return value;}
- async function analyze(report,canProcess,weights){
+ async function request(url,body,token){let response;try{response=await fetcher(url,{method:'POST',headers:{'content-type':'application/json',...(token?{authorization:'Bearer '+token}:{})},body:JSON.stringify(body),signal:AbortSignal.timeout(120000)});}catch(error){if(['AbortError','TimeoutError'].includes(error?.name))throw error;throw Object.assign(Error('upstream_network_error'),{code:'upstream_network_error'});}const value=await response.json();if(!response.ok||value.code&&value.code!==0){const error=Error(`upstream_${response.status}_${value.code||value.error?.code||value.error?.type||'failed'}`);error.http=response.status;throw error;}return value;}
+ async function analyze(report,canProcess,weights,onAttempt){
   const previous=(await query(`SELECT content_json FROM weekly_reports WHERE employee_user_id=${sql(report.userId)} AND week_end<${sql(report.end)} ORDER BY week_end DESC LIMIT 1;`))[0];
   const previousContent=previous?JSON.parse(previous.content_json):{},previousPlan=previousContent.nextPlan||'';
-  let failure;for(let n=0;n<4;n++)try{
-   await pause(n?Math.min(30000,5000*2**(n-1)):1200);
-   // A queued report can be stopped while another report is being analyzed.
-   // Check after each wait so retries cannot keep calling AI for that account.
-   if(!await canProcess(report))return null;
-   const value=await request(config.moonshotBaseUrl+'/chat/completions',{model:config.kimiFollowupModel,max_completion_tokens:10000,thinking:{type:'disabled'},response_format:{type:'json_object'},messages:[{role:'system',content:buildReportQualityPrompt()},{role:'user',content:JSON.stringify({week:report.end,report:report.facts,previousPlan})}]},config.moonshotApiKey);
-   const raw=value.choices?.[0]?.message?.content||'';const ai=validateAnalysis(JSON.parse(raw.replace(/^```(?:json)?\s*|\s*```$/g,'')),report.facts);
-   const total=scores=>Math.round(scores.reduce((sum,s,i)=>sum+s*weights[i]/100,0)*10)/10;
-   const flags=ai.modules.flatMap(m=>!report.facts[m.id]?.trim()?[`${m.module}缺失，自动记0分`]:m.confidence!==null&&m.confidence<0.6?[`${m.module}模型自评置信度较低，仅作提示`]:[]);
-   if(total(ai.scores)<60)flags.push('内容质量分低于60分，仅作改进提示');
-   if(previousContent.ai?.version===REPORT_QUALITY_VERSION&&previousContent.aiModel===config.kimiFollowupModel&&Array.isArray(previousContent.ai.scores)&&previousContent.ai.scores.length===4&&previousContent.ai.scores.every(Number.isFinite)&&Math.abs(total(ai.scores)-total(previousContent.ai.scores))>=15)flags.push('内容质量分较上期变化达到15分，仅作趋势提示');
-   ai.anomalies=[...new Set([...flags,...ai.anomalies])].slice(0,10);
-   const sources=Object.values(report.facts).filter(Boolean);for(const task of ai.tasks)if(!task.evidence||!sources.some(s=>s.includes(task.evidence)))task.evidence=report.facts.problems||report.facts.nextPlan||report.facts.results||report.facts.reflection;return ai;
-  }catch(e){failure=e;if(e.http&&e.http!==429&&e.http<500)break;}throw failure;
+  let failure,feedback=null,lastOutput='';
+  for(let attempt=1;attempt<=4;attempt++){
+   try{
+    await pause(attempt>1?Math.min(30000,5000*2**(attempt-2)):1200);
+    if(!await canProcess(report))return null;
+    if(await onAttempt(attempt,null)===false)return null;
+    const messages=[{role:'system',content:buildReportQualityPrompt()},{role:'user',content:JSON.stringify({week:report.end,report:report.facts,previousPlan})}];
+    if(feedback){
+     if(lastOutput)messages.push({role:'assistant',content:lastOutput.slice(0,100000)});
+     messages.push({role:'user',content:JSON.stringify({validationFeedback:feedback,instruction:'上一份结果未通过程序校验。请针对指定字段修正，保持原评分细则和原文证据要求，重新输出完整JSON；不得编造引文。'})});
+    }
+    const value=await request(config.moonshotBaseUrl+'/chat/completions',{model:config.kimiFollowupModel,max_completion_tokens:10000,thinking:{type:'disabled'},response_format:{type:'json_object'},messages},config.moonshotApiKey);
+    lastOutput=value.choices?.[0]?.message?.content||'';
+    if(value.choices?.[0]?.finish_reason==='length')throw Object.assign(Error('response_truncated'),{code:'response_truncated'});
+    const ai=validateAnalysis(JSON.parse(lastOutput.replace(/^```(?:json)?\s*|\s*```$/g,'')),report.facts);
+    const total=scores=>Math.round(scores.reduce((sum,score,index)=>sum+score*weights[index]/100,0)*10)/10;
+    const flags=ai.modules.flatMap(module=>!report.facts[module.id]?.trim()?[`${module.module}缺失，自动记0分`]:module.confidence!==null&&module.confidence<0.6?[`${module.module}模型自评置信度较低，仅作提示`]:[]);
+    if(total(ai.scores)<60)flags.push('内容质量分低于60分，仅作改进提示');
+    if(previousContent.ai?.version===REPORT_QUALITY_VERSION&&previousContent.aiModel===config.kimiFollowupModel&&Array.isArray(previousContent.ai.scores)&&previousContent.ai.scores.length===4&&previousContent.ai.scores.every(Number.isFinite)&&Math.abs(total(ai.scores)-total(previousContent.ai.scores))>=15)flags.push('内容质量分较上期变化达到15分，仅作趋势提示');
+    ai.anomalies=[...new Set([...flags,...ai.anomalies])].slice(0,10);
+    const sources=Object.values(report.facts).filter(Boolean);
+    for(const task of ai.tasks)if(!task.evidence||!sources.some(source=>source.includes(task.evidence)))task.evidence=report.facts.problems||report.facts.nextPlan||report.facts.results||report.facts.reflection;
+    return ai;
+   }catch(error){
+    failure=error;
+    const diagnostic=error.code==='invalid_summary'?{code:'invalid_summary',path:'summary',retryable:true}:error.code==='response_truncated'?{code:'response_truncated',path:'$',retryable:true}:error.code==='upstream_network_error'?{code:'upstream_network_error',path:'$',retryable:true}:error.http?{code:error.http===429?'upstream_rate_limit':'upstream_error',path:'$',retryable:error.http===429||error.http>=500}:qualityAnalysisDiagnostic(error);
+    await onAttempt(attempt,diagnostic);
+    feedback=diagnostic;
+    if(!diagnostic.retryable)break;
+   }
+  }
+  throw failure;
  }
  async function project(){
   const old=await jsonFile('prototypeData'),byPeriod={};const stored=await query('SELECT * FROM weekly_reports ORDER BY week_end,submitted_at;');const roster=await query('SELECT * FROM employees WHERE is_active=1;');const rows=[];const periods=new Map();
   for(const r of stored){const c=JSON.parse(r.content_json);const weights=(await settings.policyFor(r.week_end.slice(0,7))).weights||[30,25,25,20];if(c.source?.provider!=='feishu-report')continue;const a=c.ai;const p={id:c['周期ID'],label:r.week_label,start:r.week_start,end:r.week_end,range:r.week_start+' — '+r.week_end,exempt_people:[],status:'历史'};periods.set(p.end,p);rows.push({...c,user_id:r.employee_user_id,'姓名':r.employee_name,'部门':r.department,'源记录ID':r.id,'周次':r.week_label,'开始日期':r.week_start,'结束日期':r.week_end,'提交时间':r.submitted_at,'状态':r.status,'总分':a?Math.round(a.scores.reduce((v,s,i)=>v+s*weights[i]/100,0)*10)/10:null});
    byPeriod[p.id]??={meta:{provider:'moonshot',model:config.kimiFollowupModel,generatedAt:new Date().toISOString(),source:'feishu-report'},executiveSummary:[],collectiveFocus:[],attentionQueue:[],mustReadReports:[],themes:[],employeeInsights:[],feishuTaskPlan:{}};
-   if(a)byPeriod[p.id].employeeInsights.push({userId:r.employee_user_id,name:r.employee_name,coachSummary:a.summary,coachQuestions:a.questions,taskCandidates:a.tasks.map(t=>({...t,ownerUserId:r.employee_user_id,owner:r.employee_name,department:r.department,source:'飞书周报 · Kimi 分析',dueDate:shift(r.week_end,7)}))});
+   if(a)byPeriod[p.id].employeeInsights.push({userId:r.employee_user_id,name:r.employee_name,coachSummary:typeof a.summary==='string'?a.summary:'',coachQuestions:Array.isArray(a.questions)?a.questions:[],taskCandidates:(Array.isArray(a.tasks)?a.tasks:[]).filter(task=>task&&typeof task==='object').map(t=>({...t,ownerUserId:r.employee_user_id,owner:r.employee_name,department:r.department,source:'飞书周报 · Kimi 分析',dueDate:shift(r.week_end,7)}))});
   }
   for(const insight of Object.values(byPeriod)){
    insight.executiveSummary=insight.employeeInsights.slice(0,8).map(e=>e.name+'：'+e.coachSummary.slice(0,160));
@@ -68,53 +87,145 @@ export function createLiveReportSync({query,exec,sql,config,settings,refreshDire
   const next={...old,meta:{source_xlsx:'FEISHU_LIVE_REPORTS',collectionStartDate:firstCollected,generated_on:date(new Date()),people_count:employees.length,weekly_record_count:rows.length,periods:list,current_week_id:latest.id,current_week_label:latest.label,current_week_start:latest.start,current_week_end:latest.end,current_week_range:latest.range,submitted_count:rows.filter(r=>r['结束日期']===latest.end).length,exempt_count:0,exempt_people:[],class_distribution:{},dept_average_scores:Object.fromEntries([...new Set(employees.map(e=>e['部门']))].map(dept=>{const rs=rows.filter(r=>r['部门']===dept&&r['结束日期']===latest.end&&r.ai);return [dept,rs.length?Math.round(rs.reduce((v,r)=>v+r['总分'],0)/rs.length*10)/10:0];})),company_chat:{name:'',chat_id:''}},employee_summary:employees,weekly_scores:rows,boss_tasks:[],employee_tasks:[],feedback_drafts:[],group_message_draft:''};
   await saveFile('prototypeData',next);await saveFile('kimiInsightsByPeriod',byPeriod);await saveFile('kimiInsights',byPeriod[latest.id]);
  }
+ function validateOptions(options){
+  if(options.mode!==undefined&&options.mode!=='sync'&&options.mode!=='rescore')throw Error('invalid_sync_mode');
+  if(options.mode==='rescore'&&(!/^\d{4}-(0[1-9]|1[0-2])$/.test(options.targetMonth||'')||options.targetMonth>date(new Date()).slice(0,7)))throw Error('invalid_rescore_month');
+ }
  async function run(options={}){
-  // This maintenance-only option is deliberately not forwarded by the public
-  // sync endpoint. It never opens an employment interval or restores an account.
+  validateOptions(options);
   const selected=options.historicalInactiveUserIds;
   if(selected!==undefined&&(!Array.isArray(selected)||selected.length>500||selected.some(id=>typeof id!=='string'||!id.trim()||id!==id.trim()||id.length>200)))throw Error('invalid_historical_inactive_users');
-  const historicalIds=new Set(selected||[]),today=date(new Date());
+  const historicalIds=new Set(selected||[]),today=date(new Date()),rescore=options.mode==='rescore',jobId=randomUUID();
   async function closedHistoryCovers(report){
    if(!historicalIds.has(report.userId)||report.end>today)return false;
    const periods=await query(`SELECT start_date,end_date FROM employee_employment_periods WHERE employee_user_id=${sql(report.userId)} AND end_date IS NOT NULL;`);
    return periods.some(period=>/^\d{4}-\d{2}-\d{2}$/.test(period.start_date)&&/^\d{4}-\d{2}-\d{2}$/.test(period.end_date)&&period.start_date<=report.start&&period.end_date>=report.end&&period.end_date<=today);
   }
   const canProcess=async report=>!await inactive(report.userId)||await closedHistoryCovers(report);
-  const reportConfig=(await settings.overview()).report;
-  if(!config.feishuAppId||!config.feishuAppSecret)throw Error('feishu_not_configured');if(!config.moonshotApiKey)throw Error('ai_not_configured');
-  const end=options.end||date(new Date()),start=options.start||reportConfig.startDate||end.slice(0,7)+'-01';if(!/^\d{4}-\d{2}-\d{2}$/.test(start)||!/^\d{4}-\d{2}-\d{2}$/.test(end)||start>end)throw Error('invalid_sync_dates');
-  const stat={ok:true,running:true,phase:'pull',message:'正在读取飞书汇报',startedAt:new Date().toISOString(),period:{label:start+' 至 '+end,range:''},rowCount:0,analyzed:0,failed:0,skippedInactive:0,skippedInactiveAnalysis:0,historicalInactiveReports:0,errors:[]};await emit(stat);
-  const token=await request('https://open.feishu.cn/open-apis/auth/v3/tenant_access_token/internal',{app_id:config.feishuAppId,app_secret:config.feishuAppSecret});let page='',items=[],seen=new Set();
-  do{const result=await request('https://open.feishu.cn/open-apis/report/v1/tasks/query?user_id_type=user_id',{commit_start_time:Math.floor(Date.parse(start+'T00:00:00+08:00')/1000),commit_end_time:Math.floor(Date.parse(end+'T23:59:59+08:00')/1000),page_size:20,page_token:page,...(reportConfig.ruleId?{rule_id:reportConfig.ruleId}:{})},token.tenant_access_token);items.push(...(result.data?.items||[]));if(!result.data?.has_more)break;page=result.data.page_token;if(!page||seen.has(page))throw Error('invalid_pagination');seen.add(page);if(seen.size>=1000)throw Error('pagination_limit');}while(true);
-  items=items.filter(i=>reportConfig.ruleId?i.rule_id===reportConfig.ruleId:i.rule_name===reportConfig.templateName);if(!items.length){await emit({...stat,running:false,phase:'done',message:'指定日期内没有找到该模板的汇报',finishedAt:new Date().toISOString()});return;}
-  const inactiveIds=new Set((await query('SELECT user_id FROM employees WHERE is_active=0;')).map(employee=>employee.user_id));
-  const accepted=[];for(const item of items){if(!inactiveIds.has(item.from_user_id)||historicalIds.has(item.from_user_id)&&await closedHistoryCovers(normalizeLiveReport(item,calendar())))accepted.push(item);else stat.skippedInactive++;}items=accepted;
-  const skippedMessage=()=>`${stat.skippedInactive?`；已跳过 ${stat.skippedInactive} 份已停用人员汇报`:''}${stat.skippedInactiveAnalysis?`；已停止 ${stat.skippedInactiveAnalysis} 份停用人员的排队分析`:''}`;
-  if(!items.length){await emit({...stat,running:false,phase:'done',message:`本次没有需要导入的汇报${skippedMessage()}。`,finishedAt:new Date().toISOString()});return;}
-  collectionStartDate=[(await jsonFile('prototypeData')).meta?.collectionStartDate,start].filter(Boolean).sort()[0];
-  const ruleIds=[...new Set(items.map(i=>i.rule_id))];if(!reportConfig.ruleId&&ruleIds.length===1)await settings.saveReport({...reportConfig,ruleId:ruleIds[0]},{userId:'system',name:'系统自动匹配'});
-  const existingWeeks=new Map((await query('SELECT id,employee_user_id,week_start,week_end,week_label FROM weekly_reports;')).map(r=>[r.id,r]));
-  const reports=new Map();for(const item of items){const r=normalizeLiveReport(item,calendar());const prior=existingWeeks.get(r.id),existing=prior?.employee_user_id===r.userId?prior:null;if(existing&&existing.week_end!==r.end){r.start=existing.week_start;r.end=existing.week_end;r.weekId='period-'+r.end;r.label=existing.week_label;r.source.weekInference+='；保留该汇报已有的历史周次归属';}const key=r.userId+'|'+r.end;if(!reports.has(key)||reports.get(key).submittedAt<r.submittedAt)reports.set(key,r);}
-  let batch='';
-  const work=[];for(const r of reports.values()){
-   const historicalInactive=await inactive(r.userId);if(historicalInactive&&!await closedHistoryCovers(r)){stat.skippedInactive++;continue;}
-   if(!batch){batch=randomUUID();await exec(`INSERT INTO import_batches(id,source_type,source_name,record_count) VALUES(${sql(batch)},'feishu-report',${sql(reportConfig.templateName)},0);`);}
-   const old=(await query(`SELECT content_json,source_hash FROM weekly_reports WHERE employee_user_id=${sql(r.userId)} AND week_end=${sql(r.end)};`))[0];const previous=old?JSON.parse(old.content_json):{};let ai=null;if(old?.source_hash===r.sourceHash&&previous.aiModel===config.kimiFollowupModel&&previous.aiPromptVersion===REPORT_QUALITY_VERSION&&previous.ai?.version===REPORT_QUALITY_VERSION)try{ai=validateAnalysis(previous.ai,r.facts);}catch{/* Incomplete cached analysis is retried. */}
-   const history=Array.isArray(previous.aiAnalysisHistory)?[...previous.aiAnalysisHistory]:[];
-   if(!ai&&previous.ai)history.push({ai:previous.ai,model:previous.aiModel||'',generatedAt:previous.aiGeneratedAt||'',promptVersion:previous.aiPromptVersion||'legacy',sourceHash:old.source_hash,facts:{results:previous.results||previous['本周成果摘要']||'',problems:previous.problems||previous['问题摘要']||'',nextPlan:previous.nextPlan||previous['下周计划摘要']||'',reflection:previous.reflection||previous['思考与复盘摘要']||''}});
-   const policy=await settings.policyFor(r.end.slice(0,7)),scoringWeights=policy.weights||[30,25,25,20],schedule=weeklyReportSchedule(r.end,calendar(),policy.deadlineTime),late=!schedule.exempt&&!schedule.calendarPending&&Date.parse(r.submittedAt)>Date.parse(schedule.dueAt||'');const content={...r.facts,'周期ID':r.weekId,'本周成果摘要':r.facts.results,'问题摘要':r.facts.problems,'下周计划摘要':r.facts.nextPlan,'思考与复盘摘要':r.facts.reflection,source:r.source,sourceHash:r.sourceHash,scoringWeights,submissionSchedule:schedule,...(history.length?{aiAnalysisHistory:history}:{}),...(ai?{ai,aiModel:config.kimiFollowupModel,aiPromptVersion:REPORT_QUALITY_VERSION,...(previous.aiGeneratedAt?{aiGeneratedAt:previous.aiGeneratedAt}:{}),...Object.fromEntries(['成果分','问题分','计划分','复盘分'].map((k,i)=>[k,ai.scores[i]]))}:{})};
-   await exec(`BEGIN; INSERT INTO employees(user_id,name,department) VALUES(${sql(r.userId)},${sql(r.name)},${sql(r.department)}) ON CONFLICT(user_id) DO NOTHING; INSERT INTO weekly_reports(id,employee_user_id,employee_name,department,week_label,week_start,week_end,status,content_json,source_batch_id,source_hash,is_late,submitted_at) VALUES(${sql(r.id)},${sql(r.userId)},${sql(r.name)},${sql(r.department)},${sql(r.label)},${sql(r.start)},${sql(r.end)},${sql(schedule.exempt?'免交':schedule.calendarPending?'等待日历':late?'迟交':'准时')},${sql(JSON.stringify(content))},${sql(batch)},${sql(r.sourceHash)},${late?1:0},${sql(r.submittedAt)}) ON CONFLICT(employee_user_id,week_label) DO UPDATE SET employee_name=excluded.employee_name,department=excluded.department,week_start=excluded.week_start,week_end=excluded.week_end,status=excluded.status,content_json=excluded.content_json,source_hash=excluded.source_hash,submitted_at=excluded.submitted_at,is_late=excluded.is_late,updated_at=datetime('now'); COMMIT;`);
-   if(!historicalInactive&&!await inactive(r.userId))await observeEmployee(r.userId,r.start);
-   stat.rowCount++;
-   if(historicalInactive)stat.historicalInactiveReports++;
-   if(!ai)work.push({r,content});
+  if(!config.moonshotApiKey)throw Error('ai_not_configured');
+  const stat={ok:true,running:true,mode:rescore?'rescore':'sync',...(rescore?{targetMonth:options.targetMonth}:{}),phase:rescore?'prepare':'pull',message:rescore?'正在读取所选月份未完成评分':'正在读取飞书汇报',startedAt:new Date().toISOString(),rowCount:0,analyzed:0,failed:0,cached:0,remaining:0,active:0,skippedInactive:0,skippedInactiveAnalysis:0,skippedSourceChanged:0,historicalInactiveReports:0,errors:[],diagnostics:[],byMonth:{}};
+  await emit(stat);
+  const reports=new Map();
+  if(rescore){
+   const stored=await query(`SELECT w.* FROM weekly_reports w JOIN employees e ON e.user_id=w.employee_user_id WHERE substr(w.week_end,1,7)=${sql(options.targetMonth)} AND e.is_active=1 AND w.status<>'未交' ORDER BY w.employee_user_id,w.week_end;`);
+   for(const row of stored){
+    const content=JSON.parse(row.content_json);
+    if(!row.submitted_at&&!Object.values(reportFacts(content)).some(value=>String(value).trim()))continue;
+    const facts=reportFacts(content),sourceHash=row.source_hash||digest({id:row.id,facts,submittedAt:row.submitted_at});
+    reports.set(row.employee_user_id+'|'+row.week_end,{id:row.id,userId:row.employee_user_id,name:row.employee_name,department:row.department,start:row.week_start,end:row.week_end,weekId:content['周期ID']||'period-'+row.week_end,label:row.week_label,submittedAt:row.submitted_at,facts,sourceHash,source:content.source,stored:row});
+   }
+   stat.period={label:options.targetMonth+' 周报评分补跑',range:options.targetMonth};
+  }else{
+   const reportConfig=(await settings.overview()).report;
+   if(!config.feishuAppId||!config.feishuAppSecret)throw Error('feishu_not_configured');
+   const end=options.end||today,start=options.start||reportConfig.startDate||end.slice(0,7)+'-01';
+   if(!/^\d{4}-\d{2}-\d{2}$/.test(start)||!/^\d{4}-\d{2}-\d{2}$/.test(end)||start>end)throw Error('invalid_sync_dates');
+   stat.period={label:start+' 至 '+end,range:''};await emit(stat);
+   const token=await request('https://open.feishu.cn/open-apis/auth/v3/tenant_access_token/internal',{app_id:config.feishuAppId,app_secret:config.feishuAppSecret});
+   let page='',items=[],seen=new Set();
+   do{
+    const result=await request('https://open.feishu.cn/open-apis/report/v1/tasks/query?user_id_type=user_id',{commit_start_time:Math.floor(Date.parse(start+'T00:00:00+08:00')/1000),commit_end_time:Math.floor(Date.parse(end+'T23:59:59+08:00')/1000),page_size:20,page_token:page,...(reportConfig.ruleId?{rule_id:reportConfig.ruleId}:{})},token.tenant_access_token);
+    items.push(...(result.data?.items||[]));if(!result.data?.has_more)break;page=result.data.page_token;if(!page||seen.has(page))throw Error('invalid_pagination');seen.add(page);if(seen.size>=1000)throw Error('pagination_limit');
+   }while(true);
+   items=items.filter(item=>reportConfig.ruleId?item.rule_id===reportConfig.ruleId:item.rule_name===reportConfig.templateName);
+   if(!items.length){await emit({...stat,running:false,phase:'done',message:'指定日期内没有找到该模板的汇报',finishedAt:new Date().toISOString()});return;}
+   const inactiveIds=new Set((await query('SELECT user_id FROM employees WHERE is_active=0;')).map(employee=>employee.user_id));
+   const accepted=[];
+   for(const item of items){if(!inactiveIds.has(item.from_user_id)||historicalIds.has(item.from_user_id)&&await closedHistoryCovers(normalizeLiveReport(item,calendar())))accepted.push(item);else stat.skippedInactive++;}
+   items=accepted;
+   if(items.length){
+    collectionStartDate=[(await jsonFile('prototypeData')).meta?.collectionStartDate,start].filter(Boolean).sort()[0];
+    const ruleIds=[...new Set(items.map(item=>item.rule_id))];if(!reportConfig.ruleId&&ruleIds.length===1)await settings.saveReport({...reportConfig,ruleId:ruleIds[0]},{userId:'system',name:'系统自动匹配'});
+    const existingWeeks=new Map((await query('SELECT id,employee_user_id,week_start,week_end,week_label FROM weekly_reports;')).map(row=>[row.id,row]));
+    for(const item of items){
+     const report=normalizeLiveReport(item,calendar()),prior=existingWeeks.get(report.id),existing=prior?.employee_user_id===report.userId?prior:null;
+     if(existing&&existing.week_end!==report.end){report.start=existing.week_start;report.end=existing.week_end;report.weekId='period-'+report.end;report.label=existing.week_label;report.source.weekInference+='；保留该汇报已有的历史周次归属';}
+     const key=report.userId+'|'+report.end;if(!reports.has(key)||reports.get(key).submittedAt<report.submittedAt)reports.set(key,report);
+    }
+   }
   }
-  if(!batch){await emit({...stat,running:false,phase:'done',message:`本次没有需要导入的汇报${skippedMessage()}。`,finishedAt:new Date().toISOString()});return;}
-  await exec(`UPDATE import_batches SET record_count=${stat.rowCount} WHERE id=${sql(batch)};`);
-  stat.phase='analysis';await project();await refreshDirectory();let index=0;
-  await Promise.all(Array.from({length:3},async()=>{while(index<work.length){const {r,content}=work[index++];try{const ai=await analyze(r,canProcess,content.scoringWeights);if(!ai||!await canProcess(r)){stat.skippedInactiveAnalysis++;continue;}const next={...content,ai,aiModel:config.kimiFollowupModel,aiPromptVersion:REPORT_QUALITY_VERSION,aiGeneratedAt:new Date().toISOString(),...Object.fromEntries(['成果分','问题分','计划分','复盘分'].map((k,i)=>[k,ai.scores[i]]))};await exec(`UPDATE weekly_reports SET content_json=${sql(JSON.stringify(next))},updated_at=datetime('now') WHERE employee_user_id=${sql(r.userId)} AND week_end=${sql(r.end)} AND source_hash=${sql(r.sourceHash)};`);stat.analyzed++;}catch(e){stat.failed++;if(stat.errors.length<5)stat.errors.push(String(e.message).slice(0,160));}stat.message=`周报已导入 ${stat.rowCount} 份，AI 已完成 ${stat.analyzed}/${work.length-stat.skippedInactiveAnalysis} 份${stat.failed?'，失败 '+stat.failed+' 份可重试':''}${skippedMessage()}`;await emit({...stat});if((stat.analyzed+stat.failed)%6===0){projection=projection.then(()=>project());await projection;}}}));
-  await projection;await project();await refreshDirectory();await onComplete();await emit({...stat,ok:stat.failed===0,running:false,phase:stat.failed?'partial':'done',message:`已同步 ${stat.rowCount} 份真实周报；AI 新分析 ${stat.analyzed} 份，缓存 ${stat.rowCount-work.length} 份，失败 ${stat.failed} 份${skippedMessage()}。刷新页面查看。`,finishedAt:new Date().toISOString()});
+  const skippedMessage=()=>`${stat.skippedInactive?`；已跳过 ${stat.skippedInactive} 份已停用人员汇报`:''}${stat.skippedInactiveAnalysis?`；已停止 ${stat.skippedInactiveAnalysis} 份停用人员的排队分析`:''}`;
+  if(!reports.size){await emit({...stat,running:false,phase:'done',message:rescore?'所选月份没有可补跑的在职员工周报':`本次没有需要导入的汇报${skippedMessage()}。`,finishedAt:new Date().toISOString()});return;}
+  const work=[];let batch='';
+  function monthCell(report){return stat.byMonth[report.end.slice(0,7)]??={total:0,completed:0,failed:0,cached:0,remaining:0,active:0,skipped:0};}
+  function updateRemaining(){
+   stat.remaining=Math.max(0,stat.rowCount-stat.cached-stat.analyzed-stat.failed-stat.skippedInactiveAnalysis-stat.skippedSourceChanged);
+   for(const cell of Object.values(stat.byMonth))cell.remaining=Math.max(0,cell.total-cell.cached-cell.completed-cell.failed-cell.skipped);
+  }
+  for(const report of reports.values()){
+   const historicalInactive=await inactive(report.userId);if(historicalInactive&&!await closedHistoryCovers(report)){stat.skippedInactive++;continue;}
+   const old=report.stored||(await query(`SELECT content_json,source_hash FROM weekly_reports WHERE employee_user_id=${sql(report.userId)} AND week_end=${sql(report.end)};`))[0];
+   const previous=old?JSON.parse(old.content_json):{};
+   const policy=await settings.policyFor(report.end.slice(0,7)),weights=policy.weights||[30,25,25,20];
+   // Legacy rows may predate sourceHash in their JSON; SQL remains authoritative.
+   const prior={...previous,sourceHash:previous.sourceHash||old?.source_hash||''};
+   let ai=null;
+   if(old?.source_hash===report.sourceHash&&currentQualityCached(prior,report.sourceHash,config.kimiFollowupModel))try{ai=validateAnalysis(previous.ai,report.facts);ai.promptVersion=previous.ai.promptVersion||previous.aiPromptVersion;}catch{}
+   const cell=monthCell(report);cell.total++;stat.rowCount++;
+   if(historicalInactive)stat.historicalInactiveReports++;
+   if(rescore&&ai){stat.cached++;cell.cached++;continue;}
+   const snapshot=previousQualitySnapshot(prior,old?.source_hash||'',weights),history=ai?previous.aiAnalysisHistory||[]:archivedQuality(prior,old?.source_hash||'',weights);
+   const schedule=weeklyReportSchedule(report.end,calendar(),policy.deadlineTime),late=!schedule.exempt&&!schedule.calendarPending&&Date.parse(report.submittedAt)>Date.parse(schedule.dueAt||'');
+   const content={...report.facts,'周期ID':report.weekId,'本周成果摘要':report.facts.results,'问题摘要':report.facts.problems,'下周计划摘要':report.facts.nextPlan,'思考与复盘摘要':report.facts.reflection,source:report.source,sourceHash:report.sourceHash,scoringWeights:weights,submissionSchedule:schedule,...(history.length?{aiAnalysisHistory:history}:{}),...(snapshot?{previousQuality:snapshot}:{}),...(previous.aiAnalysisAttempts?{aiAnalysisAttempts:previous.aiAnalysisAttempts}:{}),qualityRefresh:{state:ai?'ready':'queued',targetVersion:REPORT_QUALITY_VERSION,model:config.kimiFollowupModel,sourceHash:report.sourceHash,jobId,attempts:0,updatedAt:new Date().toISOString()},...(ai?{ai,aiModel:previous.aiModel,aiPromptVersion:previous.aiPromptVersion,aiGeneratedAt:previous.aiGeneratedAt,...Object.fromEntries(['成果分','问题分','计划分','复盘分'].map((key,index)=>[key,ai.scores[index]]))}:{})};
+   if(rescore){
+    const sourceGuard=old.source_hash==null?'source_hash IS NULL':`source_hash=${sql(old.source_hash)}`;
+    await exec(`UPDATE weekly_reports SET content_json=${sql(JSON.stringify(content))},source_hash=${sql(report.sourceHash)},updated_at=datetime('now') WHERE employee_user_id=${sql(report.userId)} AND week_end=${sql(report.end)} AND ${sourceGuard};`);
+   }else{
+    if(!batch){batch=randomUUID();await exec(`INSERT INTO import_batches(id,source_type,source_name,record_count) VALUES(${sql(batch)},'feishu-report',${sql(report.source?.ruleName||'周报')},0);`);}
+    await exec(`BEGIN; INSERT INTO employees(user_id,name,department) VALUES(${sql(report.userId)},${sql(report.name)},${sql(report.department)}) ON CONFLICT(user_id) DO NOTHING; INSERT INTO weekly_reports(id,employee_user_id,employee_name,department,week_label,week_start,week_end,status,content_json,source_batch_id,source_hash,is_late,submitted_at) VALUES(${sql(report.id)},${sql(report.userId)},${sql(report.name)},${sql(report.department)},${sql(report.label)},${sql(report.start)},${sql(report.end)},${sql(schedule.exempt?'免交':schedule.calendarPending?'等待日历':late?'迟交':'准时')},${sql(JSON.stringify(content))},${sql(batch)},${sql(report.sourceHash)},${late?1:0},${sql(report.submittedAt)}) ON CONFLICT(employee_user_id,week_label) DO UPDATE SET employee_name=excluded.employee_name,department=excluded.department,week_start=excluded.week_start,week_end=excluded.week_end,status=excluded.status,content_json=excluded.content_json,source_hash=excluded.source_hash,submitted_at=excluded.submitted_at,is_late=excluded.is_late,updated_at=datetime('now'); COMMIT;`);
+    if(!historicalInactive&&!await inactive(report.userId))await observeEmployee(report.userId,report.start);
+   }
+   if(ai){stat.cached++;cell.cached++;}else work.push({report,content});
+  }
+  if(batch)await exec(`UPDATE import_batches SET record_count=${stat.rowCount} WHERE id=${sql(batch)};`);
+  updateRemaining();
+  if(!stat.rowCount){await emit({...stat,running:false,phase:'done',message:`本次没有需要导入的汇报${skippedMessage()}。`,finishedAt:new Date().toISOString()});return;}
+  const notify=()=>{projection=projection.catch(()=>{}).then(async()=>{await project();await refreshDirectory();await onComplete();stat.publicationPending=false;}).catch(()=>{stat.publicationPending=true;stat.publicationFailures=(stat.publicationFailures||0)+1;stat.diagnostics=[...stat.diagnostics,{code:'publication_update_failed',path:'publication',retryable:true}].slice(-50);});return projection;};
+  stat.phase='analysis';await notify();await emit({...stat});let index=0;
+  async function persist(report,content){
+   await exec(`UPDATE weekly_reports SET content_json=${sql(JSON.stringify(content))},updated_at=datetime('now') WHERE employee_user_id=${sql(report.userId)} AND week_end=${sql(report.end)} AND source_hash=${sql(report.sourceHash)} AND json_extract(content_json,'$.qualityRefresh.jobId')=${sql(jobId)};`);
+   const stored=(await query(`SELECT content_json,source_hash FROM weekly_reports WHERE employee_user_id=${sql(report.userId)} AND week_end=${sql(report.end)};`))[0];
+   return stored?.source_hash===report.sourceHash&&JSON.parse(stored.content_json).qualityRefresh?.jobId===jobId;
+  }
+  await Promise.all(Array.from({length:Math.min(3,work.length)},async()=>{
+   while(index<work.length){
+    const {report,content}=work[index++],cell=monthCell(report);stat.active++;cell.active++;let attemptCount=0,lastDiagnostic=null;
+    try{
+     const ai=await analyze(report,canProcess,content.scoringWeights,async(attempt,diagnostic)=>{
+      attemptCount=attempt;lastDiagnostic=diagnostic||lastDiagnostic;
+      content.qualityRefresh={...content.qualityRefresh,state:'analyzing',attempts:attempt,updatedAt:new Date().toISOString(),...(diagnostic?{diagnostic}:{} )};
+      if(diagnostic){
+       content.aiAnalysisAttempts=[...(content.aiAnalysisAttempts||[]),{at:new Date().toISOString(),targetVersion:REPORT_QUALITY_VERSION,promptVersion:REPORT_QUALITY_PROMPT_VERSION,sourceHash:report.sourceHash,attempt,...diagnostic}];
+       stat.diagnostics=[...stat.diagnostics,{reportId:report.id,weekEnd:report.end,attempt,...diagnostic}].slice(-50);
+      }
+      const saved=await persist(report,content);await emit({...stat});return saved;
+     });
+     if(!ai||!await canProcess(report)){if(!await canProcess(report))stat.skippedInactiveAnalysis++;else stat.skippedSourceChanged++;cell.skipped++;}
+     else{
+      const next={...content,ai,aiModel:config.kimiFollowupModel,aiPromptVersion:REPORT_QUALITY_PROMPT_VERSION,aiGeneratedAt:new Date().toISOString(),qualityRefresh:{...content.qualityRefresh,state:'ready',attempts:attemptCount,diagnostic:null,updatedAt:new Date().toISOString()},...Object.fromEntries(['成果分','问题分','计划分','复盘分'].map((key,position)=>[key,ai.scores[position]]))};
+      if(await persist(report,next)){stat.analyzed++;cell.completed++;}else{stat.skippedSourceChanged++;cell.skipped++;}
+     }
+    }catch(error){
+     const diagnostic=lastDiagnostic||qualityAnalysisDiagnostic(error);
+     content.qualityRefresh={...content.qualityRefresh,state:'failed',attempts:attemptCount,diagnostic,updatedAt:new Date().toISOString()};
+     await persist(report,content);stat.failed++;cell.failed++;if(stat.errors.length<5)stat.errors.push(diagnostic.code);
+    }finally{
+     stat.active--;cell.active--;updateRemaining();
+     stat.message=`${rescore?options.targetMonth+' 评分补跑':'周报同步'}：完成 ${stat.analyzed} 份，复用 ${stat.cached} 份，失败 ${stat.failed} 份，待处理 ${stat.remaining} 份${skippedMessage()}`;
+     // Fresh publication after each report lets one employee finish without
+     // waiting for the rest of the company-wide queue.
+     await notify();await emit({...stat});
+    }
+   }
+  }));
+  await projection;await notify();
+  await emit({...stat,ok:stat.failed===0&&!stat.publicationPending,running:false,phase:stat.failed||stat.publicationPending?'partial':'done',finishedAt:new Date().toISOString()});
  }
- async function start(options){if(running)return false;running=true;await emit({ok:true,running:true,phase:'queued',message:'同步已开始'});void run(options).catch(async()=>{await emit({ok:false,running:false,phase:'failed',message:'同步失败，请检查应用权限、规则 ID、日期或 AI 服务后重试'});}).finally(()=>{running=false;});return true;}
+ async function start(options={}){
+  validateOptions(options);if(running)return false;running=true;
+  try{await emit({ok:true,running:true,phase:'queued',mode:options.mode||'sync',...(options.targetMonth?{targetMonth:options.targetMonth}:{}),message:'同步已开始'});}catch(error){running=false;throw error;}
+  void run(options).catch(async(error)=>{await emit({ok:false,running:false,phase:'failed',mode:options.mode||'sync',targetMonth:options.targetMonth,message:'任务失败，请检查评分诊断、日期或服务配置后重试',diagnostics:[qualityAnalysisDiagnostic(error)]});}).finally(()=>{running=false;});
+  return true;
+ }
  return {start,isRunning:()=>running,run,project};
 }

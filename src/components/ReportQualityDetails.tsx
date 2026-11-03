@@ -69,15 +69,19 @@ function MissingEvidence({ missing }: { missing: string[] }) {
   return missing.length ? <div className="quality-missing"><strong>缺失证据</strong><ul>{missing.map((item, index) => <li key={index}>{item}</li>)}</ul></div> : null;
 }
 
-export function ReportQualityDetails({ assessment, weights = defaultWeights, pending = false }: {
+export function ReportQualityDetails({ assessment, weights = defaultWeights, pending = false, previous = false, refresh }: {
   assessment?: QualityAssessment | null;
   weights?: number[];
   pending?: boolean;
+  previous?: boolean;
+  refresh?: {state?: string; attempts?: number};
 }) {
   const modules = Array.isArray(assessment?.modules) ? assessment.modules : [];
+  const refreshLabel=refresh&&refresh.state!=='ready'?(refresh.state==='failed'?'重评失败':'重评中'):'';
   if (!assessment || !modules.length) return <section className="quality-assessment quality-assessment-empty" aria-label="四模块评分依据">
-    <h4><FileCheck2 size={15} aria-hidden="true"/>四模块评分依据</h4>
-    <p>{pending ? 'AI 分析完成后，将自动展示各模块得分、评分理由和原文证据。当前未生成有效评分，不按 0 分处理。' : '历史记录未保存逐项评分理由和原文证据，已有分数保留；这里不补造评分依据。'}</p>
+    <div className="quality-assessment-heading"><h4><FileCheck2 size={15} aria-hidden="true"/>四模块评分依据</h4>{refreshLabel&&<span className="pf-status is-warning">{previous?'旧版分数 · ':''}{refreshLabel}</span>}</div>
+    {refreshLabel&&<p>{previous?'旧评分继续保留，新评分全部校验成功后自动更新。':'新评分尚未完成，系统会自动重试，不按0分处理。'}</p>}
+    <p>{pending&&!previous ? 'AI 分析完成后，将自动展示各模块得分、评分理由和原文证据。当前未生成有效评分，不按 0 分处理。' : '历史记录未保存逐项评分理由和原文证据，已有分数保留；这里不补造评分依据。'}</p>
   </section>;
 
   const weightFor = (module: QualityModule, index: number) => {
@@ -86,7 +90,8 @@ export function ReportQualityDetails({ assessment, weights = defaultWeights, pen
   };
 
   return <section className="quality-assessment" aria-label="四模块评分依据">
-    <div className="quality-assessment-heading"><h4><FileCheck2 size={15} aria-hidden="true"/>四模块评分依据</h4><span className="pf-status is-confirmed">自动评分发布</span></div>
+    <div className="quality-assessment-heading"><h4><FileCheck2 size={15} aria-hidden="true"/>四模块评分依据</h4><span className={`pf-status ${previous?'is-warning':'is-confirmed'}`}>{previous?`旧版分数 · ${refreshLabel||'历史评分'}`:'自动评分发布'}</span></div>
+    {previous&&<p className="quality-missing">以下为旧版本评分依据，引文对应该次评分的原文版本。当前正文的新评分完成后自动切换，无需人工审核。</p>}
     <p className="quality-assessment-caption">各模块标准化为 100 分后加权；及时率独立统计。异常只作提示，无需人工审核。</p>
     {!!assessment.anomalies?.length && <div className="quality-missing quality-anomalies"><strong>异常提示</strong><ul>{assessment.anomalies.map((item, index) => <li key={index}>{item}</li>)}</ul><p>异常仅作提示，评分自动发布，不额外扣分。</p></div>}
     <div className="quality-module-list">{modules.map((module, index) => {
@@ -112,7 +117,7 @@ export function ReportQualityDetails({ assessment, weights = defaultWeights, pen
         </div>
       </details>;
     })}</div>
-    <p className="quality-assessment-caption">引文来自本份周报；“员工自述的事实”表示员工报告的已完成事项，不表示已核实业务结果。</p>
+    <p className="quality-assessment-caption">{previous?'引文来自旧评分保存的原文版本；':'引文来自本份周报；'}“员工自述的事实”表示员工报告的已完成事项，不表示已核实业务结果。</p>
     <details className="quality-version"><summary>评分版本与时间</summary><dl>
       <div><dt>评分规则</dt><dd>{assessment.version}</dd></div>
       <div><dt>提示词版本</dt><dd>{assessment.promptVersion || assessment.version}</dd></div>

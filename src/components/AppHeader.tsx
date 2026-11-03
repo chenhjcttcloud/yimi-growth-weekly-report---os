@@ -10,7 +10,7 @@ const titles: Record<PageKey, string> = {
   departments: "部门管理",
   dashboard: "老板驾驶舱",
   monthly: "月度会议",
-  scores: "评分工作台",
+  scores: "得分页",
   tasks: "任务闭环",
   growth: "个人最终结果",
   reports: "周报与互动",
@@ -141,7 +141,7 @@ export function AppHeader({
               </option>
             ))}
           </AppSelect>
-        </div> : <p className="header-meta">{activePage==="scores"?"月度结果 · 配评安排 · 评分任务":activePage==="departments"?"部门层级 · 团队成员 · 月度表现 · 负责人评分":"月度结果 · 每周周报 · AI 教练 · 行动闭环"}</p>}
+        </div> : <p className="header-meta">{activePage==="scores"?(["boss","system_admin"].includes(managementRole||"")?"负责人评分 · 得分结果 · 月度配评":"我的评分任务 · 同事互评"):activePage==="departments"?"部门层级 · 团队成员 · 月度表现 · 负责人评分":"月度结果 · 每周周报 · AI 教练 · 行动闭环"}</p>}
       </div>
 
       <div className="header-actions">

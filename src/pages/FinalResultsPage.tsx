@@ -41,7 +41,7 @@ export function FinalResultsPage({ module, onOpenModule, previewEmployeeId,emplo
     </section>
     {!module && <><div className="pf-notice"><CheckCheck size={16}/><span>周报质量与提交统计自动计算，无需人工确认；月度综合评分按负责人或老板30%＋同事70%，全部完成后自动发布。每周周报、AI 建议和行动任务用于回看与推进。</span></div>
     <section className="pf-metrics">
-      <ResultMetric icon={FileCheck2} label="周报质量分" value={scoreText(current?.quality)} unit="分" description={current?.quality == null ? '所选月份周报分析尚未完成' : '所选月份自动汇总的周报质量分'}>
+      <ResultMetric icon={FileCheck2} label="周报质量分" value={scoreText(current?.quality)} unit="分" description={current?.qualityStatus==='rescoring'||current?.qualityStatus==='rescore_failed'?`旧版分数 · ${current.qualityStatus==='rescore_failed'?'重评失败，将自动重试':'重评中'}；尚有 ${current.qualityRefresh?.pendingAnalysis||0} 份待完成`:current?.quality == null ? current?.qualityRefresh?`所选月份尚有 ${current.qualityRefresh.pendingAnalysis||0} 份待完成，${current.qualityRefresh.failedAnalysis||0} 份失败，系统将自动重试`:'所选月份周报分析尚未完成' : '所选月份自动汇总的周报质量分'}>
         <span className="pf-caption">近 {rolling.length} 个月份滚动均分</span><strong className="pf-inline-number">{scoreText(rollingQuality)}<small> 分</small></strong>
       </ResultMetric>
       <ResultMetric icon={Clock3} label="周报提交及时率" value={scoreText(current?.timeliness?.rate)} unit="%" description={current?.timeliness?.pendingCalendar ? '工作日日历待更新，系统将自动重算' : current?.timeliness?.pendingTimestamp ? '原始提交时间待补齐，系统将自动重算' : current?.timeliness ? '所选月份准时提交 / 应提交次数' : '所选月份提交统计尚未发布'}><SubmissionCounts stats={current?.timeliness}/></ResultMetric>

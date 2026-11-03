@@ -2951,8 +2951,12 @@ async function startLarkReportSync(req, res) {
     return;
   }
   const body = await readJsonBody(req, { limitBytes: 30_000 });
+  if(body.mode!==undefined&&!['sync','rescore'].includes(body.mode))return sendJson(res,400,{ok:false,error:'invalid_sync_mode'});
+  if(body.mode==='rescore'&&(!/^\d{4}-(0[1-9]|1[0-2])$/.test(body.targetMonth||'')||body.targetMonth>new Intl.DateTimeFormat('sv-SE',{timeZone:'Asia/Shanghai'}).format(new Date()).slice(0,7)))return sendJson(res,400,{ok:false,error:'invalid_rescore_month'});
   const started = await enqueueLarkReportSync({
     source: "manual",
+    mode: body.mode,
+    targetMonth: body.targetMonth,
     start: body.start,
     end: body.end,
     commitStart: body.commitStart,
@@ -2972,6 +2976,7 @@ async function startLarkReportSync(req, res) {
 }
 
 async function enqueueLarkReportSync(options = {}) {
+  if(options.mode==='rescore')return liveReportSync.start({mode:'rescore',targetMonth:options.targetMonth});
   const today=new Intl.DateTimeFormat('sv-SE',{timeZone:'Asia/Shanghai'}).format(new Date());
   const prior=new Date(today+'T00:00:00Z');prior.setUTCDate(prior.getUTCDate()-7);
   return liveReportSync.start({start:options.commitStart||options.start||(options.source==='auto_monday'?prior.toISOString().slice(0,10):undefined),end:options.commitEnd||options.end});

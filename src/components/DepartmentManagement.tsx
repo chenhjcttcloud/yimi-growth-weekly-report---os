@@ -1,11 +1,12 @@
+import {BossLeaderScoringPanel} from './BossLeaderScoringPanel';
 import {useEffect,useState} from 'react';
 import {OrganizationEditor} from './OrganizationEditor';
 import {AppSelect} from './AppSelect';
 const errors:Record<string,string>={department_removed:'部门已从飞书移除，请刷新组织架构',rating_scope_frozen:'本月已按原负责人关系提交评分，继续沿用原评分，下月按新岗位评分',rating_responsibility_changed:'负责人已变化，请刷新后核对评分对象',self_scoring_forbidden:'不能给自己评分',department_leader_managed_by_feishu:'负责人由飞书同步，请在飞书修改后重新同步',department_hierarchy_cycle:'上下级部门不能形成循环',invalid_parent_department:'请选择有效的上级部门',leader_must_be_department_member:'负责人必须是该部门的在职员工',department_exists:'部门已存在',department_leader_required:'请先设置部门负责人',score_and_comment_required:'请填写 0–100 分和评分说明',result_locked:'本月已评分，结果已锁定',boss_only:'仅老板可给部门负责人评分',leader_inactive:'负责人已停用，请重新设置',leader_not_registered:'负责人尚未在系统完成飞书登录，请先登录后再评分',employee_not_employed:'负责人在所选月份未在职，不能录入评分',invalid_month:'请选择有效月份'};
 export function DepartmentManagement({mode='organization'}:{mode?:'all'|'organization'|'scores'}){
- return mode==='scores'?<DepartmentScoreManagement mode="scores"/>:<OrganizationEditor/>;
+ return mode==='scores'?<BossLeaderScoringPanel/>:<OrganizationEditor/>;
 }
-function DepartmentScoreManagement({mode='scores'}:{mode?:'all'|'organization'|'scores'}){
+export function LegacyDepartmentScoreManagement({mode='scores'}:{mode?:'all'|'organization'|'scores'}){
  const [data,setData]=useState<any>(null),[message,setMessage]=useState(''),[busy,setBusy]=useState(false),[name,setName]=useState(''),[draft,setDraft]=useState<Record<string,any>>({});
  const [month,setMonth]=useState(new Date().toLocaleDateString('sv-SE',{timeZone:'Asia/Shanghai'}).slice(0,7));
  async function load(){try{const r=await fetch('/api/departments?month='+month);if(!r.ok)throw Error();setData(await r.json());}catch{setMessage('部门数据加载失败，请刷新重试');}}
