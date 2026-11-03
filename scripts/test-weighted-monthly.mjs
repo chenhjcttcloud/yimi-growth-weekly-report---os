@@ -11,6 +11,11 @@ INSERT INTO scoring360_assignments(id,cycle_id,evaluee_name,evaluator_name,evalu
 const employees=async()=> (await query('SELECT * FROM employees WHERE is_active=1;')).map(e=>({userId:e.user_id,name:e.name,department:e.department,managerUserId:e.manager_user_id}));
 const departments=createDepartments({query,exec,sql,employees});const reviews=createManagerReviews({query,exec,sql,organization:departments.overview,reports:()=>performance.reports(),isBossUserId:id=>id==='boss',now:()=>new Date('2026-10-26T00:00:00Z')});
 const performance=createPerformance({query,exec,sql,readData:()=>({meta:{periods:[]},employee_summary:[]}),managerReviews:reviews,now:()=>new Date('2026-10-26T00:00:00Z')});
+run("INSERT INTO employees(user_id,name,department) VALUES('boss','虚构老板','老板团队'); INSERT INTO organization_departments VALUES('boss-team','老板团队','boss',datetime('now')),('unconfigured-team','未设置负责人团队','',datetime('now'));");
+const displayTargets=(await reviews.bossTargets('2026-10')).scoreTargets;
+const unconfiguredTarget=displayTargets.find(target=>target.departmentId==='unconfigured-team');assert.equal(unconfiguredTarget.name,'负责人未设置');assert.equal(unconfiguredTarget.unavailableReason,'missing_leader');assert.equal(unconfiguredTarget.ratingRequired,false);
+const exemptTarget=displayTargets.find(target=>target.departmentId==='boss-team');assert.equal(exemptTarget.name,'虚构老板');assert.equal(exemptTarget.unavailableReason,'boss_exempt');assert.equal(exemptTarget.ratingRequired,false);assert.equal(exemptTarget.frozen,false,'boss exemption is not a frozen submission');
+assert.equal(displayTargets.find(target=>target.departmentId==='team').ratingRequired,true,'display reasons must not change existing rating scope');
 const peer=(id,target,score)=>run(`INSERT INTO scoring360_responses(id,assignment_id,cycle_id,evaluee_name,evaluator_name,score,comment) VALUES(${sql('r-'+id)},${sql(id)},'oct',${sql(target)},'评分人',${score},'具体协作评价');`);
 let view=await performance.overview();assert.equal(view.monthly.find(r=>r.userId==='staff').collaborationComplete,false);
 peer('staff-a','同名员工',90);peer('staff-b','同名员工',100);view=await performance.overview();assert.equal(view.monthly.find(r=>r.userId==='staff').peerComplete,true);assert.equal((await performance.personal('同名员工','staff')).history.length,0,'peer completion alone cannot publish');

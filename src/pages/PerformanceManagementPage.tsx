@@ -27,8 +27,8 @@ export function PerformanceManagementPage({isBoss=false}:{isBoss?:boolean}={}){
   setTab(next);
  }
  return <div className="scoring-management-shell">
-  <nav className="scoring-workbench-tabs" role="tablist" aria-label="得分页模块">{([['leaders','负责人评分'],['results','得分结果'],['setup','月度配评']] as const).map(([key,label])=><button type="button" role="tab" key={key} aria-selected={tab===key} disabled={leaderBusy} onClick={()=>changeTab(key)}>{label}</button>)}</nav>
-  {leadersOpened&&<div hidden={tab!=='leaders'}><div className="boss-score-intro"><div><span className="v2-eyebrow">得分页</span><h2>给负责人评分</h2><p>选定月份，逐位完成分数与评价。老板评分占30%，同事互评占70%。</p></div><ReviewMonthPicker aria-label="负责人评分月份" value={leaderMonth} max={currentMonth} disabled={leaderBusy} onChange={value=>{rememberLocation('scoreMonth',value);setLeaderMonth(value);}}/></div><BossLeaderScoringPanel month={leaderMonth} onBusyChange={setLeaderBusy} active={tab==='leaders'}/></div>}
+  <nav className="scoring-workbench-tabs" role="tablist" aria-label="评分工作台模块">{([['leaders','负责人评分'],['results','得分结果'],['setup','月度配评']] as const).map(([key,label])=><button type="button" role="tab" key={key} aria-selected={tab===key} disabled={leaderBusy} onClick={()=>changeTab(key)}>{label}</button>)}</nav>
+  {leadersOpened&&<div hidden={tab!=='leaders'}><div className="boss-score-intro"><div><h2>负责人评分</h2><p>选择月份与负责人，记录本月表现与改进建议。</p></div><div className="boss-score-month"><span>评分月份</span><ReviewMonthPicker aria-label="负责人评分月份" value={leaderMonth} max={currentMonth} disabled={leaderBusy} onChange={value=>{rememberLocation('scoreMonth',value);setLeaderMonth(value);}}/></div></div><BossLeaderScoringPanel month={leaderMonth} onBusyChange={setLeaderBusy} active={tab==='leaders'}/></div>}
   {tab==='setup'?<Suspense fallback={<p role="status">正在加载月度配评…</p>}><ManualScoringSetup/></Suspense>:tab==='results'?<PerformanceResults/>:null}
  </div>;
 }

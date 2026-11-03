@@ -107,7 +107,9 @@ export function createManagerReviews({query,exec,sql,organization,reports,isBoss
  async function bossTargets(month=monthNow()){
   validMonth(month);const state=await snapshot();return {month,scoreTargets:state.departments.map(d=>{
    const leaderUserId=d.leader_user_id,person=state.people.get(leaderUserId),saved=state.bossScores.find(s=>s.month===month&&s.department_id===d.id&&s.leader_user_id===leaderUserId),plan=planFor(state,month,leaderUserId);
-   return {departmentId:d.id,leaderUserId,name:person?.name||d.leaderName||'姓名待同步',frozen:Boolean(saved),ratingRequired:plan?.kind==='boss'&&plan.expectedIds.includes(d.id),active:person?.active===true};
+   const ratingRequired=plan?.kind==='boss'&&plan.expectedIds.includes(d.id);
+   const unavailableReason=!leaderUserId?'missing_leader':!person?'leader_not_registered':!person.active?'leader_inactive':isBossUserId(leaderUserId)?'boss_exempt':!plan?'employee_not_employed':!ratingRequired?(state.frozen.has(key(month,leaderUserId))?'rating_scope_frozen':'not_required'):'';
+   return {departmentId:d.id,leaderUserId,name:leaderUserId?(person?.name||d.leaderName||'姓名待同步'):'负责人未设置',frozen:Boolean(saved),ratingRequired,active:person?.active===true,unavailableReason};
   })};
  }
  async function bossTarget(month,id){return (await bossTargets(month)).scoreTargets.find(t=>t.departmentId===id);}

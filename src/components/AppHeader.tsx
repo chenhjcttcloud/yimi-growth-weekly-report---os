@@ -10,7 +10,7 @@ const titles: Record<PageKey, string> = {
   departments: "部门管理",
   dashboard: "老板驾驶舱",
   monthly: "月度会议",
-  scores: "得分页",
+  scores: "评分工作台",
   tasks: "任务闭环",
   growth: "个人最终结果",
   reports: "周报与互动",

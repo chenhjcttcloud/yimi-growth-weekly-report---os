@@ -28,7 +28,7 @@ const navGroups: NavGroup[] = [
       { key: "coach", label: "AI 教练", icon: Brain },
       { key: "actions", label: "行动任务", icon: Target },
       { key: "timeline", label: "成长轨迹", icon: History },
-      { key: "scores", label: "得分页", icon: Trophy },
+      { key: "scores", label: "评分工作台", icon: Trophy },
     ],
   },
   {
