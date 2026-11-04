@@ -2,6 +2,7 @@ import {
   Building2,
   BookOpen,
   Brain,
+  FileCheck2,
   History,
   Target,
   CalendarClock,
@@ -11,6 +12,7 @@ import {
   Settings,
   Sprout,
   Trophy,
+  UsersRound,
 } from "lucide-react";
 import type { NavItem, PageKey } from "../lib/types";
 
@@ -28,6 +30,13 @@ const navGroups: NavGroup[] = [
       { key: "coach", label: "AI 教练", icon: Brain },
       { key: "actions", label: "行动任务", icon: Target },
       { key: "timeline", label: "成长轨迹", icon: History },
+    ],
+  },
+  {
+    label: "评分与结果",
+    items: [
+      { key: "quality-scores", label: "周报质量", icon: FileCheck2 },
+      { key: "collaboration-scores", label: "360 协同得分", icon: UsersRound },
       { key: "scores", label: "评分工作台", icon: Trophy },
     ],
   },
@@ -54,21 +63,23 @@ interface SidebarProps {
   onChangePage: (page: PageKey) => void;
   canViewBossDashboard: boolean;
   canViewSettings: boolean;
+  canManageScoring360: boolean;
   showPersonalResults: boolean;
   userName?: string;
   userDepartment?: string;
 }
 
-export function Sidebar({ activePage, onChangePage, canViewBossDashboard, canViewSettings, showPersonalResults, userName, userDepartment }: SidebarProps) {
+export function Sidebar({ activePage, onChangePage, canViewBossDashboard, canViewSettings, canManageScoring360, showPersonalResults, userName, userDepartment }: SidebarProps) {
   const canOpen = (key: PageKey) => {
     if (["growth", "reports", "coach", "actions", "timeline"].includes(key)) return showPersonalResults;
+    if (key === "quality-scores" || key === "collaboration-scores") return canManageScoring360 || showPersonalResults;
     if(key === "departments")return canViewSettings;
     if (key === "dashboard" || key === "monthly" || key === "tasks" || key === "trends") return canViewBossDashboard;
     if (key === "settings") return canViewSettings;
     return true;
   };
   const visibleGroups = navGroups
-    .map((group) => ({ ...group, label: group.label === "我的成长" && !showPersonalResults ? "评分管理" : group.label, items: group.items.filter((item) => canOpen(item.key)) }))
+    .map((group) => ({ ...group, items: group.items.filter((item) => canOpen(item.key)) }))
     .filter((group) => group.items.length > 0);
 
   return (
@@ -93,6 +104,7 @@ export function Sidebar({ activePage, onChangePage, canViewBossDashboard, canVie
                 <button
                   key={item.key}
                   aria-label={item.label}
+                  aria-current={activePage === item.key ? "page" : undefined}
                   title={item.label}
                   className={`nav-item ${activePage === item.key ? "is-active" : ""}`}
                   type="button"

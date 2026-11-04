@@ -132,6 +132,8 @@ AI 管线采用“**分块分析 + 跨周上下文 + 结构化校验 + 人工确
 
 ## 本地运行
 
+本机已有隔离的生产数据副本时，使用 `npm run dev:local` 更新并启动本地测试容器与开发服务。开发入口为 http://localhost:5173，容器预览为 http://localhost:5180；端口监听所有 IPv4 网卡。脚本保留旧容器、镜像和数据，关闭真实集成，容器采用 `unless-stopped` 自动重启。新机器需先准备隔离的本地数据副本，并通过 `LOCAL_PREVIEW_DIR` 指向包含 `start-server.mjs`、`working/growth.sqlite` 和本地会话密钥的目录。普通本地修改完成后应确认服务可访问再交付，具体见 [协作开发指南](CONTRIBUTING.md#必做检查)。
+
 ```bash
 git clone https://github.com/chenhjcttcloud/yimi-growth-weekly-report---os.git emie-growth-os
 cd emie-growth-os

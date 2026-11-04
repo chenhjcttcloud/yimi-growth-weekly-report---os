@@ -11,6 +11,8 @@ const titles: Record<PageKey, string> = {
   dashboard: "老板驾驶舱",
   monthly: "月度会议",
   scores: "评分工作台",
+  "quality-scores": "周报质量",
+  "collaboration-scores": "360 协同得分",
   tasks: "任务闭环",
   growth: "个人最终结果",
   reports: "周报与互动",
@@ -70,6 +72,7 @@ export function AppHeader({
   const [notifications, setNotifications] = useState<NotificationItem[]>([]);
   const [unreadCount, setUnreadCount] = useState(0);
   const [notificationOpen, setNotificationOpen] = useState(false);
+  const scoreResultsPage = activePage === "quality-scores" || activePage === "collaboration-scores";
 
   useEffect(() => {
     if (!canViewBossDashboard) return;
@@ -125,7 +128,7 @@ export function AppHeader({
     <header className="app-header">
       <div>
         <h1>{titles[activePage]}</h1>
-        {canViewBossDashboard && activePage !== "growth" && activePage !== "departments" && activePage !== "scores" ? <div className="header-meta">
+        {canViewBossDashboard && activePage !== "growth" && activePage !== "departments" && activePage !== "scores" && !scoreResultsPage ? <div className="header-meta">
           <span>{currentPeriodLabel(selectedPeriodId)}</span>
           <span>数据生成：{appData.generatedOn}</span>
           <AppSelect
@@ -141,7 +144,7 @@ export function AppHeader({
               </option>
             ))}
           </AppSelect>
-        </div> : <p className="header-meta">{activePage==="scores"?(["boss","system_admin"].includes(managementRole||"")?"负责人评分 · 得分结果 · 月度配评":"我的评分任务 · 同事互评"):activePage==="departments"?"部门层级 · 团队成员 · 月度表现 · 负责人评分":"月度结果 · 每周周报 · AI 教练 · 行动闭环"}</p>}
+        </div> : <p className="header-meta">{activePage==="quality-scores"?"月度质量分 · 四模块评分 · 周报证据":activePage==="collaboration-scores"?"月度协同得分 · 评分进度 · 历史结果":activePage==="scores"?(["boss","system_admin"].includes(managementRole||"")?"负责人评分 · 得分结果 · 月度配评":"我的评分任务 · 同事互评"):activePage==="departments"?"部门层级 · 团队成员 · 月度表现":"月度结果 · 每周周报 · AI 教练 · 行动闭环"}</p>}
       </div>
 
       <div className="header-actions">
@@ -176,7 +179,7 @@ export function AppHeader({
             </div>
           ) : null}
         </div> : null}
-        {canViewBossDashboard && activePage !== "growth" && activePage !== "scores" && activePage !== "settings" && activePage !== "departments" ? (
+        {canViewBossDashboard && activePage !== "growth" && activePage !== "scores" && activePage !== "settings" && activePage !== "departments" && !scoreResultsPage ? (
           <>
             {!adminPerspective && (<button className="secondary-button management-role-badge" type="button" onClick={externalView ? exitReadonlyView : undefined}>
               <ShieldCheck size={16} />

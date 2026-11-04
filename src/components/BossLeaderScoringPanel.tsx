@@ -18,7 +18,7 @@ const scoreKey=(score:SavedScore)=>draftKey(score.month,score.department_id,scor
 function rowsFor(data:Data,month:string,receipts:Record<string,SavedScore>):Row[]{
  const records=[...(data.scores||[])];
  for(const receipt of Object.values(receipts))if(!records.some(score=>scoreKey(score)===scoreKey(receipt)))records.push(receipt);
- return (data.departments||[]).map(department=>{
+ const rows=(data.departments||[]).map(department=>{
   const target=data.scoreTargets?.find(item=>item.departmentId===department.id),leaderId=target?.leaderUserId||department.leader_user_id||'';
   const person=data.employees?.find(employee=>employee.userId===leaderId);
   const name=leaderId?([person?.name,target?.name,department.leader_user_id===leaderId?department.leaderName:undefined].find(value=>value?.trim()&&!['姓名待同步','负责人待配置','负责人未设置'].includes(value.trim()))||'姓名待同步'):'负责人未设置';
@@ -35,7 +35,20 @@ function rowsFor(data:Data,month:string,receipts:Record<string,SavedScore>):Row[
   else if(target?.unavailableReason==='not_required'){reason='该负责人不在本月老板评分范围，无需本项评分。';statusLabel='本月无需评分';exempt=true;}
   else if(target?.ratingRequired===false){reason=target.unavailableReason==='rating_scope_frozen'||target.frozen||past.length?'本月沿用已提交的原评分关系，新岗位从下月开始评分。':'该负责人不在本月老板评分范围，请核对角色、在职月份或评分关系。';statusLabel=target.unavailableReason==='rating_scope_frozen'||target.frozen||past.length?'本月关系已锁定':'评分范围待核实';}
   return {department,leaderId,name,saved,past,state:saved?'done':exempt?'exempt':reason?'blocked':'pending',reason,statusLabel:saved?'已完成':statusLabel,frozen:Boolean(target?.frozen)} as Row;
- }).sort((a,b)=>({pending:0,done:1,blocked:2,exempt:3}[a.state]-{pending:0,done:1,blocked:2,exempt:3}[b.state])||a.department.name.localeCompare(b.department.name,'zh-CN'));
+ });
+ const priority={pending:0,done:1,blocked:2,exempt:3};
+ const groups=new Map<string,Row[]>();
+ for(const row of rows){
+  const key=row.leaderId?JSON.stringify(['leader',row.leaderId]):JSON.stringify(['department',row.department.id]);
+  const group=groups.get(key);
+  if(group)group.push(row);else groups.set(key,[row]);
+ }
+ return [...groups.values()].sort((a,b)=>
+  Math.min(...a.map(row=>priority[row.state]))-Math.min(...b.map(row=>priority[row.state]))
+  ||a[0].name.localeCompare(b[0].name,'zh-CN')
+  ||a[0].leaderId.localeCompare(b[0].leaderId)
+  ||a[0].department.id.localeCompare(b[0].department.id)
+ ).flatMap(group=>group.sort((a,b)=>priority[a.state]-priority[b.state]||a.department.name.localeCompare(b.department.name,'zh-CN')||a.department.id.localeCompare(b.department.id)));
 }
 function readDrafts(owner:string):Record<string,Draft>{
  try{const raw=JSON.parse(sessionStorage.getItem('boss-leader-drafts:'+owner)||'{}');if(!raw||typeof raw!=='object'||Array.isArray(raw))return {};return Object.fromEntries(Object.entries(raw).filter(([,value])=>value&&typeof value==='object').map(([key,value])=>{const item=value as Partial<Draft>;return [key,{score:typeof item.score==='string'?item.score:'',comment:typeof item.comment==='string'?item.comment.slice(0,4000):'',submitted:item.submitted===true}];}));}catch{return {};}
@@ -96,7 +109,7 @@ export function BossLeaderScoringPanel({month:sharedMonth,onBusyChange,active=tr
    setMessageKind('success');setMessage('老板评分已保存，占30%；同事互评完成后自动合成最终分');
    if(advance){
     const pending=rowsFor(refreshed,submittedMonth,{[key]:receipt}).filter(item=>item.state==='pending');
-    const position=rows.findIndex(item=>item.department.id===target.department.id),following=rows.slice(position+1).find(item=>pending.some(next=>next.department.id===item.department.id)),next=following||pending[0];
+    const position=rows.findIndex(item=>item.department.id===target.department.id),following=rows.slice(position+1).find(item=>pending.some(next=>next.department.id===item.department.id)),next=pending.find(item=>item.leaderId===target.leaderId)||following||pending[0];
     if(next){setFilter('pending');setSearch('');setSelected(next.department.id);setNextNotice('已进入下一位：'+next.name+' · '+next.department.name+'。');}
     else{setFilter('done');setSelected(target.department.id);setNextNotice('本月待评负责人已全部完成，可在“已完成”查看记录。');}
    }else{setFilter('done');setSelected(target.department.id);}
@@ -124,7 +137,7 @@ export function BossLeaderScoringPanel({month:sharedMonth,onBusyChange,active=tr
     <div className="bl-form"><label className="bl-score-field"><span>老板评分 <small>0–100分</small></span><div><input type="number" min="0" max="100" step="0.1" aria-label={row.name+'老板评分'} placeholder="0–100" value={value.score} disabled={locked} onChange={event=>update('score',event.target.value)}/><b>/ 100</b></div></label><label className="bl-comment-field"><span>评分说明 <small>必填</small></span><textarea aria-label={row.name+'评分说明'} value={value.comment} maxLength={4000} rows={5} disabled={locked} placeholder="写清具体成果、管理或协作表现，以及下一步建议。" onChange={event=>update('comment',event.target.value)}/><small>{value.comment.length} / 4000</small></label></div>
     <footer className="bl-submit-bar"><p><LockKeyhole size={12}/>提交后锁定；切换负责人或月份会保留草稿。</p><div><button type="button" className="secondary-button" disabled={locked} onClick={()=>void submit(false)}><Send size={13}/>{busy?'提交中…':'提交评分'}</button><button type="button" className="primary-button" disabled={locked} onClick={()=>void submit(true)}>提交并评下一位 <ArrowRight size={14}/></button></div></footer>
    </>}
-   {row.leaderId&&row.state!=='exempt'&&<p className="bl-multiple-note">同一负责人兼任多个部门时，各部门分别评分，系统按既有规则汇总老板分。</p>}
+   {row.leaderId&&row.state!=='exempt'&&<p className="bl-multiple-note">同一负责人兼任的部门集中排列，各部门分别评分，系统按既有规则汇总老板分。</p>}
    {!!row.past.length&&<details className="bl-history"><summary>本月历任负责人评分（{row.past.length}）</summary>{row.past.map(score=><article key={score.leader_user_id}><strong>{nameFor(score.leader_user_id)} · {scoreText(Number(score.score))} 分</strong><p>{score.comment}</p><small>{score.scorer_name||'历史评分人'}{score.created_at?' · '+score.created_at:''}</small></article>)}</details>}
   </article>:<div className="bl-empty-editor"><UserRoundCheck size={29}/><h4>选择一项负责人评分</h4><p>左侧按负责人和部门列出任务，待评分项目优先展示。</p></div>}</div></div>
   {!!archived.length&&<details className="bl-archived" aria-label="已移除部门历史评分"><summary>已移除部门历史评分（{archived.length}）</summary><p>仅展示所选月份已保存的历史评分，当前组织不再包含这些部门。</p>{archived.map(item=><article key={item.department.id}><h4>{item.department.name}</h4>{item.scores.map(score=><div key={score.leader_user_id}><strong>{nameFor(score.leader_user_id)} · {scoreText(Number(score.score))} 分</strong><p>{score.comment}</p><small>{score.scorer_name||'历史评分人'}{score.created_at?' · '+score.created_at:''}</small></div>)}</article>)}</details>}

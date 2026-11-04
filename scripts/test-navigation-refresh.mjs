@@ -30,20 +30,23 @@ try{
  const page=await context.newPage();page.on('pageerror',e=>errors.push(e.message));page.on('request',r=>{if(/\/api\/(settings\/status|departments(?:\/|\?|$)|performance\/manage)/.test(r.url()))protectedRequests.push(r.url());});
  async function title(value){await page.waitForFunction(value=>document.querySelector('.app-header h1')?.textContent===value,value);}
  async function urlValue(key,value){await page.waitForFunction(({key,value})=>new URL(location.href).searchParams.get(key)===value,{key,value});}
- await page.goto(base);await title('老板驾驶舱');
+ await page.goto(base);await title('评分工作台');await urlValue('page','scores');await urlValue('scoreTab','leaders');
  await page.getByRole('button',{name:'系统设置',exact:true}).click();await page.getByText('组织与部门',{exact:true}).click();await page.locator('.org-tree-select').filter({hasText:target.name}).first().click();
  await urlValue('page','settings');await urlValue('settingsTab','organization');await urlValue('departmentId',target.id);
  await page.reload();await title('系统设置');assert.equal(await page.locator('.settings-module-nav button[aria-current="page"] strong').textContent(),'组织与部门');await page.locator('.org-detail-title h3').filter({hasText:target.name}).waitFor();
  await page.screenshot({path:directory+'/settings-after-refresh.png'});
  await page.getByRole('button',{name:'部门管理',exact:true}).click();await page.getByRole('button',{name:'组织与负责人',exact:true}).click();await urlValue('departmentTab','organization');await page.reload();await title('部门管理');assert(await page.getByRole('button',{name:'组织与负责人',exact:true}).getAttribute('aria-pressed')==='true');
- await page.getByRole('button',{name:'负责人评分',exact:true}).click();await urlValue('departmentTab','scores');await page.reload();await title('部门管理');assert(await page.getByRole('button',{name:'负责人评分',exact:true}).getAttribute('aria-pressed')==='true');
+ assert.equal(await page.getByRole('navigation',{name:'部门管理分类',exact:true}).getByRole('button',{name:'负责人评分',exact:true}).count(),0,'department management has no duplicate scoring tab');
+ const legacyScoreMonth=new Intl.DateTimeFormat('sv-SE',{timeZone:'Asia/Shanghai'}).format(new Date()).slice(0,7);
+ await page.goto(base+'?page=departments&departmentTab=scores&departmentId='+encodeURIComponent(target.id));await title('评分工作台');await urlValue('page','scores');await urlValue('scoreTab','leaders');await urlValue('scoreMonth',legacyScoreMonth);await urlValue('departmentId',target.id);assert.equal(new URL(page.url()).searchParams.has('departmentTab'),false);assert.equal(await page.getByRole('tab',{name:'负责人评分',exact:true}).getAttribute('aria-selected'),'true');
+ await page.reload();await title('评分工作台');await urlValue('page','scores');await urlValue('scoreTab','leaders');await urlValue('scoreMonth',legacyScoreMonth);assert.equal(await page.getByRole('tab',{name:'负责人评分',exact:true}).getAttribute('aria-selected'),'true');
  role='admin';await page.goto(base+'?page=settings&settingsTab=people');await title('系统设置');await page.getByRole('heading',{name:'公司员工花名册',exact:true}).waitFor();await page.reload();await title('系统设置');await urlValue('settingsTab','people');assert.equal(await page.locator('.settings-module-nav button[aria-current="page"] strong').textContent(),'员工管理');
  await page.evaluate(id=>localStorage.setItem('admin-perspective:'+id,'personal'),admin.userId);await page.goto(base+'?page=reports');await title('周报与互动');await page.reload();await title('周报与互动');
  await page.evaluate(id=>localStorage.setItem('admin-perspective:'+id,'employee:'+id),admin.userId);await page.goto(base+'?page=coach');await title('AI 教练');await page.reload();await title('AI 教练');
  await page.goto(base+'?page=settings');await title('个人最终结果');await urlValue('page','growth');
  role='member';protectedRequests.length=0;await page.goto(base+'?page=departments&departmentTab=organization');await title('个人最终结果');await urlValue('page','growth');assert.deepEqual(protectedRequests,[],'an inaccessible restored route must not mount management pages');
  await page.goto(base+'/scores?tab=my360');await title('评分工作台');await urlValue('page','scores');await page.reload();await title('评分工作台');
- role='boss';await page.goto(base+'?page=invalid-page');await title('老板驾驶舱');await urlValue('page','dashboard');
- assert.deepEqual(errors,[]);console.log(JSON.stringify({ok:true,settingsAndSection:true,selectedDepartment:true,departmentTabs:true,adminManagement:true,adminPersonalAndPreview:true,permissionFallback:true,legacyScoresLink:true,invalidRouteFallback:true,consoleErrors:0,artifacts:directory}));
+ role='boss';await page.goto(base+'?page=invalid-page');await title('评分工作台');await urlValue('page','scores');await urlValue('scoreTab','leaders');
+ assert.deepEqual(errors,[]);console.log(JSON.stringify({ok:true,settingsAndSection:true,selectedDepartment:true,departmentTabs:true,departmentScoringRemoved:true,legacyDepartmentScoresLink:true,adminManagement:true,adminPersonalAndPreview:true,permissionFallback:true,legacyScoresLink:true,invalidRouteFallback:true,consoleErrors:0,artifacts:directory}));
 }catch(error){const page=context.pages().at(-1);if(page)await page.screenshot({path:directory+'/failure.png'}).catch(()=>{});throw error;}
 finally{await context.close();await new Promise(resolve=>server.close(resolve));console.log('Test artifacts retained:',directory);}

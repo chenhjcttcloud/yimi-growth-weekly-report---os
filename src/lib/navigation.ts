@@ -1,7 +1,7 @@
 import {useEffect,useState} from 'react';
 import type {EmployeeResultTarget,PageKey,UserAccess} from './types';
 
-const pages:PageKey[]=['growth','reports','coach','actions','timeline','scores','dashboard','monthly','tasks','trends','settings','departments'];
+const pages:PageKey[]=['growth','reports','coach','actions','timeline','scores','quality-scores','collaboration-scores','dashboard','monthly','tasks','trends','settings','departments'];
 const personalPages:PageKey[]=['growth','reports','coach','actions','timeline'];
 
 export function requestedPage():PageKey|undefined {
@@ -11,6 +11,7 @@ export function requestedPage():PageKey|undefined {
 }
 
 export function canVisitPage(page:PageKey,access:UserAccess):boolean {
+ if(page==='quality-scores'||page==='collaboration-scores')return !access.externalView&&(access.canManageScoring360||(access.role!=='boss'&&access.role!=='system_admin'));
  if(['dashboard','monthly','tasks','trends'].includes(page))return access.canViewBossDashboard;
  if(['settings','departments'].includes(page))return access.canViewSettings&&!access.externalView;
  if(personalPages.includes(page))return !access.externalView&&access.role!=='boss'&&access.role!=='system_admin';
@@ -18,7 +19,22 @@ export function canVisitPage(page:PageKey,access:UserAccess):boolean {
 }
 
 export function resolvePage(page:PageKey|undefined,access:UserAccess):PageKey {
- return page&&canVisitPage(page,access)?page:access.canViewBossDashboard?'dashboard':'growth';
+ // Old department scoring bookmarks now open the single scoring workspace.
+ // Check the original page permission before migrating a management link.
+ if(page==='departments'&&canVisitPage(page,access)&&locationValue('departmentTab')==='scores'){
+  const url=new URL(window.location.href);
+  url.searchParams.set('page','scores');url.searchParams.set('scoreTab','leaders');
+  if(!url.searchParams.get('scoreMonth'))url.searchParams.set('scoreMonth',new Intl.DateTimeFormat('sv-SE',{timeZone:'Asia/Shanghai'}).format(new Date()).slice(0,7));
+  url.searchParams.delete('departmentTab');
+  window.history.replaceState(window.history.state,'',url.pathname+url.search+url.hash);
+  return 'scores';
+ }
+ if(page&&canVisitPage(page,access))return page;
+ if(access.role==='boss'&&!access.externalView){
+  rememberLocation('scoreTab','leaders');
+  return 'scores';
+ }
+ return access.canViewBossDashboard?'dashboard':'growth';
 }
 
 export function perspectiveAccess(access:UserAccess,mode:string):UserAccess {

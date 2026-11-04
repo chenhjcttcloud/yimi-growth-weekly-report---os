@@ -1,0 +1,28 @@
+.pf-department-trends{min-width:0}
+.pf-trend-filters{display:flex;align-items:center;flex-wrap:wrap;gap:12px;margin:0 0 14px}
+.pf-trend-search{display:flex;align-items:center;gap:8px;flex:1;min-width:160px;max-width:300px;padding:10px 12px;border:1px solid var(--v2-line);border-radius:8px;background:#fff;color:var(--v2-ink-3)}
+.pf-trend-search:focus-within{border-color:var(--v2-brand);box-shadow:0 0 0 2px var(--v2-brand-softer)}
+.pf-trend-search input{width:100%;min-width:0;border:0;outline:0;background:transparent;font:inherit;font-size:12px;color:var(--v2-ink)}
+.pf-trend-search input::-webkit-search-cancel-button{-webkit-appearance:none}
+.pf-trend-search>svg{flex-shrink:0}
+.pf-trend-search button{display:grid;place-items:center;flex-shrink:0;padding:0;border:0;background:transparent;color:var(--v2-ink-3);cursor:pointer}
+.pf-trend-month{display:flex;align-items:center;gap:10px;min-width:0;color:var(--v2-ink-3);font-size:12px}
+.pf-trend-month>span{flex-shrink:0}
+.pf-trend-month>.app-select{width:170px;min-width:0}
+.pf-trend-pagination{display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:10px;margin:0 0 14px}
+.pf-trend-range{font-size:11px;color:var(--v2-ink-3)}
+.pf-trend-pagination-controls{display:flex;align-items:center;gap:12px;margin-left:auto}
+.pf-trend-pagination-controls>span{font-size:11px;color:var(--v2-ink-2);white-space:nowrap}
+.pf-trend-pagination-controls button{display:grid;place-items:center;width:30px;height:30px;padding:0;border:1px solid var(--v2-line);border-radius:7px;background:#fff;color:var(--v2-brand);cursor:pointer}
+.pf-trend-pagination-controls button:disabled{opacity:.35;cursor:default}
+.pf-trend-pagination-controls button:hover:not(:disabled){border-color:var(--v2-brand);background:var(--v2-brand-softer)}
+.pf-department-trends button:focus-visible{outline:2px solid var(--v2-brand);outline-offset:2px}
+.pf-trend-empty{display:flex;flex-direction:column;align-items:center;gap:12px;padding:30px 12px;text-align:center;font-size:12px;color:var(--v2-ink-3)}
+.pf-trend-empty strong{font-weight:500}
+@media(max-width:600px){
+ .pf-trend-filters{align-items:stretch;flex-direction:column}
+ .pf-trend-search{max-width:none;min-width:0}
+ .pf-trend-month{justify-content:space-between}
+ .pf-trend-month>.app-select{flex:1;max-width:220px}
+ .pf-trend-search input{font-size:14px}
+}

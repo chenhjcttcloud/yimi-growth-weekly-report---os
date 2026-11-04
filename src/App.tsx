@@ -1,11 +1,11 @@
 import {DepartmentsPage} from './pages/DepartmentsPage';
-import { lazy, Suspense, useEffect, useMemo, useState } from "react";
+import { lazy, Suspense, useEffect, useLayoutEffect, useMemo, useState } from "react";
 import { AppHeader } from "./components/AppHeader";
 import { Sidebar } from "./components/Sidebar";
 import { bootstrapData as appData } from "./lib/bootstrap-data";
 import type { EmployeeResultTarget, PageKey } from "./lib/types";
 import { FinalResultsPage } from "./pages/FinalResultsPage";
-import { PerformanceManagementPage } from "./pages/PerformanceManagementPage";
+import { PerformanceManagementPage, PerformanceResults } from "./pages/PerformanceManagementPage";
 import { ScoringTasksPage } from "./pages/ScoringTasksPage";
 import { SettingsPage } from "./pages/SettingsPage";
 import type { UserAccess } from "./lib/types";
@@ -59,6 +59,16 @@ export function App() {
   }
   const externalView = currentAccess.externalView;
   const canOpenPage = (page: PageKey) => canVisitPage(page,currentAccess);
+  function changePage(page:PageKey){
+    if(!canOpenPage(page))return;
+    const bossScoringEntry=page==='scores'&&currentAccess.role==='boss'&&!externalView;
+    if((page!==activePage||bossScoringEntry)&&!window.dispatchEvent(new Event('organization-before-leave',{cancelable:true})))return;
+    if(bossScoringEntry){
+      rememberLocation('scoreTab','leaders');
+      window.dispatchEvent(new Event('score-leaders-target'));
+    }
+    setActivePage(page);
+  }
 
   useEffect(() => {
     async function loadMe() {
@@ -96,14 +106,16 @@ export function App() {
     rememberLocation('page',activePage);
   },[access,activePage,adminPerspective]);
 
-  useEffect(()=>{
+  useLayoutEffect(()=>{
     if(!access)return;
     const restore=()=>{
       if(!window.dispatchEvent(new Event('organization-before-leave',{cancelable:true}))){rememberLocation('page',activePage);return;}
       setActivePage(resolvePage(requestedPage(),currentAccess));
     };
-    window.addEventListener('popstate',restore);
-    return()=>window.removeEventListener('popstate',restore);
+    // Register before section/month effects so they read the normalized URL,
+    // including popstate dispatched directly on window (the event target).
+    window.addEventListener('popstate',restore,true);
+    return()=>window.removeEventListener('popstate',restore,true);
   },[access,adminPerspective,activePage]);
 
   useEffect(() => {
@@ -153,6 +165,14 @@ export function App() {
       );
     }
 
+    if (activePage === "quality-scores" || activePage === "collaboration-scores") {
+      if (!canOpenPage(activePage)) return null;
+      const scoreFocus = activePage === "quality-scores" ? "quality" : "collaboration";
+      return currentAccess.canManageScoring360
+        ? <PerformanceResults key={activePage} scoreFocus={scoreFocus}/>
+        : <FinalResultsPage key={`${activePage}:${previewEmployeeId||currentAccess.currentEmployee?.userId||'self'}`} scoreFocus={scoreFocus} previewEmployeeId={previewEmployeeId} employeeContextId={previewEmployeeId||currentAccess.currentEmployee?.userId||'self'} onOpenModule={setActivePage}/>;
+    }
+
     if (activePage === "scores") {
       return currentAccess.canManageScoring360 ? <PerformanceManagementPage isBoss={currentAccess.role==='boss'}/> : <ScoringTasksPage key={previewEmployeeId} previewEmployeeId={previewEmployeeId}/>;
     }
@@ -195,11 +215,10 @@ export function App() {
     <div className="app-shell">
       <Sidebar
         activePage={activePage}
-        onChangePage={(page) => {
-          if (canOpenPage(page) && (page===activePage||window.dispatchEvent(new Event('organization-before-leave',{cancelable:true})))) setActivePage(page);
-        }}
+        onChangePage={changePage}
         canViewBossDashboard={currentAccess.canViewBossDashboard}
         canViewSettings={currentAccess.canViewSettings}
+        canManageScoring360={!externalView && currentAccess.canManageScoring360}
         showPersonalResults={currentAccess.role !== "boss" && !externalView && !(access?.role==="system_admin"&&!personalMode)}
         userName={currentAccess.currentEmployee?.name || ""}
         userDepartment={currentAccess.currentEmployee?.department || ""}

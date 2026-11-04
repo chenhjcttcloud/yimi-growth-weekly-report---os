@@ -10,7 +10,7 @@ export interface EmployeeResultTarget {
   tab?: "review" | "reports" | "collaboration" | "history";
 }
 
-export type PageKey = PersonalModule | "dashboard" | "monthly" | "scores" | "tasks" | "growth" | "trends" | "settings" | "departments";
+export type PageKey = PersonalModule | "dashboard" | "monthly" | "scores" | "quality-scores" | "collaboration-scores" | "tasks" | "growth" | "trends" | "settings" | "departments";
 
 export type Priority = "P0" | "P1" | "P2";
 

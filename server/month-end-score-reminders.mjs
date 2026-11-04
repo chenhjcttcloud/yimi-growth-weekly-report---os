@@ -61,7 +61,7 @@ export function createMonthEndScoreReminders({query,exec,sql,managerReviews,boss
   if(recipient.counts.boss)lines.push(`部门负责人评分：${recipient.counts.boss} 项待评（占最终分30%）。`);
   lines.push('请提交分数和评价；所有必需评分完成后，系统自动合成发布最终分。',`本月最后两个工作日为 ${dates.join('、')}，每天仅提醒仍未完成的人员。`);
   if(recipient.counts.peer||recipient.counts.manager)lines.push(`评分工作台：${baseUrl}/?page=scores`);
-  if(recipient.counts.boss)lines.push(`部门负责人评分：${baseUrl}/?page=departments`);
+  if(recipient.counts.boss)lines.push(`部门负责人评分：${baseUrl}/?page=scores&scoreTab=leaders&scoreMonth=${clock.month}`);
   return lines.join('\n');
  }
  async function tick() {

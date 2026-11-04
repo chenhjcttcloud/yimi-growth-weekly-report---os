@@ -10,6 +10,7 @@
 .pf-notice { display:flex; align-items:center; gap:10px; padding:13px 17px; color:var(--v2-brand-deep); background:var(--v2-brand-softer); border:1px solid #dceae1; border-radius:10px; font-size:12px; line-height:1.7; }
 .pf-notice svg { flex-shrink:0; }
 .pf-metrics { display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:18px; }
+.pf-metrics-focused { grid-template-columns:repeat(auto-fit,minmax(min(100%,240px),1fr)); }
 .pf-metric { padding:22px!important; display:flex; flex-direction:column; min-width:0; }
 .pf-metric-label { display:flex; justify-content:space-between; align-items:center; gap:12px; font-size:13px; font-weight:600; color:var(--v2-ink-2); }
 .pf-icon { display:grid; place-items:center; width:34px; height:34px; border-radius:10px; background:var(--v2-brand-softer); color:var(--v2-brand); flex-shrink:0; }

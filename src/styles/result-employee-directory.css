@@ -1,0 +1,31 @@
+.pf-people.pf-employee-directory{min-width:0;align-self:start;flex-direction:column;gap:12px;overflow:visible}
+.pf-employee-search{display:flex;align-items:center;gap:7px;min-width:0;border:1px solid var(--v2-line);border-radius:8px;padding:9px 10px;color:var(--v2-ink-3);background:#fff}
+.pf-employee-search:focus-within{border-color:var(--v2-brand);box-shadow:0 0 0 2px var(--v2-brand-softer)}
+.pf-employee-search input{width:100%;min-width:0;border:0;outline:0;background:transparent;font:inherit;font-size:11px;color:var(--v2-ink)}
+.pf-employee-search input::-webkit-search-cancel-button{-webkit-appearance:none}
+.pf-employee-search>svg{flex-shrink:0}
+.pf-employee-search button{display:grid;place-items:center;flex-shrink:0;border:0;padding:0;background:transparent;color:var(--v2-ink-3);cursor:pointer}
+.pf-employee-count{margin:0;font-size:10px;color:var(--v2-ink-3);line-height:1.5}
+.pf-employee-list{display:flex;flex-direction:column;gap:6px;min-width:0}
+.pf-employee-directory .pf-person{width:100%;min-width:0;flex-shrink:1;padding:8px 10px}
+.pf-employee-directory .pf-person>svg{flex-shrink:0}
+.pf-employee-directory .pf-person-info strong,.pf-employee-directory .pf-person-info small{overflow-wrap:anywhere}
+.pf-employee-empty{display:flex;align-items:center;flex-direction:column;gap:12px;padding:28px 8px;color:var(--v2-ink-3);text-align:center;font-size:11px}
+.pf-employee-empty strong{font-weight:500}
+.pf-employee-pagination{display:flex;align-items:center;justify-content:space-between;gap:6px;border-top:1px solid var(--v2-line-soft);padding-top:12px}
+.pf-employee-pagination>span{font-size:11px;color:var(--v2-ink-2);white-space:nowrap}
+.pf-employee-pagination button{display:grid;place-items:center;flex-shrink:0;width:30px;height:30px;border:1px solid var(--v2-line);border-radius:7px;background:#fff;color:var(--v2-brand);cursor:pointer}
+.pf-employee-pagination button:hover:not(:disabled){background:var(--v2-brand-softer);border-color:var(--v2-brand)}
+.pf-employee-pagination button:disabled{opacity:.35;cursor:default}
+.pf-employee-directory button:focus-visible{outline:2px solid var(--v2-brand);outline-offset:2px}
+@media(max-width:760px){
+ .pf-people.pf-employee-directory{padding:16px 0}
+ .pf-employee-list{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:6px}
+ .pf-employee-directory .pf-person{padding:10px 8px;gap:7px}
+ .pf-employee-directory .pf-avatar{width:30px;height:30px;font-size:11px}
+ .pf-employee-directory .pf-person-info strong{font-size:12px}
+ .pf-employee-search input{font-size:14px}
+}
+
+.pf-employee-directory .pf-person-info strong{line-height:1.4}
+.pf-employee-directory .pf-person-info small{margin-top:3px}
