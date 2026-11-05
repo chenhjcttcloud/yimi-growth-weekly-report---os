@@ -31,6 +31,8 @@
     "server:start": "node server/index.mjs",
     "test:scoring360": "node scripts/test-scoring360-policy.mjs && node scripts/test-scoring360-api.mjs && node scripts/test-scoring360-admin-api.mjs",
     "test:performance": "node scripts/test-performance-api.mjs",
+    "test:product-score-api": "node scripts/test-product-management-score-api.mjs",
+    "test:automatic-score-storage": "node scripts/test-automatic-score-history-stability.mjs && node scripts/test-automatic-evidence-storage.mjs",
     "test:dev-views": "node scripts/test-dev-views.mjs",
     "test:personal": "node scripts/test-personal-workspace.mjs",
     "test:live-sync": "node scripts/test-live-report-sync.mjs",

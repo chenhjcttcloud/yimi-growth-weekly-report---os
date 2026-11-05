@@ -267,6 +267,8 @@ See the Chinese sections above for architecture, setup, security boundaries, and
 - 员工的协作评分任务独立于个人结果页，仅能提交本人被分配的任务，不能查看他人对自己的评分过程。
 - 管理原始数据不再打包进公开前端 JS，而由管理权限接口提供。现有 `canManageScoring360` 管理身份作为 HR 权限，范围为全公司。
 
+产品管理系统对接周报质量月分与 360 协同最终分，参见[月度评分只读接口文档](docs/PRODUCT_MANAGEMENT_SCORE_API.md)。
+
 本地开发环境可使用 `AUTH_MODE=mock` 与开发视角切换；生产环境使用 `AUTH_MODE=feishu` 并关闭开发切换。真实员工隔离、飞书汇报同步与 AI 调用由各环境的服务端配置决定，密钥不得提交仓库。启用提醒时，`SCORING360_REMINDER_ENABLED=true` 支持已发起轮次的未评分跟进，`SCORING360_LAUNCH_MODE=scheduled` 支持按月自动发起；`WEEKLY_REMINDER_ENABLED=true` 启用周报提醒。
 
 新增回归验证（需要 Node 与 sqlite3）：

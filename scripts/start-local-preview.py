@@ -74,6 +74,19 @@ def main():
         assert old in source
         launcher.write_text(source.replace(old, "STATIC_DIR:process.env.LOCAL_PREVIEW_STATIC_DIR||working+'/web'"))
     assert (profile / 'network-isolation.json').is_file()
+    # A separate optional local-only token enables backend integration testing.
+    # Never forward the project's .env or credentials for other integrations.
+    score_api_environment = []
+    score_api_env = profile / 'working/product-management-score-api.env'
+    if score_api_env.exists():
+        assert score_api_env.is_file() and not score_api_env.is_symlink(), 'Expected regular local score API env file'
+        assert score_api_env.stat().st_mode & 0o077 == 0, 'Local score API env file must be private (0600)'
+        lines = score_api_env.read_text().splitlines()
+        prefix = 'PRODUCT_MANAGEMENT_SCORE_API_TOKEN='
+        assert len(lines) == 1 and lines[0].startswith(prefix), 'Only the local score API token may be forwarded'
+        score_api_token = lines[0][len(prefix):]
+        assert 32 <= len(score_api_token) <= 4096 and all(33 <= ord(char) <= 126 for char in score_api_token), 'Invalid local score API token'
+        score_api_environment = ['--env-file', str(score_api_env)]
     stamp = datetime.datetime.now().strftime('%Y%m%dT%H%M%S')
     output = Path(tempfile.mkdtemp(prefix='local-container-' + stamp + '-', dir=ROOT / 'outputs'))
     stamp += '-' + output.name.rsplit('-', 1)[-1]
@@ -144,7 +157,7 @@ def main():
              '--label', 'cn.emie.growth.local-preview.run=' + stamp,
              '--health-interval=5s', '--health-start-period=5s', '--health-timeout=5s',
              '-p', '0.0.0.0:5180:5174', '-p', '0.0.0.0:5174:5174',
-             '-e', 'TZ=Asia/Shanghai', '-e', 'LOCAL_PREVIEW_STATIC_DIR=/app/dist'] + mounts +
+             '-e', 'TZ=Asia/Shanghai', '-e', 'LOCAL_PREVIEW_STATIC_DIR=/app/dist'] + score_api_environment + mounts +
             [image, 'node', '/app/local-preview/start-server.mjs'])
         deadline = time.monotonic() + 60
         while True:

@@ -1,4 +1,6 @@
 import {createEmployeeIdentity,resolveFeishuLogin} from './employee-identity.mjs';
+import {createProductManagementScoreApi,PRODUCT_MANAGEMENT_SCORE_PATH} from './product-management-score-api.mjs';
+import {decodeAutomaticEvidence} from './automatic-evidence-storage.mjs';
 import {createFeishuDepartmentSync} from './feishu-department-sync.mjs';
 import {createLiveReportSync} from './live-report-sync.mjs';
 import { createSystemSettings } from './system-settings.mjs';
@@ -178,6 +180,7 @@ const departments=createDepartments({query:querySqlRows,exec:execSql,sql:sqlValu
 let organizationMutationRunning=false;
 const managerReviews=createManagerReviews({query:querySqlRows,exec:execSql,sql:sqlValue,organization:departments.overview,reports:()=>performance.reports(),isBossUserId:id=>bossAccessState.userIds.has(id)||(config.authMode==='mock'&&id==='mock_owner')});
 const performance = createPerformance({managerReviews,calendar:()=>chinaWorkCalendar,policyFor:systemSettings.policyFor,query: querySqlRows, exec: execSql, sql: sqlValue, readData:readSourceReadonly});
+const productManagementScores=createProductManagementScoreApi({query:querySqlRows,sql:sqlValue,sendJson,token:process.env.PRODUCT_MANAGEMENT_SCORE_API_TOKEN||''});
 const reportAutomation=createReportAutomation({query:querySqlRows,exec:execSql,sql:sqlValue,getConfig:systemSettings.reportAutomationConfig,isRunning:()=>liveReportSync.isRunning(),start:options=>liveReportSync.start(options)});
 const scoringSetup=createScoringSetup({query:querySqlRows,exec:execSql,sql:sqlValue,isBoss:id=>bossAccessState.userIds.has(id)||(config.authMode==='mock'&&id==='mock_owner')});
 const scoringWorkbench=createScoringWorkbench({query:querySqlRows,exec:execSql,sql:sqlValue,setup:scoringSetup,managerReviews,bossMembers:()=>[...bossAccessState.userIds].map(userId=>({userId,name:bossAccessState.members.find(m=>m.userId===userId)?.name||'老板'}))});
@@ -231,6 +234,7 @@ setInterval(checkOperations,60000).unref();void checkOperations();
 
 async function route(req, res) {
   const url = new URL(req.url || "/", config.baseUrl);
+  if(url.pathname===PRODUCT_MANAGEMENT_SCORE_PATH)return productManagementScores.handle(req,res,url);
   // External sharing is retired. Check the signed payload before validity and
   // mock fallback, so expired legacy guests cannot become a development owner.
   if (url.pathname === '/share' || url.pathname.startsWith('/share/') ||
@@ -563,7 +567,7 @@ async function route(req, res) {
         UNION ALL SELECT evidence_json,1 AS priority,0 AS sequence FROM all_monthly_weighted_results WHERE ${where}${fixed}${rule&&rule!=='weighted_30_70'?' AND 0':''}
         UNION ALL SELECT evidence_json,2 AS priority,a.rowid AS sequence FROM automatic_performance_results a WHERE ${where}${automatic}${rule&&rule!=='automatic_report'?' AND 0':''}
       ) ORDER BY priority,sequence DESC LIMIT 1;`);
-      return records.length?sendJson(res,200,{ok:true,detail:JSON.parse(records[0].evidence_json)}):sendJson(res,404,{ok:false,error:'result_not_found'});
+      return records.length?sendJson(res,200,{ok:true,detail:JSON.parse(decodeAutomaticEvidence(records[0].evidence_json))}):sendJson(res,404,{ok:false,error:'result_not_found'});
     }
     if (url.pathname === '/api/performance/confirm' && req.method === 'POST') {
       return sendJson(res,409,{ok:false,error:'results_auto_published'});

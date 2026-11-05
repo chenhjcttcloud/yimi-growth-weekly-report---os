@@ -34,6 +34,9 @@ jobs:
       - run: node scripts/test-china-work-calendar.mjs
       - run: node scripts/test-weighted-monthly.mjs
       - run: node scripts/test-performance-policy-reads.mjs
+      - run: node scripts/test-product-management-score-api.mjs
+      - run: node scripts/test-automatic-score-history-stability.mjs
+      - run: node scripts/test-automatic-evidence-storage.mjs
       - run: node scripts/test-personal-loading-scope.mjs
       - run: node scripts/test-source-data-cache.mjs
       - run: node scripts/test-management-transport.mjs
