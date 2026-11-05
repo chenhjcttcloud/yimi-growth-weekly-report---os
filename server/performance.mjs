@@ -2,6 +2,36 @@ import {createHash,randomUUID} from 'node:crypto';
 import {weeklyReportSchedule,monthFridays,shiftDate} from './weekly-report-schedule.mjs';
 import {employedOn,employedInMonth} from './employee-lifecycle.mjs';
 import {REPORT_QUALITY_VERSION,reportQualityAssessment} from './report-quality-scoring.mjs';
+import {encodeAutomaticEvidence,decodeAutomaticEvidence} from './automatic-evidence-storage.mjs';
+
+const canonical=value=>Array.isArray(value)?value.map(canonical):value&&typeof value==='object'?Object.fromEntries(Object.keys(value).sort().map(key=>[key,canonical(value[key])])):value;
+const selected=(value,keys)=>value&&typeof value==='object'?Object.fromEntries(keys.filter(key=>value[key]!==undefined).map(key=>[key,value[key]])):null;
+const assessmentBasis=value=>{
+  if(!value)return null;
+  const {generatedAt,...basis}=value;
+  return basis;
+};
+function automaticReportBasis(report,kind){
+  const content=report.content||{};
+  const common={id:report.id,employeeUserId:report.employeeUserId,name:report.name,department:report.department,start:report.start,end:report.end,submittedAt:report.submittedAt,status:report.status,submitted:report.submitted,timestampUnknown:report.timestampUnknown,late:report.late,onTime:report.onTime,schedule:report.schedule,facts:report.evidence,sourceHash:content.sourceHash||null,source:selected(content.source,['provider','taskId','ruleId','ruleName','commitTime','formContents','weekInference']),deadlineTime:report.scoringPolicy?.deadlineTime};
+  // Timeliness cannot change merely because an AI request was retried or a
+  // candidate analysis changed. Its complete evidence is still saved below.
+  common.originalFacts=selected(content,['results','problems','nextPlan','reflection','本周成果摘要','问题摘要','下周计划摘要','思考与复盘摘要']);
+  if(kind==='timeliness')return common;
+  const refresh=report.qualityRefresh;
+  return {...common,moduleScores:report.qualityAssessment?.scores||selected(content,['成果分','问题分','计划分','复盘分']),weights:report.scoringPolicy?.weights,candidate:report.candidate,missing:report.missing,anomalies:report.anomalies,suggestions:report.suggestions,assessment:assessmentBasis(report.qualityAssessment),analysis:selected(content.ai,['version','promptVersion','scores','modules','summary','anomalies','questions','tasks']),model:content.aiModel||'',promptVersion:content.aiPromptVersion||'',refresh:refresh?{state:refresh.state==='ready'?'ready':refresh.state==='failed'?'failed':'pending',targetVersion:refresh.targetVersion}:null,displayQualityScore:report.displayQualityScore??null,qualityDisplaySource:report.qualityDisplaySource||null,previousQualityVersion:report.previousQualityVersion||null,previousScoringWeights:report.previousScoringWeights||null,previousAssessment:assessmentBasis(report.previousQualityAssessment)};
+}
+function automaticBusinessHash(row,kind,result){
+  // Collection jobs, retry diagnostics, historical analysis arrays and runtime
+  // timestamps are not score revisions. Only the current business basis is
+  // hashed; the original, complete snapshot is retained for every real change.
+  const {previousResultAt,...stableResult}=result;
+  const reports=row.reports.map(report=>automaticReportBasis(report,kind)).sort((a,b)=>{
+    const left=JSON.stringify([a.employeeUserId,a.end,a.start,a.id]),right=JSON.stringify([b.employeeUserId,b.end,b.start,b.id]);
+    return left<right?-1:left>right?1:0;
+  });
+  return createHash('sha256').update(JSON.stringify(canonical({version:'automatic-score-business-v1',month:row.month,userId:row.userId,name:row.name,department:row.department,kind,result:stableResult,reports}))).digest('hex');
+}
 // Quality/statistics calculate automatically; required human ratings publish when complete.
 export function createPerformance({ query, exec, sql, readData, policyFor, managerReviews, calendar, now=()=>new Date() }) {
   const round = n => Math.round(n * 10) / 10;
@@ -52,7 +82,7 @@ UNION ALL SELECT ${clientSummary?columns('w'):'*'}, 'weighted_30_70' AS scoring_
 UNION ALL SELECT a.month,a.employee_user_id,a.employee_name,a.kind,a.result_json,${evidence('a.evidence_json')} AS evidence_json,'系统自动计算' AS confirmed_by,a.calculated_at AS confirmed_at,'automatic_report' AS scoring_rule FROM automatic_performance_results a
 WHERE ${userId?`a.employee_user_id=${sql(userId)} AND `:''}a.rowid=(SELECT MAX(b.rowid) FROM automatic_performance_results b WHERE b.month=a.month AND b.employee_user_id=a.employee_user_id AND b.kind=a.kind)
 AND NOT EXISTS(SELECT 1 FROM performance_results p WHERE p.month=a.month AND p.employee_user_id=a.employee_user_id AND p.kind=a.kind)
-ORDER BY month DESC, employee_name;`)).map(r=>({...r, result:JSON.parse(r.result_json)}));
+ORDER BY month DESC, employee_name;`)).map(r=>({...r,...(!clientSummary&&r.scoring_rule==='automatic_report'&&typeof r.evidence_json==='string'?{evidence_json:decodeAutomaticEvidence(r.evidence_json)}:{}),result:JSON.parse(r.result_json)}));
   }
   async function previousReadyQuality(userId) {
     return query(`SELECT a.month,a.employee_user_id,a.result_json,a.calculated_at FROM automatic_performance_results a
@@ -77,13 +107,13 @@ AND a.rowid=(SELECT MAX(b.rowid) FROM automatic_performance_results b WHERE b.mo
     for(const [kind,result] of [['quality',quality],['timeliness',timeliness]]){
       if(existing.some(r=>r.month===row.month&&r.employee_user_id===row.userId&&r.kind===kind&&r.scoring_rule==='legacy'))continue;
       const evidence={userId:row.userId,name:row.name,department:row.department,publicationMode:'automatic',rule:kind==='quality'?'四模块按配置权重生成周分，全部已提交周报分析完成后取月度算术平均':'按提交时间和周五截止时间自动统计，及时率与质量分独立',reports:row.reports,statistics:row.timeliness,reviewNote:'系统自动计算，无需人工确认',deduction:0};
-      const hash=createHash('sha256').update(JSON.stringify({result,evidence})).digest('hex');
+      const hash=automaticBusinessHash(row,kind,result);
       // A read with unchanged inputs does not need a write transaction. Keep the
       // SQL comparison too: another request may publish between this read/write.
       if(existing.some(r=>r.month===row.month&&r.employee_user_id===row.userId&&r.kind===kind&&r.scoring_rule==='automatic_report'&&r.calculation_hash===hash))continue;
       // Last-version comparison (rather than a unique hash) preserves A→B→A revisions too.
       statements.push(`INSERT INTO automatic_performance_results(id,month,employee_user_id,employee_name,kind,calculation_hash,result_json,evidence_json,calculated_at)
-SELECT ${sql(randomUUID())},${sql(row.month)},${sql(row.userId)},${sql(row.name)},${sql(kind)},${sql(hash)},${sql(JSON.stringify(result))},${sql(JSON.stringify(evidence))},${sql(now().toISOString())}
+SELECT ${sql(randomUUID())},${sql(row.month)},${sql(row.userId)},${sql(row.name)},${sql(kind)},${sql(hash)},${sql(JSON.stringify(result))},${sql(encodeAutomaticEvidence(JSON.stringify(evidence)))},${sql(now().toISOString())}
 WHERE COALESCE((SELECT calculation_hash FROM automatic_performance_results WHERE month=${sql(row.month)} AND employee_user_id=${sql(row.userId)} AND kind=${sql(kind)} ORDER BY rowid DESC LIMIT 1),'')<>${sql(hash)};`);
     }
     return statements;

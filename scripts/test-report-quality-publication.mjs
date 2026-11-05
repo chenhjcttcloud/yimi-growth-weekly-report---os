@@ -3,6 +3,7 @@ import {mkdir,mkdtemp,readFile,writeFile} from 'node:fs/promises';
 import {spawnSync} from 'node:child_process';
 import path from 'node:path';
 import {createPerformance} from '../server/performance.mjs';
+import {decodeAutomaticEvidence} from '../server/automatic-evidence-storage.mjs';
 import {createPersonalWorkspace} from '../server/personal-workspace.mjs';
 import {performanceClientOverview,performanceClientEmployeeMonth} from '../server/performance-client-data.mjs';
 import {REPORT_QUALITY_VERSION,validateReportQualityAnalysis} from '../server/report-quality-scoring.mjs';
@@ -82,6 +83,8 @@ try{
  assert.equal(ownWeek.qualityReference,36);
  assert(!JSON.stringify(workspace).includes('OTHER_EMPLOYEE_PRIVATE_QUOTE'),'personal scoring details must never contain another employee’s evidence');
  const firstPublicationId=run("SELECT id FROM automatic_performance_results WHERE employee_user_id='staff' AND month='2026-09' AND kind='quality' ORDER BY rowid LIMIT 1;"),firstSnapshot=quality.evidence_json;
+ const firstStoredSnapshot=run(`SELECT evidence_json FROM automatic_performance_results WHERE id=${sql(firstPublicationId)};`);
+ assert.equal(decodeAutomaticEvidence(firstStoredSnapshot),firstSnapshot,'storage encoding preserves the complete original explanation bytes');
 
  // Existing records without structured details remain usable and are not
  // assigned invented citations by the new presentation contract.
@@ -120,7 +123,8 @@ try{
  assert.equal(quality.result.score,40.3);
  assert.equal(quality.result.status,'ready');
  assert.equal(ownMonth(view).reports.find(report=>report.id==='pending-score').candidate,0);
- assert.equal(run(`SELECT evidence_json FROM automatic_performance_results WHERE id=${sql(firstPublicationId)};`),firstSnapshot,'later automatic publications retain the original explanation snapshot');
+ assert.equal(run(`SELECT evidence_json FROM automatic_performance_results WHERE id=${sql(firstPublicationId)};`),firstStoredSnapshot,'later automatic publications retain the original stored explanation bytes');
+ assert.equal(decodeAutomaticEvidence(firstStoredSnapshot),firstSnapshot,'the original complete explanation remains readable after later publications');
 
  // Existing finals remain visible while the current target analysis is pending.
  // Completed employees publish independently of another employee's rescore.
@@ -166,7 +170,8 @@ try{
  view=await performance.overview();
  assert.equal(view.results.find(row=>row.employee_user_id==='other'&&row.month===month&&row.kind==='quality').result.score,95,'archived previous AI restores display for already blanked records');
  assert.equal(view.results.find(row=>row.employee_user_id==='other'&&row.month===month&&row.kind==='quality').result.status,'rescoring');
- assert.equal(run(`SELECT evidence_json FROM automatic_performance_results WHERE id=${sql(firstPublicationId)};`),firstSnapshot,'rescore preserves every historical publication snapshot');
+ assert.equal(run(`SELECT evidence_json FROM automatic_performance_results WHERE id=${sql(firstPublicationId)};`),firstStoredSnapshot,'rescore preserves every historical stored publication byte');
+ assert.equal(decodeAutomaticEvidence(firstStoredSnapshot),firstSnapshot,'rescore preserves the complete original explanation');
 
  // Having an earlier weekly snapshot is not a previously published monthly
  // final. A first-time employee still waits for a complete valid new result.
