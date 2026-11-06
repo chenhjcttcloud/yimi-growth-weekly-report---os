@@ -143,6 +143,6 @@ export function PerformanceResults({scoreFocus}:{scoreFocus?:'quality'|'collabor
    </div>
   </section>
   <DepartmentScoreTrends key={scoreFocus||'all'} months={data.months} employees={data.employees} results={data.results} scoreFocus={scoreFocus}/>
-  {!scoreFocus&&<details className="v2-card pf-task-disclosure" onToggle={event=>{if(event.currentTarget.open)setTasksOpened(true);}}><summary><UsersRound size={17}/><span>我的协作评分任务<small>以本人身份完成分数与评价</small></span><ChevronRight size={16}/></summary>{tasksOpened&&<ScoringTasksPage showManagerReviews={false}/>}</details>}
+  {!scoreFocus&&<details className="v2-card pf-task-disclosure" onToggle={event=>{if(event.currentTarget.open)setTasksOpened(true);}}><summary><UsersRound size={17}/><span>我的协作评分任务<small>以本人身份完成分数与评价</small></span><ChevronRight size={16}/></summary>{tasksOpened&&<ScoringTasksPage showManagerReviews={false} month={month}/>}</details>}
  </div>;
 }

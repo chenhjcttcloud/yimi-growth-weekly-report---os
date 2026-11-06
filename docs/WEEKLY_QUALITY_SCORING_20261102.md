@@ -89,6 +89,14 @@ AI 逐条评定下列细项。细项按各自上限得分，可使用小数；�
 
 页面展示所选月份的范围内周报、本次新完成、已完成复用、失败、正在分析和剩余数量，以及排队、分析、完成或部分失败阶段。失败信息只展示安全的错误代码、模块及字段路径，不回显模型原始回复、周报正文或凭据。自动重试会携带具体校验问题，请模型针对缺失字段、分值范围或原文引用修正；原文引用校验继续保留，失败不会覆盖旧分。整个流程无需人工审核。
 
+### 上游限流与断点续跑
+
+同一同步服务的 AI 请求串行执行，避免多份周报同时请求模型。收到限流或过载响应时，整个分析队列共享冷却时间；优先遵循有效的 `Retry-After` 秒数或 HTTP 日期，缺少有效值时默认等待 60 秒。最后一次失败请求也保留冷却时间，避免下一份周报立即撞上同一限制。
+
+额度不足不会当作普通限流反复重试；等待时间超过 24 小时则暂停本批任务。页面分别显示额度不足、等待时间过长和剩余任务；尚未请求的记录保持排队，已成功的评分继续复用。错误分类参照 [Kimi 官方排障说明](https://www.kimi.ai/help/kimi-api/api-troubleshooting)，保存的诊断只包含白名单代码及有上限的等待时长，不保存上游原始错误文本。
+
+服务重启时，保留任务月份、完成计数和诊断，将运行阶段标记为中断、活动数归零。管理员可再次点击所选月份的补跑按钮继续未完成项；启动服务本身不触发模型请求。等待结束后仍重新核对来源、任务和启用状态，来源变更或任务失效时不发起过期请求。
+
 ## 及时性独立统计
 
 准时、迟交、未交、免交和及时率依照已有工作日日历与截止时间自动计算。默认北京时间周五 20:00 截止，节假日前调整到相应工作日，整周假期免交。及时性信息不提供给内容评分模型，不计入内容质量分，不自动产生迟交或缺交扣分。原始时间或日历不足时，及时率保持待补齐状态。
@@ -100,6 +108,7 @@ node scripts/test-report-quality-scoring.mjs
 node scripts/test-report-quality-publication.mjs
 node scripts/test-report-rescore-state.mjs
 node scripts/test-report-rescore.mjs
+node scripts/test-report-rate-limit.mjs
 node scripts/test-rescore-display.mjs
 node scripts/test-report-quality-ui.mjs
 node scripts/test-report-rescore-ui.mjs

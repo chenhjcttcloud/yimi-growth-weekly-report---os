@@ -7,6 +7,34 @@ import {reportFacts,previousQualitySnapshot,currentQualityCached,archivedQuality
 const digest=v=>createHash('sha256').update(JSON.stringify(v)).digest('hex');
 const date=d=>new Intl.DateTimeFormat('sv-SE',{timeZone:'Asia/Shanghai'}).format(d);
 const shift=(s,n)=>{const d=new Date(s+'T00:00:00Z');d.setUTCDate(d.getUTCDate()+n);return d.toISOString().slice(0,10);};
+const MAX_MODEL_COOLDOWN_MS=24*60*60*1000,DEFAULT_MODEL_COOLDOWN_MS=60000,ANALYSIS_DEFERRED=Symbol('analysis-deferred');
+const HTTP_DATE=/^(?:(?:Mon|Tue|Wed|Thu|Fri|Sat|Sun), \d{2} (?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec) \d{4} \d{2}:\d{2}:\d{2} GMT|(?:Monday|Tuesday|Wednesday|Thursday|Friday|Saturday|Sunday), \d{2}-(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)-\d{2} \d{2}:\d{2}:\d{2} GMT|(?:Mon|Tue|Wed|Thu|Fri|Sat|Sun) (?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec) [ \d]\d \d{2}:\d{2}:\d{2} \d{4})$/;
+const upstreamFailures=new WeakMap();
+function retryAfter(response){
+ let raw;try{raw=response.headers?.get?.('retry-after');}catch{}
+ if(typeof raw!=='string'||!raw.trim())return DEFAULT_MODEL_COOLDOWN_MS;
+ raw=raw.trim();
+ // A valid digit string can exceed Number's range. Keep it beyond the
+ // automatic-wait bound so it pauses the batch instead of falling back to 60s.
+ if(/^\d+$/.test(raw)){const delay=Number(raw)*1000;return Number.isFinite(delay)?delay:Infinity;}
+ const delay=HTTP_DATE.test(raw)?Date.parse(raw)-Date.now():NaN;
+ return Number.isFinite(delay)?Math.max(0,delay):DEFAULT_MODEL_COOLDOWN_MS;
+}
+function upstreamFailure(response,value,model){
+ const status=response.status,type=model?(value?.error?.type||value?.error?.code):null;
+ let code=status===400?'upstream_bad_request':status===401?'upstream_auth_failed':status===403?'upstream_forbidden':status===429?'upstream_rate_limit':'upstream_error';
+ let retryable=status===429||status>=500;
+ if(model&&type==='exceeded_current_quota_error'){code='upstream_quota_exhausted';retryable=false;}
+ else if(model&&type==='engine_overloaded_error'){code='upstream_overloaded';retryable=true;}
+ else if(model&&type==='rate_limit_reached_error'){code='upstream_rate_limit';retryable=true;}
+ const cooldown=status===429||code==='upstream_overloaded'||code==='upstream_rate_limit'?retryAfter(response):null;
+ const diagnostic={code,path:'$',retryable,...(cooldown===null?{}:{retryAfterMs:Math.min(MAX_MODEL_COOLDOWN_MS,cooldown),...(cooldown>MAX_MODEL_COOLDOWN_MS?{retryAfterExceeded:true}:{})})};
+ const error=Error('upstream_request_failed');upstreamFailures.set(error,{diagnostic,cooldown});return error;
+}
+function analysisDiagnostic(error){
+ const upstream=upstreamFailures.get(error);if(upstream)return {...upstream.diagnostic};
+ return error?.code==='invalid_summary'?{code:'invalid_summary',path:'summary',retryable:true}:error?.code==='response_truncated'?{code:'response_truncated',path:'$',retryable:true}:error?.code==='upstream_network_error'?{code:'upstream_network_error',path:'$',retryable:true}:qualityAnalysisDiagnostic(error);
+}
 export function normalizeLiveReport(item,calendar={}){
  const time=Number(item.commit_time);if(!item.from_user_id||!item.task_id||!Number.isFinite(time)||time<=0)throw Error('invalid_report_identity_or_time');
  const day=date(new Date(time*1000)),weekday=new Date(day+'T00:00:00Z').getUTCDay()||7;
@@ -26,18 +54,39 @@ export function validateAnalysis(value,facts){
 }
 export function createLiveReportSync({query,exec,sql,config,settings,refreshDirectory,writeStatus,onComplete=async()=>{},observeEmployee=async()=>{},calendar=()=>({}),fetcher=fetch,pause=ms=>new Promise(resolve=>setTimeout(resolve,ms))}){
  let running=false,statusWrites=Promise.resolve(),projection=Promise.resolve(),collectionStartDate='';
+ let modelQueue=Promise.resolve(),modelCooldownUntil=0;
  const emit=state=>{statusWrites=statusWrites.catch(()=>{}).then(()=>writeStatus(state));return statusWrites;};
  const jsonFile=async name=>{try{return JSON.parse(await readFile(path.join(config.dataDir,name+'.json'),'utf8'));}catch{return {};}};
  const saveFile=async(name,value)=>{await mkdir(config.dataDir,{recursive:true});const p=path.join(config.dataDir,name+'.json'),tmp=p+'.tmp';await writeFile(tmp,JSON.stringify(value,null,2));await rename(tmp,p);};
  const inactive=async userId=>Number((await query(`SELECT is_active FROM employees WHERE user_id=${sql(userId)};`))[0]?.is_active)===0;
- async function request(url,body,token){let response;try{response=await fetcher(url,{method:'POST',headers:{'content-type':'application/json',...(token?{authorization:'Bearer '+token}:{})},body:JSON.stringify(body),signal:AbortSignal.timeout(120000)});}catch(error){if(['AbortError','TimeoutError'].includes(error?.name))throw error;throw Object.assign(Error('upstream_network_error'),{code:'upstream_network_error'});}const value=await response.json();if(!response.ok||value.code&&value.code!==0){const error=Error(`upstream_${response.status}_${value.code||value.error?.code||value.error?.type||'failed'}`);error.http=response.status;throw error;}return value;}
- async function analyze(report,canProcess,weights,onAttempt){
+ async function request(url,body,token,model=false){
+  let response;try{response=await fetcher(url,{method:'POST',headers:{'content-type':'application/json',...(token?{authorization:'Bearer '+token}:{})},body:JSON.stringify(body),signal:AbortSignal.timeout(120000)});}catch(error){if(['AbortError','TimeoutError'].includes(error?.name))throw error;throw Object.assign(Error('upstream_network_error'),{code:'upstream_network_error'});}
+  let value;try{value=await response.json();}catch(error){if(!response.ok)throw upstreamFailure(response,null,model);throw error;}
+  if(!response.ok||value?.code&&value.code!==0)throw upstreamFailure(response,value,model);
+  return value;
+ }
+ async function waitForModel(attempt){
+  let remaining=Math.max(attempt>1?Math.min(30000,5000*2**(attempt-2)):1200,modelCooldownUntil-Date.now());
+  // Avoid setTimeout overflow, and allow synthetic pauses to advance each
+  // requested interval without waiting in wall-clock time.
+  while(remaining>0){const step=Math.min(60000,remaining);await pause(step);remaining-=step;}
+  modelCooldownUntil=0;
+ }
+ function analyze(report,canProcess,weights,onAttempt,batch){
+  const job=modelQueue.then(()=>{
+   if(batch.blockedReason)return ANALYSIS_DEFERRED;
+   if(modelCooldownUntil-Date.now()>MAX_MODEL_COOLDOWN_MS){batch.blockedReason='upstream_retry_after_too_long';return ANALYSIS_DEFERRED;}
+   return analyzeSerial(report,canProcess,weights,onAttempt,batch);
+  });
+  modelQueue=job.catch(()=>{});return job;
+ }
+ async function analyzeSerial(report,canProcess,weights,onAttempt,batch){
   const previous=(await query(`SELECT content_json FROM weekly_reports WHERE employee_user_id=${sql(report.userId)} AND week_end<${sql(report.end)} ORDER BY week_end DESC LIMIT 1;`))[0];
   const previousContent=previous?JSON.parse(previous.content_json):{},previousPlan=previousContent.nextPlan||'';
   let failure,feedback=null,lastOutput='';
   for(let attempt=1;attempt<=4;attempt++){
    try{
-    await pause(attempt>1?Math.min(30000,5000*2**(attempt-2)):1200);
+    await waitForModel(attempt);
     if(!await canProcess(report))return null;
     if(await onAttempt(attempt,null)===false)return null;
     const messages=[{role:'system',content:buildReportQualityPrompt()},{role:'user',content:JSON.stringify({week:report.end,report:report.facts,previousPlan})}];
@@ -45,7 +94,7 @@ export function createLiveReportSync({query,exec,sql,config,settings,refreshDire
      if(lastOutput)messages.push({role:'assistant',content:lastOutput.slice(0,100000)});
      messages.push({role:'user',content:JSON.stringify({validationFeedback:feedback,instruction:'上一份结果未通过程序校验。请针对指定字段修正，保持原评分细则和原文证据要求，重新输出完整JSON；不得编造引文。'})});
     }
-    const value=await request(config.moonshotBaseUrl+'/chat/completions',{model:config.kimiFollowupModel,max_completion_tokens:10000,thinking:{type:'disabled'},response_format:{type:'json_object'},messages},config.moonshotApiKey);
+    const value=await request(config.moonshotBaseUrl+'/chat/completions',{model:config.kimiFollowupModel,max_completion_tokens:10000,thinking:{type:'disabled'},response_format:{type:'json_object'},messages},config.moonshotApiKey,true);
     lastOutput=value.choices?.[0]?.message?.content||'';
     if(value.choices?.[0]?.finish_reason==='length')throw Object.assign(Error('response_truncated'),{code:'response_truncated'});
     const ai=validateAnalysis(JSON.parse(lastOutput.replace(/^```(?:json)?\s*|\s*```$/g,'')),report.facts);
@@ -59,10 +108,13 @@ export function createLiveReportSync({query,exec,sql,config,settings,refreshDire
     return ai;
    }catch(error){
     failure=error;
-    const diagnostic=error.code==='invalid_summary'?{code:'invalid_summary',path:'summary',retryable:true}:error.code==='response_truncated'?{code:'response_truncated',path:'$',retryable:true}:error.code==='upstream_network_error'?{code:'upstream_network_error',path:'$',retryable:true}:error.http?{code:error.http===429?'upstream_rate_limit':'upstream_error',path:'$',retryable:error.http===429||error.http>=500}:qualityAnalysisDiagnostic(error);
+    const diagnostic=analysisDiagnostic(error),upstream=upstreamFailures.get(error);
+    if(upstream?.cooldown!==null&&upstream?.cooldown!==undefined)modelCooldownUntil=Date.now()+upstream.cooldown;
+    if(diagnostic.code==='upstream_quota_exhausted')batch.blockedReason='upstream_quota_exhausted';
+    else if(diagnostic.retryAfterExceeded)batch.blockedReason='upstream_retry_after_too_long';
     await onAttempt(attempt,diagnostic);
     feedback=diagnostic;
-    if(!diagnostic.retryable)break;
+    if(!diagnostic.retryable||batch.blockedReason)break;
    }
   }
   throw failure;
@@ -146,7 +198,7 @@ export function createLiveReportSync({query,exec,sql,config,settings,refreshDire
   }
   const skippedMessage=()=>`${stat.skippedInactive?`；已跳过 ${stat.skippedInactive} 份已停用人员汇报`:''}${stat.skippedInactiveAnalysis?`；已停止 ${stat.skippedInactiveAnalysis} 份停用人员的排队分析`:''}`;
   if(!reports.size){await emit({...stat,running:false,phase:'done',message:rescore?'所选月份没有可补跑的在职员工周报':`本次没有需要导入的汇报${skippedMessage()}。`,finishedAt:new Date().toISOString()});return;}
-  const work=[];let batch='';
+  const work=[],analysisBatch={blockedReason:null};let batch='';
   function monthCell(report){return stat.byMonth[report.end.slice(0,7)]??={total:0,completed:0,failed:0,cached:0,remaining:0,active:0,skipped:0};}
   function updateRemaining(){
    stat.remaining=Math.max(0,stat.rowCount-stat.cached-stat.analyzed-stat.failed-stat.skippedInactiveAnalysis-stat.skippedSourceChanged);
@@ -189,6 +241,7 @@ export function createLiveReportSync({query,exec,sql,config,settings,refreshDire
   }
   await Promise.all(Array.from({length:Math.min(3,work.length)},async()=>{
    while(index<work.length){
+    if(analysisBatch.blockedReason)break;
     const {report,content}=work[index++],cell=monthCell(report);stat.active++;cell.active++;let attemptCount=0,lastDiagnostic=null;
     try{
      const ai=await analyze(report,canProcess,content.scoringWeights,async(attempt,diagnostic)=>{
@@ -199,14 +252,15 @@ export function createLiveReportSync({query,exec,sql,config,settings,refreshDire
        stat.diagnostics=[...stat.diagnostics,{reportId:report.id,weekEnd:report.end,attempt,...diagnostic}].slice(-50);
       }
       const saved=await persist(report,content);await emit({...stat});return saved;
-     });
-     if(!ai||!await canProcess(report)){if(!await canProcess(report))stat.skippedInactiveAnalysis++;else stat.skippedSourceChanged++;cell.skipped++;}
+     },analysisBatch);
+     if(ai===ANALYSIS_DEFERRED){/* Keep unrequested reports queued and counted as remaining. */}
+     else if(!ai||!await canProcess(report)){if(!await canProcess(report))stat.skippedInactiveAnalysis++;else stat.skippedSourceChanged++;cell.skipped++;}
      else{
       const next={...content,ai,aiModel:config.kimiFollowupModel,aiPromptVersion:REPORT_QUALITY_PROMPT_VERSION,aiGeneratedAt:new Date().toISOString(),qualityRefresh:{...content.qualityRefresh,state:'ready',attempts:attemptCount,diagnostic:null,updatedAt:new Date().toISOString()},...Object.fromEntries(['成果分','问题分','计划分','复盘分'].map((key,position)=>[key,ai.scores[position]]))};
       if(await persist(report,next)){stat.analyzed++;cell.completed++;}else{stat.skippedSourceChanged++;cell.skipped++;}
      }
     }catch(error){
-     const diagnostic=lastDiagnostic||qualityAnalysisDiagnostic(error);
+     const diagnostic=lastDiagnostic||analysisDiagnostic(error);
      content.qualityRefresh={...content.qualityRefresh,state:'failed',attempts:attemptCount,diagnostic,updatedAt:new Date().toISOString()};
      await persist(report,content);stat.failed++;cell.failed++;if(stat.errors.length<5)stat.errors.push(diagnostic.code);
     }finally{
@@ -219,12 +273,12 @@ export function createLiveReportSync({query,exec,sql,config,settings,refreshDire
    }
   }));
   await projection;await notify();
-  await emit({...stat,ok:stat.failed===0&&!stat.publicationPending,running:false,phase:stat.failed||stat.publicationPending?'partial':'done',finishedAt:new Date().toISOString()});
+  await emit({...stat,ok:stat.failed===0&&!stat.publicationPending&&!analysisBatch.blockedReason,running:false,phase:analysisBatch.blockedReason?'paused':stat.failed||stat.publicationPending?'partial':'done',...(analysisBatch.blockedReason?{blockedReason:analysisBatch.blockedReason}:{}),finishedAt:new Date().toISOString()});
  }
  async function start(options={}){
   validateOptions(options);if(running)return false;running=true;
   try{await emit({ok:true,running:true,phase:'queued',mode:options.mode||'sync',...(options.targetMonth?{targetMonth:options.targetMonth}:{}),message:'同步已开始'});}catch(error){running=false;throw error;}
-  void run(options).catch(async(error)=>{await emit({ok:false,running:false,phase:'failed',mode:options.mode||'sync',targetMonth:options.targetMonth,message:'任务失败，请检查评分诊断、日期或服务配置后重试',diagnostics:[qualityAnalysisDiagnostic(error)]});}).finally(()=>{running=false;});
+  void run(options).catch(async(error)=>{await emit({ok:false,running:false,phase:'failed',mode:options.mode||'sync',targetMonth:options.targetMonth,message:'任务失败，请检查评分诊断、日期或服务配置后重试',diagnostics:[analysisDiagnostic(error)]});}).finally(()=>{running=false;});
   return true;
  }
  return {start,isRunning:()=>running,run,project};

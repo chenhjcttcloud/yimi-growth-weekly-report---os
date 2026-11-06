@@ -22,6 +22,8 @@ export function createScoringWorkbench({query,exec,sql,setup,managerReviews,boss
    const targets=base.targets.filter(e=>{const own=periods.filter(p=>p.employee_user_id===e.userId);return !own.length||employedInMonth(own,month);});
    const assignments=base.cycle?await query(`SELECT a.id,a.evaluee_user_id,a.evaluator_user_id,a.evaluee_name,a.evaluator_name,a.status,r.id AS response_id FROM scoring360_assignments a LEFT JOIN scoring360_responses r ON r.assignment_id=a.id WHERE a.cycle_id=${sql(base.cycle.id)} AND (COALESCE(a.status,'active')='active' OR r.id IS NOT NULL) ORDER BY a.id;`):[];
    const published=new Set((await query(`SELECT employee_user_id FROM all_monthly_weighted_results WHERE month=${sql(month)} UNION SELECT employee_user_id FROM performance_results WHERE month=${sql(month)} AND kind='collaboration';`)).map(r=>r.employee_user_id));
+   const existingActive=assignments.filter(a=>a.status==='active');
+   const historicalOpenReason=month>=current()?'historical_month_required':!base.cycle?'historical_cycle_required':base.cycle.status!=='draft'||base.cycle.launch_at?'historical_draft_required':published.size?'result_locked':!existingActive.length?'scoring_assignments_required':existingActive.some(a=>a.evaluee_user_id===a.evaluator_user_id||Number(peopleById.get(a.evaluee_user_id)?.is_active)!==1||Number(peopleById.get(a.evaluator_user_id)?.is_active)!==1||(()=>{const own=periods.filter(p=>p.employee_user_id===a.evaluee_user_id);return own.length&&!employedInMonth(own,month);})())?'historical_assignment_invalid':'';
    const bosses=bossMembers();
    const rows=targets.map(employee=>{
     const links=assignments.filter(a=>a.evaluee_user_id===employee.userId).map(a=>({...a,evaluator_name:peopleById.get(a.evaluator_user_id)?.name||a.evaluator_name,department:peopleById.get(a.evaluator_user_id)?.department||'',active:Number(peopleById.get(a.evaluator_user_id)?.is_active)===1,submitted:Boolean(a.response_id)}));
@@ -47,7 +49,7 @@ export function createScoringWorkbench({query,exec,sql,setup,managerReviews,boss
    }
    const after=await signature(month);if(before!==after)continue;
    const copyGroups=rows.filter(r=>pairs.some(p=>p.evalueeUserId===r.userId)).map(r=>({employee:r,raters:pairs.filter(p=>p.evalueeUserId===r.userId).map(p=>active.get(p.evaluatorUserId))}));
-   return {month,cycle:base.cycle,editable:base.editable,people:base.people,rows,revision:createHash('sha256').update(before).digest('hex'),counts:{total:rows.length,configured:rows.filter(r=>r.configured).length,pending:rows.filter(r=>!r.configured).length,issues:rows.filter(r=>r.issues.some(i=>i.type!=='peers')).length,ready:rows.filter(r=>!r.issues.length).length},checks:rows.flatMap(r=>r.issues.map(i=>({...i,userId:r.userId,name:r.name}))),copy:{sourceMonth:previous(month),sourceCount:prior.assignments.length,pairs,groups:copyGroups,skipped},_signature:before};
+   return {month,cycle:base.cycle,editable:base.editable,canOpenHistorical:!historicalOpenReason,historicalOpenReason,people:base.people,rows,revision:createHash('sha256').update(before).digest('hex'),counts:{total:rows.length,configured:rows.filter(r=>r.configured).length,pending:rows.filter(r=>!r.configured).length,issues:rows.filter(r=>r.issues.some(i=>i.type!=='peers')).length,ready:rows.filter(r=>!r.issues.length).length},checks:rows.flatMap(r=>r.issues.map(i=>({...i,userId:r.userId,name:r.name}))),copy:{sourceMonth:previous(month),sourceCount:prior.assignments.length,pairs,groups:copyGroups,skipped},_signature:before};
   }
   throw Error('setup_changed');
  }
@@ -58,15 +60,25 @@ export function createScoringWorkbench({query,exec,sql,setup,managerReviews,boss
  function cycleId(state){return state.cycle?.id||state.month+'-360';}
  function startCycle(state,guard){const end=new Date(Date.UTC(Number(state.month.slice(0,4)),Number(state.month.slice(5)),0)).toISOString().slice(0,10);return `INSERT INTO scoring360_cycles(id,label,mode,start_date,end_date,status) SELECT ${sql(cycleId(state))},${sql(state.month+' 月同事互评')},'monthly',${sql(state.month+'-01')},${sql(end)},'draft' WHERE ${guard} ON CONFLICT(id) DO NOTHING;`;}
  function addLink(state,pair,guard){const a=state.rows.find(r=>r.userId===pair.evalueeUserId),b=state.people.find(r=>r.userId===pair.evaluatorUserId);if(!a||!b)throw Error('active_employee_required');if(a.locked)throw Error('result_locked');if(a.userId===b.userId)throw Error('self_scoring_forbidden');return `INSERT INTO scoring360_assignments(id,cycle_id,evaluee_name,evaluator_name,evaluee_user_id,evaluator_user_id,status) SELECT ${sql(randomUUID())},${sql(cycleId(state))},${sql(a.name)},${sql(b.name)},${sql(a.userId)},${sql(b.userId)},'active' WHERE ${guard} ON CONFLICT(cycle_id,evaluee_user_id,evaluator_user_id) DO UPDATE SET status='active',updated_at=datetime('now') WHERE NOT EXISTS(SELECT 1 FROM scoring360_responses r WHERE r.assignment_id=scoring360_assignments.id);`;}
- async function commit(state,actor,action,build,details){
+ async function commit(state,actor,action,build,details,extraGuard='1'){
   const id=randomUUID(),guard=`EXISTS(SELECT 1 FROM system_operation_logs WHERE id=${sql(id)})`,statements=build(guard);
-  await exec(`BEGIN IMMEDIATE; INSERT INTO system_operation_logs(id,actor_user_id,actor_name,action,details_json,created_at) SELECT ${sql(id)},${sql(actor.userId)},${sql(actor.name)},${sql(action)},${sql(JSON.stringify({month:state.month,...details}))},${sql(now().toISOString())} WHERE (${fingerprint(state.month)})=${sql(state._signature)};${statements.join('\n')}COMMIT;`);
+  await exec(`BEGIN IMMEDIATE; INSERT INTO system_operation_logs(id,actor_user_id,actor_name,action,details_json,created_at) SELECT ${sql(id)},${sql(actor.userId)},${sql(actor.name)},${sql(action)},${sql(JSON.stringify({month:state.month,...details}))},${sql(now().toISOString())} WHERE (${fingerprint(state.month)})=${sql(state._signature)} AND (${extraGuard});${statements.join('\n')}COMMIT;`);
   if(!(await query(`SELECT id FROM system_operation_logs WHERE id=${sql(id)};`)).length)throw Error('setup_changed');
  }
  async function mutate(body,actor){
   if(busy)throw Error('setup_busy');busy=true;
   try{
-   const state=await overview(body.month);revision(state,body);let saved=0;
+   const state=await overview(body.month);let saved=0;
+   if(body.action==='openHistorical'){
+    if(body.confirmed!==true)throw Error('historical_confirmation_required');
+    if(body.revision!==state.revision)throw Error('setup_changed');
+    if(!state.canOpenHistorical)throw Error(state.historicalOpenReason);
+    if(body.cycleId!==state.cycle.id)throw Error('setup_changed');
+    const guard=`EXISTS(SELECT 1 FROM scoring360_cycles WHERE id=${sql(state.cycle.id)} AND substr(start_date,1,7)=${sql(state.month)} AND status='draft' AND NULLIF(launch_at,'') IS NULL) AND EXISTS(SELECT 1 FROM scoring360_assignments WHERE cycle_id=${sql(state.cycle.id)} AND status='active') AND NOT EXISTS(SELECT 1 FROM all_monthly_weighted_results WHERE month=${sql(state.month)}) AND NOT EXISTS(SELECT 1 FROM performance_results WHERE month=${sql(state.month)} AND kind='collaboration')`;
+    await commit(state,actor,'月度配评：历史草稿开放补评',owned=>[`UPDATE scoring360_cycles SET status='open',launch_at=${sql(now().toISOString())},updated_at=datetime('now') WHERE id=${sql(state.cycle.id)} AND ${owned} AND (${guard});`],{cycleId:state.cycle.id,previousStatus:'draft',status:'open',existingRelationshipsOnly:true,messagesSent:0},guard);
+    return {...publicState(await overview(state.month)),saved:0,messagesSent:0};
+   }
+   revision(state,body);
    if(body.action==='saveEmployee'){
     const row=state.rows.find(r=>r.userId===body.employeeUserId),chosen=ids(body.evaluatorUserIds);if(!row)throw Error('active_employee_required');if(row.locked)throw Error('result_locked');
     const fixed=row.assignments.filter(a=>a.submitted);if(fixed.some(a=>!chosen.includes(a.evaluator_user_id)))throw Error('submitted_relationship_locked');

@@ -27,6 +27,7 @@ jobs:
       - run: node scripts/test-report-quality-publication.mjs
       - run: node scripts/test-report-rescore-state.mjs
       - run: node scripts/test-report-rescore.mjs
+      - run: node scripts/test-report-rate-limit.mjs
       - run: node scripts/test-report-rescore-api.mjs
       - run: node scripts/test-rescore-display.mjs
       - run: node scripts/test-pending-quality-aggregates.mjs
@@ -56,6 +57,7 @@ jobs:
       - run: node scripts/test-monthly-handoffs.mjs
       - run: node scripts/test-feishu-user-tokens.mjs
       - run: node scripts/test-scoring-workbench.mjs
+      - run: BUSINESS_TEST_SKIP_BROWSER=true TEST_STATIC_DIR=outputs/ci-preview node scripts/test-historical-scoring.mjs
       - run: node scripts/test-scoring-recurrence.mjs
       - run: node scripts/test-scoring-recurrence-api.mjs
       - run: node scripts/test-authorization-candidates.mjs

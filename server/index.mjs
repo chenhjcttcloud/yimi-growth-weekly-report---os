@@ -173,7 +173,8 @@ const managementSummary=createManagementSummary({query:querySqlRows,exec:execSql
 const calendarUpdates=createChinaWorkCalendar({query:querySqlRows,exec:execSql,sql:sqlValue,bundled:loadChinaWorkCalendar(),onChange:value=>{chinaWorkCalendar=value;},enabled:process.env.CHINA_CALENDAR_AUTO_UPDATE_ENABLED!=='false'});
 await calendarUpdates.initialize();
 const liveReportSync=createLiveReportSync({query:querySqlRows,exec:execSql,sql:sqlValue,config,settings:systemSettings,calendar:()=>chinaWorkCalendar,observeEmployee:(id,date)=>employeeLifecycle.observe(id,date),refreshDirectory:refreshEmployeeDirectory,writeStatus:writeLarkReportSyncStatus,onComplete:()=>performance.overview({clientSummary:true})});
-if((await readLarkReportSyncStatus()).running)await writeLarkReportSyncStatus({ok:false,running:false,phase:'interrupted',message:'上次同步因服务重启中断，可点击同步继续；已保存的分析将复用。'});
+const previousSyncStatus=await readLarkReportSyncStatus();
+if(previousSyncStatus.running)await writeLarkReportSyncStatus({...previousSyncStatus,ok:false,running:false,phase:'interrupted',active:0,...(previousSyncStatus.byMonth?{byMonth:Object.fromEntries(Object.entries(previousSyncStatus.byMonth).map(([month,cell])=>[month,{...cell,active:0}]))}:{}),interruptedAt:new Date().toISOString(),message:'上次同步因服务重启中断，可继续处理未完成评分；已保存的分析将复用。'});
 const feishuDepartmentSync=createFeishuDepartmentSync({query:querySqlRows,exec:execSql,sql:sqlValue,config});
 const directorySync=createDirectorySync({query:querySqlRows,exec:execSql,sql:sqlValue,config,lifecycle:employeeLifecycle,registerIdentity:employeeIdentity.register});
 const departments=createDepartments({query:querySqlRows,exec:execSql,sql:sqlValue,employees:()=>loadManagedEmployees(),beforeScore:(month,id)=>managerReviews.freezeBossPlan(month,id),resolveScoreTarget:(month,id)=>managerReviews.bossTarget(month,id)});
@@ -397,8 +398,9 @@ async function route(req, res) {
     try{
       if(req.method==='GET')return sendJson(res,200,{ok:true,...await scoringWorkbench.overview(url.searchParams.get('month')||undefined)});
       if(req.method!=='POST')return sendJson(res,405,{ok:false,error:'method_not_allowed'});
+      if(req.headers.origin){let sameOrigin=false;try{sameOrigin=new URL(req.headers.origin).host===req.headers.host;}catch{}if(!sameOrigin)return sendJson(res,403,{ok:false,error:'invalid_origin'});}
       const body=await readJsonBody(req,{limitBytes:50000});return sendJson(res,200,{ok:true,...await scoringWorkbench.mutate(body,userForPolicy)});
-    }catch(error){const known=['invalid_month','editable_month_required','setup_changed','setup_busy','invalid_selection','active_employee_required','result_locked','self_scoring_forbidden','submitted_relationship_locked','no_new_relationships','too_many_relationships','setup_incomplete','invalid_setup_action'];return sendJson(res,409,{ok:false,error:known.includes(error.message)?error.message:'scoring_setup_failed'});}
+    }catch(error){const known=['invalid_month','editable_month_required','setup_changed','setup_busy','invalid_selection','active_employee_required','result_locked','self_scoring_forbidden','submitted_relationship_locked','no_new_relationships','too_many_relationships','setup_incomplete','invalid_setup_action','historical_confirmation_required','historical_month_required','historical_cycle_required','historical_draft_required','historical_assignment_invalid','scoring_assignments_required'];return sendJson(res,409,{ok:false,error:known.includes(error.message)?error.message:'scoring_setup_failed'});}
   }
   if(url.pathname==='/api/scoring360/setup'){
     if(!managerForPolicy)return sendJson(res,403,{ok:false,error:'manager_only'});
@@ -477,11 +479,13 @@ async function route(req, res) {
     }
     if(url.pathname==='/api/admin/employee-preview/manager-reviews'){try{return sendJson(res,200,{ok:true,...await managerReviews.tasks(user,url.searchParams.get('month')),readOnly:true});}catch{return sendJson(res,400,{ok:false,error:'invalid_month'});}}
     if(url.pathname==='/api/admin/employee-preview/scoring-tasks'){
-      const cycleId=await resolveScoring360CycleId(url.searchParams.get('cycleId'),{ensureCurrentRound:false});
+      let selected;try{selected=await resolveScoring360TaskCycle(url,{ensureCurrentRound:false});}catch{return sendJson(res,400,{ok:false,error:'invalid_scoring_month'});}
+      const {cycleId}=selected;
       const cycle=cycleId?await loadScoring360Cycle(cycleId):null;
-      if(!cycle?.launchAt||!['open','active'].includes(cycle.status))return sendJson(res,200,{ok:true,cycleId,tasks:[],readOnly:true});
+      const month=selected.month||cycle?.startDate?.slice(0,7)||'',cycleState=cycle?{id:cycle.id,status:cycle.status,launchAt:cycle.launchAt}:null;
+      if(!cycle?.launchAt||!['open','active'].includes(cycle.status))return sendJson(res,200,{ok:true,cycleId,month,cycle:cycleState,tasks:[],readOnly:true});
       const tasks=await querySqlRows(`SELECT a.id,a.evaluee_name,r.id AS response_id,r.score,r.comment,r.submitted_at FROM scoring360_assignments a LEFT JOIN scoring360_responses r ON r.assignment_id=a.id WHERE a.cycle_id=${sqlValue(cycleId)} AND a.evaluator_user_id=${sqlValue(user.userId)} AND COALESCE(a.status,'active')='active' ORDER BY a.evaluee_name;`);
-      return sendJson(res,200,{ok:true,cycleId,readOnly:true,tasks:tasks.map(r=>({id:r.id,evaluee:r.evaluee_name,score:r.score===''?null:Number(r.score),comment:r.comment||'',submitted:Boolean(r.response_id),locked:isScoring360Locked(r.submitted_at)}))});
+      return sendJson(res,200,{ok:true,cycleId,month,cycle:cycleState,readOnly:true,tasks:tasks.map(r=>({id:r.id,evaluee:r.evaluee_name,score:r.score===''?null:Number(r.score),comment:r.comment||'',submitted:Boolean(r.response_id),locked:isScoring360Locked(r.submitted_at)}))});
     }
     return sendJson(res,404,{ok:false,error:'not_found'});
   }
@@ -1667,6 +1671,16 @@ async function getScoring360(req, res, url) {
   });
 }
 
+// An explicit month never falls back to a different month's open cycle.
+async function resolveScoring360TaskCycle(url,options={}) {
+  if (!url.searchParams.has('month')) return {cycleId:await resolveScoring360CycleId(url.searchParams.get('cycleId'),options),month:''};
+  const month=url.searchParams.get('month'),requested=url.searchParams.get('cycleId');
+  if(url.searchParams.getAll('month').length!==1||url.searchParams.getAll('cycleId').length>1||!/^\d{4}-(0[1-9]|1[0-2])$/.test(month))throw Error('invalid_scoring_month');
+  const rows=await querySqlRows(`SELECT id,substr(start_date,1,7) AS month FROM scoring360_cycles WHERE ${requested?`id=${sqlValue(requested)}`:`substr(start_date,1,7)=${sqlValue(month)}`} ORDER BY CASE WHEN id=${sqlValue(month+'-360')} THEN 0 ELSE 1 END,created_at DESC LIMIT 1;`);
+  if(requested&&(!rows.length||rows[0].month!==month))throw Error('invalid_scoring_month');
+  return {cycleId:rows[0]?.id||'',month};
+}
+
 async function getMyScoring360Tasks(req, res, url) {
   const session = getSession(req);
   if (!session && config.authMode !== "mock") {
@@ -1684,18 +1698,22 @@ async function getMyScoring360Tasks(req, res, url) {
     : normalizeUserName(user.name);
   const selectedEvaluator = canSelectEvaluator && (url.searchParams.get("evaluatorUserId") || url.searchParams.get("evaluator")) ? await findActiveManagedEmployee(url.searchParams.get("evaluatorUserId") || evaluator) : user;
   const evaluatorUserId = selectedEvaluator?.userId || "";
-  const cycleId = await resolveScoring360CycleId(url.searchParams.get("cycleId"), { ensureCurrentRound: true });
+  let selected;
+  try { selected=await resolveScoring360TaskCycle(url,{ensureCurrentRound:true}); }
+  catch { return sendJson(res,400,{ok:false,error:'invalid_scoring_month'}); }
+  const {cycleId}=selected;
   if (!cycleId || !evaluatorUserId) {
-    sendJson(res, 200, { ok: true, cycleId, evaluator, tasks: [] });
+    sendJson(res, 200, { ok: true, cycleId, month:selected.month, cycle:null, evaluator, tasks: [] });
     return;
   }
   const cycle = await loadScoring360Cycle(cycleId);
+  const month=selected.month||cycle?.startDate?.slice(0,7)||'',cycleState=cycle?{id:cycle.id,status:cycle.status,launchAt:cycle.launchAt}:null;
   const cycleOpen = Boolean(
     cycle?.launchAt
       && ["open", "active"].includes(cycle.status),
   );
   if (!cycleOpen && !canSelectEvaluator) {
-    sendJson(res, 200, { ok: true, cycleId, evaluator, tasks: [] });
+    sendJson(res, 200, { ok: true, cycleId, month, cycle:cycleState, evaluator, tasks: [] });
     return;
   }
 
@@ -1715,6 +1733,8 @@ async function getMyScoring360Tasks(req, res, url) {
   sendJson(res, 200, {
     ok: true,
     cycleId,
+    month,
+    cycle:cycleState,
     evaluator,
     tasks: rows.map((row) => ({
       id: row.id,

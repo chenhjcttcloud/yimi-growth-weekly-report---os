@@ -2,8 +2,8 @@ import {useEffect,useRef,useState} from 'react';
 import '../styles/report-rescore.css';
 
 type ProgressCounts={total?:number;completed?:number;failed?:number;cached?:number;remaining?:number;active?:number};
-type Diagnostic={reportId?:string;weekEnd?:string;code?:string;path?:string;moduleId?:string;criterionId?:string;attempt?:number};
-type SyncStatus={mode?:string;targetMonth?:string;rowCount?:number;analyzed?:number;failed?:number;cached?:number;remaining?:number;active?:number;phase?:string;running?:boolean;updatedAt?:string;diagnostics?:Diagnostic[];byMonth?:Record<string,ProgressCounts>};
+type Diagnostic={reportId?:string;weekEnd?:string;code?:string;path?:string;moduleId?:string;criterionId?:string;attempt?:number;retryAfterMs?:number;retryAfterExceeded?:boolean};
+type SyncStatus={mode?:string;targetMonth?:string;rowCount?:number;analyzed?:number;failed?:number;cached?:number;remaining?:number;active?:number;phase?:string;running?:boolean;blockedReason?:string;updatedAt?:string;diagnostics?:Diagnostic[];byMonth?:Record<string,ProgressCounts>};
 type SyncOverview={status?:SyncStatus|null;processRunning?:boolean};
 
 const chinaMonth=()=>new Intl.DateTimeFormat('sv-SE',{timeZone:'Asia/Shanghai'}).format(new Date()).slice(0,7);
@@ -15,6 +15,15 @@ const safeCode=(value?:string)=>typeof value==='string'&&/^[a-zA-Z0-9_.:-]{1,100
 const moduleNames:Record<string,string>={results:'本周成果',problems:'问题与挑战',nextPlan:'下周计划',reflection:'思考与复盘'};
 function diagnosticLabel(value:Diagnostic){
  const code=safeCode(value.code);
+ const wait=typeof value.retryAfterMs==='number'&&Number.isFinite(value.retryAfterMs)&&value.retryAfterMs>=0&&value.retryAfterMs<=86400000?`，重试等待至少 ${Math.ceil(value.retryAfterMs/1000)} 秒`:'';
+ if(value.retryAfterExceeded)return 'AI 服务要求长时间等待，本次补跑已暂停，未处理项保留待续跑';
+ if(code==='upstream_quota_exhausted')return 'AI 服务额度不足，本次补跑已暂停，请检查服务账户后继续';
+ if(code==='upstream_rate_limit')return 'AI 服务请求限流，后续请求会排队'+wait;
+ if(code==='upstream_overloaded')return 'AI 服务暂时繁忙，后续请求会排队'+wait;
+ if(code==='upstream_auth_failed')return 'AI 服务鉴权失败，请检查当前接口密钥';
+ if(code==='upstream_forbidden')return 'AI 服务拒绝访问，请检查模型或项目权限';
+ if(code==='upstream_bad_request')return 'AI 服务未接受请求，请检查模型和请求配置';
+ if(code==='upstream_error')return 'AI 服务暂时不可用，系统按重试规则处理';
  if(/quote|evidence/.test(code))return '原文证据未通过校验';
  if(/score|range|point/.test(code))return '细项分数未通过校验';
  if(/reason/.test(code))return '评分理由不完整';
@@ -33,14 +42,15 @@ export function ReportRescorePanel(){
  }
  useEffect(()=>{mounted.current=true;void load();return()=>{mounted.current=false;sequence.current++;};},[]);
  const status=overview?.status,processing=typeof overview?.processRunning==='boolean'?overview.processRunning:Boolean(status?.running);
- const interrupted=overview?.processRunning===false&&status?.running===true;
+ const interrupted=overview?.processRunning===false&&(status?.running===true||status?.phase==='interrupted');
  useEffect(()=>{if(!processing)return;const timer=window.setInterval(()=>void load(),5000);return()=>window.clearInterval(timer);},[processing]);
  const validMonth=/^\d{4}-(0[1-9]|1[0-2])$/.test(month)&&month<=chinaMonth();
  const matches=status?.targetMonth===month;
+ const paused=matches&&status?.phase==='paused';
  const counts:ProgressCounts|undefined=status?.byMonth?.[month]||(matches?{total:status.rowCount,completed:status.analyzed,failed:status.failed,cached:status.cached,remaining:status.remaining,active:status.active}:undefined);
  const diagnostics=(Array.isArray(status?.diagnostics)?status.diagnostics:[]).filter(item=>item&&typeof item==='object'&&(item.weekEnd?.startsWith(month)||matches&&!item.weekEnd)).slice(0,30);
- const label=processing?(matches||counts?'正在补跑评分':'已有周报任务运行中'):interrupted?'上次任务已中断，可继续补跑':counts?(Number(counts.failed)>0?'本次补跑有失败项':Number(counts.remaining)>0?'仍有未完成评分':'本次补跑已完成'):'尚未开始补跑';
- const phaseLabel=({queued:'排队中',pull:'准备任务',analysis:'分析中',done:'已完成',partial:'部分失败',failed:'启动失败'} as Record<string,string>)[status?.phase||''];
+ const label=processing?(matches||counts?'正在补跑评分':'已有周报任务运行中'):paused?'补跑已暂停，未完成项可继续处理':interrupted?'上次任务已中断，可继续补跑':counts?(Number(counts.failed)>0?'本次补跑有失败项':Number(counts.remaining)>0?'仍有未完成评分':'本次补跑已完成'):'尚未开始补跑';
+ const phaseLabel=({queued:'排队中',pull:'准备任务',prepare:'准备任务',analysis:'分析中',done:'已完成',partial:'部分失败',failed:'启动失败',paused:'已暂停',interrupted:'待续跑'} as Record<string,string>)[status?.phase||''];
  async function start(){
   if(!validMonth||busy||processing)return;
   setBusy(true);setNotice('');setError('');sequence.current++;
@@ -61,6 +71,7 @@ export function ReportRescorePanel(){
    <button type="button" className="secondary-button" disabled={busy} onClick={()=>void load()}>刷新评分进度</button>
   </form>
   <p className="report-rescore-note">旧版分数继续展示并标记重评状态；每位员工当月评分全部通过后自动更新月分。原本没有分数的记录保持待分析，无需人工审核。</p>
+  {paused&&<p className="pf-notice" role="status">{status.blockedReason==='upstream_quota_exhausted'?'AI 服务额度不足，已暂停本次任务。请检查服务账户后继续补跑；尚未请求的周报仍保留在待处理队列。':'AI 服务要求长时间等待，已暂停本次任务；稍后可继续补跑未完成评分。'}已完成评分和历史分数继续保留。</p>}
   {notice&&<p className="pf-notice" role="status">{notice}</p>}
   {error&&<p className="pf-error" role="alert">{error}</p>}
   {counts?<dl className="report-rescore-progress" aria-label={`${monthLabel(month)}评分进度`}>

@@ -58,6 +58,17 @@ try{
  assert.equal(await panel.locator('.report-rescore-progress dd').nth(1).innerText(),'1');assert.equal(await panel.locator('.report-rescore-progress dd').nth(3).innerText(),'1');
  state={...state,running:false,phase:'partial',active:0};running=false;
  await refresh.click();await panel.getByText('本次补跑有失败项',{exact:true}).waitFor();assert(await start.isEnabled());
+ state=snapshot({phase:'analysis',active:1,diagnostics:[{weekEnd:'2026-10-16',code:'upstream_rate_limit',path:'$',attempt:1,retryAfterMs:120000,providerResponse:'PRIVATE_RATE_LIMIT_RESPONSE'}]});running=true;
+ await refresh.click();await panel.getByText('AI 服务请求限流，后续请求会排队，重试等待至少 120 秒 · 第1次尝试',{exact:true}).waitFor();assert(await start.isDisabled());
+ assert(!(await panel.innerText()).includes('PRIVATE_RATE_LIMIT_RESPONSE'));
+ state=snapshot({running:false,phase:'paused',blockedReason:'upstream_quota_exhausted',remaining:2,failed:1,diagnostics:[{weekEnd:'2026-10-16',code:'upstream_quota_exhausted',path:'$',attempt:1}]});running=false;
+ await refresh.click();await panel.getByText('补跑已暂停，未完成项可继续处理',{exact:true}).waitFor();assert(await start.isEnabled());
+ assert((await panel.innerText()).includes('尚未请求的周报仍保留在待处理队列'));
+ assert(!(await panel.innerText()).includes('本次补跑已完成'));
+ assert.equal(await panel.locator('.report-rescore-progress dd').nth(5).innerText(),'2');
+ state=snapshot({running:false,phase:'paused',blockedReason:'upstream_retry_after_too_long',remaining:2,diagnostics:[{weekEnd:'2026-10-16',code:'upstream_rate_limit',path:'$',attempt:1,retryAfterMs:86400000,retryAfterExceeded:true}]});
+ await refresh.click();await panel.getByText('AI 服务要求长时间等待，本次补跑已暂停，未处理项保留待续跑 · 第1次尝试',{exact:true}).waitFor();
+ state=snapshot({running:false,phase:'partial',analyzed:1,failed:1,remaining:1,active:0});await refresh.click();await panel.getByText('本次补跑有失败项',{exact:true}).waitFor();
  await panel.scrollIntoViewIfNeeded();await page.screenshot({path:dir+'/rescore-progress-desktop.png',fullPage:true});
  await page.setViewportSize({width:390,height:844});assert(await panel.evaluate(element=>element.scrollWidth<=element.clientWidth));assert(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth));await page.screenshot({path:dir+'/rescore-progress-mobile.png',fullPage:true});
  busyOnNextPost=true;await start.click();await panel.getByText('已有周报任务运行中，本次未重复创建任务；完成后可补跑所选月份。',{exact:true}).waitFor();assert.equal(posts.length,2);assert(await start.isDisabled());
@@ -68,7 +79,9 @@ try{
  await monthInput.fill('2026-10');await refresh.click();await panel.getByText('本次补跑已完成',{exact:true}).waitFor();assert.equal(posts.length,3);
  state=snapshot({running:true,phase:'analysis',analyzed:2,cached:1,remaining:1,active:1});running=false;
  await refresh.click();await panel.getByText('上次任务已中断，可继续补跑',{exact:true}).waitFor();assert(await start.isEnabled(),'a stale persisted running status must not lock retries after restart');assert.equal(await panel.locator('.report-rescore-progress dd').nth(4).innerText(),'0');assert.equal(posts.length,3);
+ state=snapshot({running:false,phase:'interrupted',analyzed:2,cached:1,remaining:1,active:0,diagnostics:[{weekEnd:'2026-10-16',code:'upstream_rate_limit',path:'$',attempt:4}]});
+ await refresh.click();await panel.getByText('上次任务已中断，可继续补跑',{exact:true}).waitFor();assert(await start.isEnabled(),'an explicitly interrupted status also offers continuation after startup recovery');assert((await panel.innerText()).includes('当前阶段：待续跑'));assert.equal(posts.length,3);
  assert.equal(await page.getByRole('button',{name:/确认质量分|审核通过/}).count(),0);assert.deepEqual(errors,[]);assert.deepEqual(unexpected,[]);
- const result={ok:true,previousMonthDefault:true,explicitMonthScopedPosts:true,openingAndRefreshReadOnly:true,cachedAndFailedProgressVisible:true,safeDiagnosticsVisible:true,oldScorePreservationExplained:true,busy409NoDuplicateStart:true,failedStartKeepsMonth:true,completedProgressVisible:true,interruptedTaskRetryAvailable:true,noHumanApproval:true,mobileNoOverflow:true,providerRequests:0,businessDataWrites:0,artifacts:dir};
+ const result={ok:true,previousMonthDefault:true,explicitMonthScopedPosts:true,openingAndRefreshReadOnly:true,cachedAndFailedProgressVisible:true,safeDiagnosticsVisible:true,rateLimitWaitVisible:true,quotaPauseKeepsRemaining:true,excessiveRetryDelayPauses:true,oldScorePreservationExplained:true,busy409NoDuplicateStart:true,failedStartKeepsMonth:true,completedProgressVisible:true,interruptedTaskRetryAvailable:true,noHumanApproval:true,mobileNoOverflow:true,providerRequests:0,businessDataWrites:0,artifacts:dir};
  await writeFile(dir+'/result.json',JSON.stringify(result,null,2));console.log(JSON.stringify(result));
 }finally{if(browser)await browser.close();await new Promise(resolve=>server.close(resolve));console.log('Test artifacts retained:',dir);}
