@@ -2,12 +2,13 @@ import {createHash,randomUUID} from 'node:crypto';
 import {readFile,writeFile,rename,mkdir} from 'node:fs/promises';
 import path from 'node:path';
 import {weeklyReportSchedule,fridayOfWeek} from './weekly-report-schedule.mjs';
-import {REPORT_QUALITY_VERSION,REPORT_QUALITY_PROMPT_VERSION,buildReportQualityPrompt,validateReportQualityAnalysis,qualityAnalysisDiagnostic} from './report-quality-scoring.mjs';
+import {REPORT_QUALITY_VERSION,REPORT_QUALITY_PROMPT_VERSION,buildReportQualityPrompt,validateReportQualityAnalysis,qualityAnalysisDiagnostic,isReportQualityValidationFailure} from './report-quality-scoring.mjs';
 import {reportFacts,previousQualitySnapshot,currentQualityCached,archivedQuality} from './report-rescore-state.mjs';
 const digest=v=>createHash('sha256').update(JSON.stringify(v)).digest('hex');
 const date=d=>new Intl.DateTimeFormat('sv-SE',{timeZone:'Asia/Shanghai'}).format(d);
 const shift=(s,n)=>{const d=new Date(s+'T00:00:00Z');d.setUTCDate(d.getUTCDate()+n);return d.toISOString().slice(0,10);};
 const MAX_MODEL_COOLDOWN_MS=24*60*60*1000,DEFAULT_MODEL_COOLDOWN_MS=60000,ANALYSIS_DEFERRED=Symbol('analysis-deferred');
+const MAX_ANALYSIS_ATTEMPTS=4,ANALYSIS_RETRY_HELD=Symbol('analysis-retry-held');
 const HTTP_DATE=/^(?:(?:Mon|Tue|Wed|Thu|Fri|Sat|Sun), \d{2} (?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec) \d{4} \d{2}:\d{2}:\d{2} GMT|(?:Monday|Tuesday|Wednesday|Thursday|Friday|Saturday|Sunday), \d{2}-(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)-\d{2} \d{2}:\d{2}:\d{2} GMT|(?:Mon|Tue|Wed|Thu|Fri|Sat|Sun) (?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec) [ \d]\d \d{2}:\d{2}:\d{2} \d{4})$/;
 const upstreamFailures=new WeakMap();
 function retryAfter(response){
@@ -52,7 +53,7 @@ export function validateAnalysis(value,facts){
  if(!Array.isArray(quality.scores)||quality.scores.length!==4||quality.scores.some(x=>typeof x!=='number'||!Number.isFinite(x)||x<0||x>100))throw Error('invalid_ai_analysis');
  return {...quality,summary:a.summary.slice(0,6000),questions:(Array.isArray(a.questions)?a.questions:[]).filter(x=>typeof x==='string').slice(0,5),anomalies:(Array.isArray(a.anomalies)?a.anomalies:[]).filter(x=>typeof x==='string').slice(0,10),tasks:(Array.isArray(a.tasks)?a.tasks:[]).filter(x=>x&&typeof x.title==='string'&&typeof x.description==='string').slice(0,4).map(x=>({title:x.title.slice(0,240),description:x.description.slice(0,6000),evidence:String(x.evidence||'').slice(0,4000),metric:String(x.metric||'').slice(0,2000),firstStep:String(x.firstStep||'').slice(0,2000),supportNeeded:String(x.supportNeeded||'').slice(0,2000),priority:['P0','P1','P2'].includes(x.priority)?x.priority:'P2'}))};
 }
-export function createLiveReportSync({query,exec,sql,config,settings,refreshDirectory,writeStatus,onComplete=async()=>{},observeEmployee=async()=>{},calendar=()=>({}),fetcher=fetch,pause=ms=>new Promise(resolve=>setTimeout(resolve,ms))}){
+export function createLiveReportSync({query,exec,sql,config,settings,refreshDirectory,writeStatus,reserveAiRequest=async()=>true,onComplete=async()=>{},observeEmployee=async()=>{},calendar=()=>({}),fetcher=fetch,pause=ms=>new Promise(resolve=>setTimeout(resolve,ms))}){
  let running=false,statusWrites=Promise.resolve(),projection=Promise.resolve(),collectionStartDate='';
  let modelQueue=Promise.resolve(),modelCooldownUntil=0;
  const emit=state=>{statusWrites=statusWrites.catch(()=>{}).then(()=>writeStatus(state));return statusWrites;};
@@ -72,36 +73,42 @@ export function createLiveReportSync({query,exec,sql,config,settings,refreshDire
   while(remaining>0){const step=Math.min(60000,remaining);await pause(step);remaining-=step;}
   modelCooldownUntil=0;
  }
- function analyze(report,canProcess,weights,onAttempt,batch){
+ function analyze(report,canProcess,weights,onAttempt,batch,validationAttemptsLeft){
   const job=modelQueue.then(()=>{
    if(batch.blockedReason)return ANALYSIS_DEFERRED;
    if(modelCooldownUntil-Date.now()>MAX_MODEL_COOLDOWN_MS){batch.blockedReason='upstream_retry_after_too_long';return ANALYSIS_DEFERRED;}
-   return analyzeSerial(report,canProcess,weights,onAttempt,batch);
+   return analyzeSerial(report,canProcess,weights,onAttempt,batch,validationAttemptsLeft);
   });
   modelQueue=job.catch(()=>{});return job;
  }
- async function analyzeSerial(report,canProcess,weights,onAttempt,batch){
+ async function analyzeSerial(report,canProcess,weights,onAttempt,batch,validationAttemptsLeft){
   const previous=(await query(`SELECT content_json FROM weekly_reports WHERE employee_user_id=${sql(report.userId)} AND week_end<${sql(report.end)} ORDER BY week_end DESC LIMIT 1;`))[0];
   const previousContent=previous?JSON.parse(previous.content_json):{},previousPlan=previousContent.nextPlan||'';
   let failure,feedback=null,lastOutput='';
-  for(let attempt=1;attempt<=4;attempt++){
+  for(let attempt=1;attempt<=MAX_ANALYSIS_ATTEMPTS;attempt++){
+   await waitForModel(attempt);
+   if(!await canProcess(report))return null;
+   if(config.kimiFollowupModel!==batch.model){batch.blockedReason='ai_model_changed';return ANALYSIS_DEFERRED;}
    try{
-    await waitForModel(attempt);
-    if(!await canProcess(report))return null;
-    if(await onAttempt(attempt,null)===false)return null;
+    const reservation=await reserveAiRequest();
+    if(reservation!==true){batch.blockedReason=reservation==='ai_scoring_paused'?reservation:'daily_ai_request_limit';return ANALYSIS_DEFERRED;}
+   }catch{batch.blockedReason='ai_request_budget_unavailable';return ANALYSIS_DEFERRED;}
+   if(await onAttempt(attempt,null)===false)return null;
+   if(config.kimiFollowupModel!==batch.model){batch.blockedReason='ai_model_changed';return ANALYSIS_DEFERRED;}
+   try{
     const messages=[{role:'system',content:buildReportQualityPrompt()},{role:'user',content:JSON.stringify({week:report.end,report:report.facts,previousPlan})}];
     if(feedback){
      if(lastOutput)messages.push({role:'assistant',content:lastOutput.slice(0,100000)});
      messages.push({role:'user',content:JSON.stringify({validationFeedback:feedback,instruction:'上一份结果未通过程序校验。请针对指定字段修正，保持原评分细则和原文证据要求，重新输出完整JSON；不得编造引文。'})});
     }
-    const value=await request(config.moonshotBaseUrl+'/chat/completions',{model:config.kimiFollowupModel,max_completion_tokens:10000,thinking:{type:'disabled'},response_format:{type:'json_object'},messages},config.moonshotApiKey,true);
+    const value=await request(config.moonshotBaseUrl+'/chat/completions',{model:batch.model,max_completion_tokens:10000,thinking:{type:'disabled'},response_format:{type:'json_object'},messages},config.moonshotApiKey,true);
     lastOutput=value.choices?.[0]?.message?.content||'';
     if(value.choices?.[0]?.finish_reason==='length')throw Object.assign(Error('response_truncated'),{code:'response_truncated'});
     const ai=validateAnalysis(JSON.parse(lastOutput.replace(/^```(?:json)?\s*|\s*```$/g,'')),report.facts);
     const total=scores=>Math.round(scores.reduce((sum,score,index)=>sum+score*weights[index]/100,0)*10)/10;
     const flags=ai.modules.flatMap(module=>!report.facts[module.id]?.trim()?[`${module.module}缺失，自动记0分`]:module.confidence!==null&&module.confidence<0.6?[`${module.module}模型自评置信度较低，仅作提示`]:[]);
     if(total(ai.scores)<60)flags.push('内容质量分低于60分，仅作改进提示');
-    if(previousContent.ai?.version===REPORT_QUALITY_VERSION&&previousContent.aiModel===config.kimiFollowupModel&&Array.isArray(previousContent.ai.scores)&&previousContent.ai.scores.length===4&&previousContent.ai.scores.every(Number.isFinite)&&Math.abs(total(ai.scores)-total(previousContent.ai.scores))>=15)flags.push('内容质量分较上期变化达到15分，仅作趋势提示');
+    if(previousContent.ai?.version===REPORT_QUALITY_VERSION&&previousContent.aiModel===batch.model&&Array.isArray(previousContent.ai.scores)&&previousContent.ai.scores.length===4&&previousContent.ai.scores.every(Number.isFinite)&&Math.abs(total(ai.scores)-total(previousContent.ai.scores))>=15)flags.push('内容质量分较上期变化达到15分，仅作趋势提示');
     ai.anomalies=[...new Set([...flags,...ai.anomalies])].slice(0,10);
     const sources=Object.values(report.facts).filter(Boolean);
     for(const task of ai.tasks)if(!task.evidence||!sources.some(source=>source.includes(task.evidence)))task.evidence=report.facts.problems||report.facts.nextPlan||report.facts.results||report.facts.reflection;
@@ -114,6 +121,7 @@ export function createLiveReportSync({query,exec,sql,config,settings,refreshDire
     else if(diagnostic.retryAfterExceeded)batch.blockedReason='upstream_retry_after_too_long';
     await onAttempt(attempt,diagnostic);
     feedback=diagnostic;
+    if(isReportQualityValidationFailure(diagnostic.code)&&--validationAttemptsLeft===0)return ANALYSIS_RETRY_HELD;
     if(!diagnostic.retryable||batch.blockedReason)break;
    }
   }
@@ -155,7 +163,7 @@ export function createLiveReportSync({query,exec,sql,config,settings,refreshDire
   }
   const canProcess=async report=>!await inactive(report.userId)||await closedHistoryCovers(report);
   if(!config.moonshotApiKey)throw Error('ai_not_configured');
-  const stat={ok:true,running:true,mode:rescore?'rescore':'sync',...(rescore?{targetMonth:options.targetMonth}:{}),phase:rescore?'prepare':'pull',message:rescore?'正在读取所选月份未完成评分':'正在读取飞书汇报',startedAt:new Date().toISOString(),rowCount:0,analyzed:0,failed:0,cached:0,remaining:0,active:0,skippedInactive:0,skippedInactiveAnalysis:0,skippedSourceChanged:0,historicalInactiveReports:0,errors:[],diagnostics:[],byMonth:{}};
+  const stat={ok:true,running:true,mode:rescore?'rescore':'sync',...(rescore?{targetMonth:options.targetMonth}:{}),phase:rescore?'prepare':'pull',message:rescore?'正在读取所选月份未完成评分':'正在读取飞书汇报',startedAt:new Date().toISOString(),rowCount:0,analyzed:0,failed:0,cached:0,retryHeld:0,remaining:0,active:0,skippedInactive:0,skippedInactiveAnalysis:0,skippedSourceChanged:0,historicalInactiveReports:0,errors:[],diagnostics:[],byMonth:{}};
   await emit(stat);
   const reports=new Map();
   if(rescore){
@@ -198,11 +206,14 @@ export function createLiveReportSync({query,exec,sql,config,settings,refreshDire
   }
   const skippedMessage=()=>`${stat.skippedInactive?`；已跳过 ${stat.skippedInactive} 份已停用人员汇报`:''}${stat.skippedInactiveAnalysis?`；已停止 ${stat.skippedInactiveAnalysis} 份停用人员的排队分析`:''}`;
   if(!reports.size){await emit({...stat,running:false,phase:'done',message:rescore?'所选月份没有可补跑的在职员工周报':`本次没有需要导入的汇报${skippedMessage()}。`,finishedAt:new Date().toISOString()});return;}
-  const work=[],analysisBatch={blockedReason:null};let batch='';
+  const work=[],analysisBatch={blockedReason:null,model:config.kimiFollowupModel};let batch='';
   function monthCell(report){return stat.byMonth[report.end.slice(0,7)]??={total:0,completed:0,failed:0,cached:0,remaining:0,active:0,skipped:0};}
+  function recordRetryHold(cell){stat.retryHeld++;cell.retryHeld=(cell.retryHeld||0)+1;}
   function updateRemaining(){
-   stat.remaining=Math.max(0,stat.rowCount-stat.cached-stat.analyzed-stat.failed-stat.skippedInactiveAnalysis-stat.skippedSourceChanged);
-   for(const cell of Object.values(stat.byMonth))cell.remaining=Math.max(0,cell.total-cell.cached-cell.completed-cell.failed-cell.skipped);
+   stat.remaining=Math.max(0,stat.rowCount-stat.cached-stat.analyzed-stat.failed-stat.retryHeld-stat.skippedInactiveAnalysis-stat.skippedSourceChanged);
+   for(const cell of Object.values(stat.byMonth))cell.remaining=Math.max(0,cell.total-cell.cached-cell.completed-cell.failed-(cell.retryHeld||0)-cell.skipped);
+   const held=stat.retryHeld?`，已停止自动重试 ${stat.retryHeld} 份`:'';
+   stat.message=`${rescore?options.targetMonth+' 评分补跑':'周报同步'}：完成 ${stat.analyzed} 份，复用 ${stat.cached} 份，失败 ${stat.failed} 份，待处理 ${stat.remaining} 份${held}${skippedMessage()}`;
   }
   for(const report of reports.values()){
    const historicalInactive=await inactive(report.userId);if(historicalInactive&&!await closedHistoryCovers(report)){stat.skippedInactive++;continue;}
@@ -212,13 +223,18 @@ export function createLiveReportSync({query,exec,sql,config,settings,refreshDire
    // Legacy rows may predate sourceHash in their JSON; SQL remains authoritative.
    const prior={...previous,sourceHash:previous.sourceHash||old?.source_hash||''};
    let ai=null;
-   if(old?.source_hash===report.sourceHash&&currentQualityCached(prior,report.sourceHash,config.kimiFollowupModel))try{ai=validateAnalysis(previous.ai,report.facts);ai.promptVersion=previous.ai.promptVersion||previous.aiPromptVersion;}catch{}
+   if(old?.source_hash===report.sourceHash&&currentQualityCached(prior,report.sourceHash,analysisBatch.model))try{ai=validateAnalysis(previous.ai,report.facts);ai.promptVersion=previous.ai.promptVersion||previous.aiPromptVersion;}catch{}
    const cell=monthCell(report);cell.total++;stat.rowCount++;
    if(historicalInactive)stat.historicalInactiveReports++;
    if(rescore&&ai){stat.cached++;cell.cached++;continue;}
    const snapshot=previousQualitySnapshot(prior,old?.source_hash||'',weights),history=ai?previous.aiAnalysisHistory||[]:archivedQuality(prior,old?.source_hash||'',weights);
    const schedule=weeklyReportSchedule(report.end,calendar(),policy.deadlineTime),late=!schedule.exempt&&!schedule.calendarPending&&Date.parse(report.submittedAt)>Date.parse(schedule.dueAt||'');
-   const content={...report.facts,'周期ID':report.weekId,'本周成果摘要':report.facts.results,'问题摘要':report.facts.problems,'下周计划摘要':report.facts.nextPlan,'思考与复盘摘要':report.facts.reflection,source:report.source,sourceHash:report.sourceHash,scoringWeights:weights,submissionSchedule:schedule,...(history.length?{aiAnalysisHistory:history}:{}),...(snapshot?{previousQuality:snapshot}:{}),...(previous.aiAnalysisAttempts?{aiAnalysisAttempts:previous.aiAnalysisAttempts}:{}),qualityRefresh:{state:ai?'ready':'queued',targetVersion:REPORT_QUALITY_VERSION,model:config.kimiFollowupModel,sourceHash:report.sourceHash,jobId,attempts:0,updatedAt:new Date().toISOString()},...(ai?{ai,aiModel:previous.aiModel,aiPromptVersion:previous.aiPromptVersion,aiGeneratedAt:previous.aiGeneratedAt,...Object.fromEntries(['成果分','问题分','计划分','复盘分'].map((key,index)=>[key,ai.scores[index]]))}:{})};
+   const attempts=Array.isArray(previous.aiAnalysisAttempts)?previous.aiAnalysisAttempts:[];
+   // Older diagnostic entries lacked a model. Keep the original attribution through later model changes.
+   const legacyModel=previous.aiLegacyAttemptsModel||previous.qualityRefresh?.model||previous.aiModel||analysisBatch.model;
+   const validationFailures=attempts.filter(attempt=>attempt?.sourceHash===report.sourceHash&&attempt.promptVersion===REPORT_QUALITY_PROMPT_VERSION&&(attempt.model||legacyModel)===analysisBatch.model&&isReportQualityValidationFailure(attempt.code)).length;
+   const retryHeld=!rescore&&!ai&&validationFailures>=MAX_ANALYSIS_ATTEMPTS;
+   const content={...report.facts,'周期ID':report.weekId,'本周成果摘要':report.facts.results,'问题摘要':report.facts.problems,'下周计划摘要':report.facts.nextPlan,'思考与复盘摘要':report.facts.reflection,source:report.source,sourceHash:report.sourceHash,scoringWeights:weights,submissionSchedule:schedule,...(history.length?{aiAnalysisHistory:history}:{}),...(snapshot?{previousQuality:snapshot}:{}),...(attempts.length?{aiAnalysisAttempts:attempts}:{}),...(attempts.some(attempt=>attempt&&!attempt.model)?{aiLegacyAttemptsModel:legacyModel}:{}),qualityRefresh:{state:ai?'ready':retryHeld?'failed':'queued',targetVersion:REPORT_QUALITY_VERSION,model:analysisBatch.model,sourceHash:report.sourceHash,jobId,attempts:retryHeld?validationFailures:0,updatedAt:new Date().toISOString(),...(retryHeld?{retryHeld:true}:{})},...(ai?{ai,aiModel:previous.aiModel,aiPromptVersion:previous.aiPromptVersion,aiGeneratedAt:previous.aiGeneratedAt,...Object.fromEntries(['成果分','问题分','计划分','复盘分'].map((key,index)=>[key,ai.scores[index]]))}:{})};
    if(rescore){
     const sourceGuard=old.source_hash==null?'source_hash IS NULL':`source_hash=${sql(old.source_hash)}`;
     await exec(`UPDATE weekly_reports SET content_json=${sql(JSON.stringify(content))},source_hash=${sql(report.sourceHash)},updated_at=datetime('now') WHERE employee_user_id=${sql(report.userId)} AND week_end=${sql(report.end)} AND ${sourceGuard};`);
@@ -227,7 +243,9 @@ export function createLiveReportSync({query,exec,sql,config,settings,refreshDire
     await exec(`BEGIN; INSERT INTO employees(user_id,name,department) VALUES(${sql(report.userId)},${sql(report.name)},${sql(report.department)}) ON CONFLICT(user_id) DO NOTHING; INSERT INTO weekly_reports(id,employee_user_id,employee_name,department,week_label,week_start,week_end,status,content_json,source_batch_id,source_hash,is_late,submitted_at) VALUES(${sql(report.id)},${sql(report.userId)},${sql(report.name)},${sql(report.department)},${sql(report.label)},${sql(report.start)},${sql(report.end)},${sql(schedule.exempt?'免交':schedule.calendarPending?'等待日历':late?'迟交':'准时')},${sql(JSON.stringify(content))},${sql(batch)},${sql(report.sourceHash)},${late?1:0},${sql(report.submittedAt)}) ON CONFLICT(employee_user_id,week_label) DO UPDATE SET employee_name=excluded.employee_name,department=excluded.department,week_start=excluded.week_start,week_end=excluded.week_end,status=excluded.status,content_json=excluded.content_json,source_hash=excluded.source_hash,submitted_at=excluded.submitted_at,is_late=excluded.is_late,updated_at=datetime('now'); COMMIT;`);
     if(!historicalInactive&&!await inactive(report.userId))await observeEmployee(report.userId,report.start);
    }
-   if(ai){stat.cached++;cell.cached++;}else work.push({report,content});
+   if(ai){stat.cached++;cell.cached++;}
+   else if(retryHeld)recordRetryHold(cell);
+   else work.push({report,content,validationAttemptsLeft:rescore?Infinity:MAX_ANALYSIS_ATTEMPTS-validationFailures});
   }
   if(batch)await exec(`UPDATE import_batches SET record_count=${stat.rowCount} WHERE id=${sql(batch)};`);
   updateRemaining();
@@ -242,21 +260,27 @@ export function createLiveReportSync({query,exec,sql,config,settings,refreshDire
   await Promise.all(Array.from({length:Math.min(3,work.length)},async()=>{
    while(index<work.length){
     if(analysisBatch.blockedReason)break;
-    const {report,content}=work[index++],cell=monthCell(report);stat.active++;cell.active++;let attemptCount=0,lastDiagnostic=null;
+    const {report,content,validationAttemptsLeft}=work[index++],cell=monthCell(report);stat.active++;cell.active++;let attemptCount=0,lastDiagnostic=null;
     try{
      const ai=await analyze(report,canProcess,content.scoringWeights,async(attempt,diagnostic)=>{
       attemptCount=attempt;lastDiagnostic=diagnostic||lastDiagnostic;
       content.qualityRefresh={...content.qualityRefresh,state:'analyzing',attempts:attempt,updatedAt:new Date().toISOString(),...(diagnostic?{diagnostic}:{} )};
       if(diagnostic){
-       content.aiAnalysisAttempts=[...(content.aiAnalysisAttempts||[]),{at:new Date().toISOString(),targetVersion:REPORT_QUALITY_VERSION,promptVersion:REPORT_QUALITY_PROMPT_VERSION,sourceHash:report.sourceHash,attempt,...diagnostic}];
+       content.aiAnalysisAttempts=[...(content.aiAnalysisAttempts||[]),{at:new Date().toISOString(),targetVersion:REPORT_QUALITY_VERSION,promptVersion:REPORT_QUALITY_PROMPT_VERSION,sourceHash:report.sourceHash,model:analysisBatch.model,attempt,...diagnostic}];
        stat.diagnostics=[...stat.diagnostics,{reportId:report.id,weekEnd:report.end,attempt,...diagnostic}].slice(-50);
       }
       const saved=await persist(report,content);await emit({...stat});return saved;
-     },analysisBatch);
-     if(ai===ANALYSIS_DEFERRED){/* Keep unrequested reports queued and counted as remaining. */}
+     },analysisBatch,validationAttemptsLeft);
+     if(ai===ANALYSIS_DEFERRED){
+      if(attemptCount){content.qualityRefresh={...content.qualityRefresh,state:'queued',updatedAt:new Date().toISOString()};await persist(report,content);}
+     }
+     else if(ai===ANALYSIS_RETRY_HELD){
+      content.qualityRefresh={...content.qualityRefresh,state:'failed',retryHeld:true,updatedAt:new Date().toISOString()};
+      if(await persist(report,content))recordRetryHold(cell);else{stat.skippedSourceChanged++;cell.skipped++;}
+     }
      else if(!ai||!await canProcess(report)){if(!await canProcess(report))stat.skippedInactiveAnalysis++;else stat.skippedSourceChanged++;cell.skipped++;}
      else{
-      const next={...content,ai,aiModel:config.kimiFollowupModel,aiPromptVersion:REPORT_QUALITY_PROMPT_VERSION,aiGeneratedAt:new Date().toISOString(),qualityRefresh:{...content.qualityRefresh,state:'ready',attempts:attemptCount,diagnostic:null,updatedAt:new Date().toISOString()},...Object.fromEntries(['成果分','问题分','计划分','复盘分'].map((key,position)=>[key,ai.scores[position]]))};
+      const next={...content,ai,aiModel:analysisBatch.model,aiPromptVersion:REPORT_QUALITY_PROMPT_VERSION,aiGeneratedAt:new Date().toISOString(),qualityRefresh:{...content.qualityRefresh,state:'ready',attempts:attemptCount,diagnostic:null,updatedAt:new Date().toISOString()},...Object.fromEntries(['成果分','问题分','计划分','复盘分'].map((key,position)=>[key,ai.scores[position]]))};
       if(await persist(report,next)){stat.analyzed++;cell.completed++;}else{stat.skippedSourceChanged++;cell.skipped++;}
      }
     }catch(error){
@@ -265,7 +289,6 @@ export function createLiveReportSync({query,exec,sql,config,settings,refreshDire
      await persist(report,content);stat.failed++;cell.failed++;if(stat.errors.length<5)stat.errors.push(diagnostic.code);
     }finally{
      stat.active--;cell.active--;updateRemaining();
-     stat.message=`${rescore?options.targetMonth+' 评分补跑':'周报同步'}：完成 ${stat.analyzed} 份，复用 ${stat.cached} 份，失败 ${stat.failed} 份，待处理 ${stat.remaining} 份${skippedMessage()}`;
      // Fresh publication after each report lets one employee finish without
      // waiting for the rest of the company-wide queue.
      await notify();await emit({...stat});
@@ -273,7 +296,10 @@ export function createLiveReportSync({query,exec,sql,config,settings,refreshDire
    }
   }));
   await projection;await notify();
-  await emit({...stat,ok:stat.failed===0&&!stat.publicationPending&&!analysisBatch.blockedReason,running:false,phase:analysisBatch.blockedReason?'paused':stat.failed||stat.publicationPending?'partial':'done',...(analysisBatch.blockedReason?{blockedReason:analysisBatch.blockedReason}:{}),finishedAt:new Date().toISOString()});
+  if(analysisBatch.blockedReason==='daily_ai_request_limit')stat.message+='；今日 AI 评分请求已达上限';
+  if(analysisBatch.blockedReason==='ai_scoring_paused')stat.message+='；AI 评分已暂停';
+  const partial=Boolean(stat.failed||stat.retryHeld||stat.publicationPending);
+  await emit({...stat,ok:!partial&&!analysisBatch.blockedReason,running:false,phase:analysisBatch.blockedReason?'paused':partial?'partial':'done',...(analysisBatch.blockedReason?{blockedReason:analysisBatch.blockedReason}:{}),finishedAt:new Date().toISOString()});
  }
  async function start(options={}){
   validateOptions(options);if(running)return false;running=true;

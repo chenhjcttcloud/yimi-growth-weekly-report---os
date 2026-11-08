@@ -172,7 +172,7 @@ const managementSummary=createManagementSummary({query:querySqlRows,exec:execSql
 }});
 const calendarUpdates=createChinaWorkCalendar({query:querySqlRows,exec:execSql,sql:sqlValue,bundled:loadChinaWorkCalendar(),onChange:value=>{chinaWorkCalendar=value;},enabled:process.env.CHINA_CALENDAR_AUTO_UPDATE_ENABLED!=='false'});
 await calendarUpdates.initialize();
-const liveReportSync=createLiveReportSync({query:querySqlRows,exec:execSql,sql:sqlValue,config,settings:systemSettings,calendar:()=>chinaWorkCalendar,observeEmployee:(id,date)=>employeeLifecycle.observe(id,date),refreshDirectory:refreshEmployeeDirectory,writeStatus:writeLarkReportSyncStatus,onComplete:()=>performance.overview({clientSummary:true})});
+const liveReportSync=createLiveReportSync({query:querySqlRows,exec:execSql,sql:sqlValue,config,settings:systemSettings,reserveAiRequest:systemSettings.reserveReportAiRequest,calendar:()=>chinaWorkCalendar,observeEmployee:(id,date)=>employeeLifecycle.observe(id,date),refreshDirectory:refreshEmployeeDirectory,writeStatus:writeLarkReportSyncStatus,onComplete:()=>performance.overview({clientSummary:true})});
 const previousSyncStatus=await readLarkReportSyncStatus();
 if(previousSyncStatus.running)await writeLarkReportSyncStatus({...previousSyncStatus,ok:false,running:false,phase:'interrupted',active:0,...(previousSyncStatus.byMonth?{byMonth:Object.fromEntries(Object.entries(previousSyncStatus.byMonth).map(([month,cell])=>[month,{...cell,active:0}]))}:{}),interruptedAt:new Date().toISOString(),message:'上次同步因服务重启中断，可继续处理未完成评分；已保存的分析将复用。'});
 const feishuDepartmentSync=createFeishuDepartmentSync({query:querySqlRows,exec:execSql,sql:sqlValue,config});
@@ -182,7 +182,7 @@ let organizationMutationRunning=false;
 const managerReviews=createManagerReviews({query:querySqlRows,exec:execSql,sql:sqlValue,organization:departments.overview,reports:()=>performance.reports(),isBossUserId:id=>bossAccessState.userIds.has(id)||(config.authMode==='mock'&&id==='mock_owner')});
 const performance = createPerformance({managerReviews,calendar:()=>chinaWorkCalendar,policyFor:systemSettings.policyFor,query: querySqlRows, exec: execSql, sql: sqlValue, readData:readSourceReadonly});
 const productManagementScores=createProductManagementScoreApi({query:querySqlRows,sql:sqlValue,sendJson,token:process.env.PRODUCT_MANAGEMENT_SCORE_API_TOKEN||''});
-const reportAutomation=createReportAutomation({query:querySqlRows,exec:execSql,sql:sqlValue,getConfig:systemSettings.reportAutomationConfig,isRunning:()=>liveReportSync.isRunning(),start:options=>liveReportSync.start(options)});
+const reportAutomation=createReportAutomation({query:querySqlRows,exec:execSql,sql:sqlValue,getConfig:systemSettings.reportAutomationConfig,getAiRequestsToday:systemSettings.reportAiRequestsToday,isRunning:()=>liveReportSync.isRunning(),start:options=>liveReportSync.start(options)});
 const scoringSetup=createScoringSetup({query:querySqlRows,exec:execSql,sql:sqlValue,isBoss:id=>bossAccessState.userIds.has(id)||(config.authMode==='mock'&&id==='mock_owner')});
 const scoringWorkbench=createScoringWorkbench({query:querySqlRows,exec:execSql,sql:sqlValue,setup:scoringSetup,managerReviews,bossMembers:()=>[...bossAccessState.userIds].map(userId=>({userId,name:bossAccessState.members.find(m=>m.userId===userId)?.name||'老板'}))});
 const scoringRecurrence=createScoringRecurrence({query:querySqlRows,exec:execSql,sql:sqlValue,setup:scoringSetup,managerReviews,bossMembers:()=>[...bossAccessState.userIds].map(userId=>({userId,name:bossAccessState.members.find(m=>m.userId===userId)?.name||'老板'}))});
@@ -201,7 +201,8 @@ const operations=createOperations({query:querySqlRows,exec:execSql,sql:sqlValue,
  return botMessenger.send(userId,text,uuid);
 },monitor:async()=>{
  const issues=[],sync=await readLarkReportSyncStatus(),automation=await systemSettings.reportAutomationConfig();
- if(automation.enabled&&sync.ok===false)issues.push({key:'report_sync_failure',message:'飞书周报同步或AI分析失败，请到飞书与数据集成查看状态并重试。'});
+ const expectedLimit=(['daily_ai_request_limit','ai_scoring_paused'].includes(sync.blockedReason)||!sync.blockedReason&&sync.retryHeld>0)&&!sync.failed&&!sync.publicationPending;
+ if(automation.enabled&&sync.ok===false&&!expectedLimit)issues.push({key:'report_sync_failure',message:'飞书周报同步或AI分析失败，请到飞书与数据集成查看状态并重试。'});
  if(automation.enabled&&sync.running&&Date.now()-Date.parse(sync.startedAt)>3600000)issues.push({key:'report_sync_stalled',message:'周报同步已运行超过一小时，请检查飞书和AI服务。'});
  const monthly=(await querySqlRows("SELECT count(*) AS count FROM monthly_score_reminder_deliveries WHERE status IN ('failed','uncertain') AND datetime(updated_at)>=datetime('now','-1 day');"))[0];
  if(Number(monthly.count))issues.push({key:'monthly_reminder_failure',message:`最近24小时有 ${monthly.count} 条月末评分提醒失败或发送状态待核实，请查看提醒记录。`});return issues;
@@ -326,7 +327,7 @@ async function route(req, res) {
         else if(url.pathname==='/api/system-settings/features')await systemSettings.saveFeatures(body,userForPolicy);
         else return sendJson(res,404,{ok:false,error:'not_found'});
         return sendJson(res,200,{ok:true});
-      }catch(error){return sendJson(res,400,{ok:false,error:['invalid_event_config','event_credentials_required','invalid_integration_features','invalid_report_config','report_secret_required','future_cycle_required','invalid_weights','invalid_deadline','invalid_reminder_hours','policy_version_exists','invalid_ai_url','invalid_ai_model','invalid_monthly_reminders','feishu_required','invalid_report_automation','ai_required'].includes(error.message)?error.message:'settings_save_failed'});}
+      }catch(error){return sendJson(res,400,{ok:false,error:['invalid_event_config','event_credentials_required','invalid_integration_features','invalid_report_config','report_secret_required','future_cycle_required','invalid_weights','invalid_deadline','invalid_reminder_hours','policy_version_exists','invalid_ai_url','invalid_ai_model','invalid_monthly_reminders','feishu_required','invalid_report_automation','invalid_ai_request_limit','ai_required'].includes(error.message)?error.message:'settings_save_failed'});}
     }
     return sendJson(res,404,{ok:false,error:'not_found'});
   }

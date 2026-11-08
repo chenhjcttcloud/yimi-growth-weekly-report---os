@@ -80,7 +80,7 @@ export function ReportQualityDetails({ assessment, weights = defaultWeights, pen
   const refreshLabel=refresh&&refresh.state!=='ready'?(refresh.state==='failed'?'重评失败':'重评中'):'';
   if (!assessment || !modules.length) return <section className="quality-assessment quality-assessment-empty" aria-label="四模块评分依据">
     <div className="quality-assessment-heading"><h4><FileCheck2 size={15} aria-hidden="true"/>四模块评分依据</h4>{refreshLabel&&<span className="pf-status is-warning">{previous?'旧版分数 · ':''}{refreshLabel}</span>}</div>
-    {refreshLabel&&<p>{previous?'旧评分继续保留，新评分全部校验成功后自动更新。':'新评分尚未完成，系统会自动重试，不按0分处理。'}</p>}
+    {refreshLabel&&<p>{previous?'旧评分继续保留，新评分全部校验成功后自动更新。':'新评分尚未完成，仍待处理，不按0分处理。'}</p>}
     <p>{pending&&!previous ? 'AI 分析完成后，将自动展示各模块得分、评分理由和原文证据。当前未生成有效评分，不按 0 分处理。' : '历史记录未保存逐项评分理由和原文证据，已有分数保留；这里不补造评分依据。'}</p>
   </section>;
 

@@ -907,7 +907,7 @@ export function SettingsPage({ access,onOpenScoringSetup }: SettingsPageProps) {
         </div>
         <div className="sync-flow-copy">
           <strong>完整流程：读取飞书汇报 → 保存原文 → Kimi 评分 → 自动更新月度结果</strong>
-          <span>自动收集频率由上方设置管理，也可以立即手动同步。首次手动同步按配置日期读取；未填写则读取本月。未变化的 AI 分析会复用，失败记录下一轮自动重试。</span>
+          <span>自动收集频率由上方设置管理，也可以立即手动同步。首次手动同步按配置日期读取；未填写则读取本月。未变化的 AI 分析会复用，多次未通过引文或格式校验的周报可手动补跑。</span>
         </div>
         <div className="sync-status-box">
           <div>

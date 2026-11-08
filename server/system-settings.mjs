@@ -1,5 +1,7 @@
 import {createCipheriv,createDecipheriv,createHash,randomBytes,randomUUID} from 'node:crypto';
 export const defaultPolicy={weights:[30,25,25,20],deadlineTime:'20:00',reminderWaitHours:24,reminderCooldownHours:24};
+const DEFAULT_DAILY_REPORT_AI_REQUEST_LIMIT=60;
+const dailyReportAiRequestLimitSql=`COALESCE((SELECT json_extract(value_json,'$.dailyAiRequestLimit') FROM app_settings WHERE key='report_automation_config'),${DEFAULT_DAILY_REPORT_AI_REQUEST_LIMIT})`;
 export function createSystemSettings({query,exec,sql,config,now=()=>new Date()}) {
  const key=createHash('sha256').update(config.sessionSecret).digest();
  const month=()=>now().toLocaleDateString('sv-SE',{timeZone:'Asia/Shanghai'}).slice(0,7);
@@ -33,14 +35,29 @@ export function createSystemSettings({query,exec,sql,config,now=()=>new Date()})
  async function scoringRemindersEnabled(targetMonth=month()){const c=await monthlyReminderConfig();return c.enabled&&c.configured&&(!c.startMonth||targetMonth>=c.startMonth);}
  async function reportAutomationConfig(){
   const row=(await query("SELECT value_json FROM app_settings WHERE key='report_automation_config';"))[0],stored=row?JSON.parse(row.value_json):null;
-  return {enabled:stored?stored.enabled===true:config.larkReportAutoSyncEnabled===true,intervalMinutes:stored?.intervalMinutes||15,feishuConfigured:!!(config.feishuAppId&&config.feishuAppSecret),aiConfigured:!!config.moonshotApiKey};
+  return {enabled:stored?stored.enabled===true:config.larkReportAutoSyncEnabled===true,intervalMinutes:stored?.intervalMinutes||15,dailyAiRequestLimit:stored?.dailyAiRequestLimit??DEFAULT_DAILY_REPORT_AI_REQUEST_LIMIT,feishuConfigured:!!(config.feishuAppId&&config.feishuAppSecret),aiConfigured:!!config.moonshotApiKey};
+ }
+ function reportAiBudgetKey(){return sql('report_ai_requests:'+now().toLocaleDateString('sv-SE',{timeZone:'Asia/Shanghai'}));}
+ async function reportAiRequestsToday(){
+  const row=(await query(`SELECT value_json FROM app_settings WHERE key=${reportAiBudgetKey()};`))[0];
+  return Number(row?.value_json??0);
+ }
+ async function reserveReportAiRequest(){
+  // Reserve before calling the provider, so restarts and concurrent processes cannot overspend.
+  const rows=await query(`INSERT INTO app_settings(key,value_json,updated_at)
+    SELECT ${reportAiBudgetKey()},'1',datetime('now') WHERE ${dailyReportAiRequestLimitSql}>0
+    ON CONFLICT(key) DO UPDATE SET value_json=CAST(app_settings.value_json AS INTEGER)+1,updated_at=excluded.updated_at
+    WHERE CAST(app_settings.value_json AS INTEGER)<${dailyReportAiRequestLimitSql} RETURNING key;`);
+  if(rows.length===1)return true;
+  return (await reportAutomationConfig()).dailyAiRequestLimit===0?'ai_scoring_paused':false;
  }
  async function saveReportAutomation(body,user){
   if(typeof body.enabled!=='boolean'||!Number.isInteger(body.intervalMinutes)||body.intervalMinutes<5||body.intervalMinutes>1440)throw Error('invalid_report_automation');
+  if(body.dailyAiRequestLimit!==undefined&&(!Number.isInteger(body.dailyAiRequestLimit)||body.dailyAiRequestLimit<0||body.dailyAiRequestLimit>500))throw Error('invalid_ai_request_limit');
   if(body.enabled&&!(config.feishuAppId&&config.feishuAppSecret))throw Error('feishu_required');
   if(body.enabled&&!config.moonshotApiKey)throw Error('ai_required');
-  const value={enabled:body.enabled,intervalMinutes:body.intervalMinutes};
-  await exec(`INSERT INTO app_settings(key,value_json,updated_at) VALUES('report_automation_config',${sql(JSON.stringify(value))},datetime('now')) ON CONFLICT(key) DO UPDATE SET value_json=excluded.value_json,updated_at=excluded.updated_at;`);
+  const value={enabled:body.enabled,intervalMinutes:body.intervalMinutes,...(body.dailyAiRequestLimit===undefined?{}:{dailyAiRequestLimit:body.dailyAiRequestLimit})};
+  await exec(`INSERT INTO app_settings(key,value_json,updated_at) VALUES('report_automation_config',${sql(JSON.stringify(value))},datetime('now')) ON CONFLICT(key) DO UPDATE SET value_json=json_patch(app_settings.value_json,excluded.value_json),updated_at=excluded.updated_at;`);
   await audit(user,'周报自动收集与AI评分配置已保存',value);
  }
  async function saveMonthlyReminders(body,user){
@@ -78,5 +95,5 @@ export function createSystemSettings({query,exec,sql,config,now=()=>new Date()})
   await audit(user,'AI 服务配置已更新',{baseUrl,model,keyConfigured:!!config.moonshotApiKey});
  }
  async function logs(){return (await query('SELECT id,actor_name,action,hex(details_json) AS details_hex,created_at FROM system_operation_logs ORDER BY created_at DESC,rowid DESC LIMIT 100;')).map(r=>({...r,details:JSON.parse(Buffer.from(r.details_hex,'hex').toString('utf8')),details_hex:undefined}));}
- return {initialize,overview,saveReport,savePolicy,saveAI,policyFor,policies,audit,logs,monthlyReminderConfig,saveMonthlyReminders,scoringRemindersEnabled,reportAutomationConfig,saveReportAutomation,eventOverview,saveEvents,featureSettings,saveFeatures};
+ return {initialize,overview,saveReport,savePolicy,saveAI,policyFor,policies,audit,logs,monthlyReminderConfig,saveMonthlyReminders,scoringRemindersEnabled,reportAutomationConfig,saveReportAutomation,reportAiRequestsToday,reserveReportAiRequest,eventOverview,saveEvents,featureSettings,saveFeatures};
 }

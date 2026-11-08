@@ -46,6 +46,7 @@ evidence必须是数组，每个细项通常仅需1到2条简短引文、最多8
 }
 
 const diagnosticCodes = new Set(['invalid_structure','invalid_modules','invalid_module_count','missing_module','duplicate_module','invalid_criteria','invalid_criterion_count','missing_criterion','duplicate_criterion','required_text','text_too_long','invalid_missing_list','too_many_missing','invalid_confidence','invalid_score','invalid_evidence_list','too_many_evidence','invalid_evidence_quote','invalid_evidence_type','evidence_not_in_source','positive_score_without_evidence']);
+export const isReportQualityValidationFailure=code=>diagnosticCodes.has(code)||['invalid_summary','invalid_json','response_truncated'].includes(code);
 const errors = new WeakMap();
 function fail(code,path,context={}) {
   // Store only fixed schema identifiers. Raw values and provider text never enter diagnostics.

@@ -168,11 +168,11 @@ try{
   assert.equal(run(`SELECT is_active FROM employees WHERE user_id=${sql(id)};`,true)[0].is_active,0);
  }
  for(const table of ['weekly_reminder_sends','monthly_score_reminder_deliveries','scoring360_reminder_sends'])assert.equal(count(table),0,'historical import does not schedule or deliver reminders');
- // Invalid evidence retries automatically, retains the source, and never turns
- // a failed analysis into zero. A valid low-confidence result then publishes.
+ // Repeated invalid evidence holds automatic retries and retains the source.
+ // A valid low-confidence result from an explicit rescore still publishes.
  incoming=[{...item,task_id:'quality-evidence',from_user_id:'quality-evidence',from_user_name:'证据校验样本'}];forgeQuotes=true;
- const beforeForgery=calls;await sync.run(options);assert.equal(status.failed,1);assert.equal(calls,beforeForgery+4,'invalid quoted evidence follows the automatic retry path');assert.equal(savedReports('quality-evidence').length,1);assert.equal(JSON.parse(savedReports('quality-evidence')[0].content_json).ai,undefined);
- forgeQuotes=false;lowConfidence=true;await sync.run(options);assert.equal(status.ok,true);assert.equal(status.analyzed,1);const lowContent=JSON.parse(savedReports('quality-evidence')[0].content_json);assert.deepEqual(lowContent.ai.scores,[40,40,40,40]);assert.equal(lowContent.ai.modules[0].confidence,.1);assert(lowContent.ai.anomalies.includes('数据矛盾待补充说明'));
+ const beforeForgery=calls;await sync.run(options);assert.equal(status.retryHeld,1);assert.equal(calls,beforeForgery+4,'invalid quoted evidence stops automatic retries at the limit');assert.equal(savedReports('quality-evidence').length,1);assert.equal(JSON.parse(savedReports('quality-evidence')[0].content_json).ai,undefined);
+ forgeQuotes=false;lowConfidence=true;await sync.run({mode:'rescore',targetMonth:savedReports('quality-evidence')[0].week_end.slice(0,7)});assert.equal(status.ok,true);const lowContent=JSON.parse(savedReports('quality-evidence')[0].content_json);assert.deepEqual(lowContent.ai.scores,[40,40,40,40]);assert.equal(lowContent.ai.modules[0].confidence,.1);assert(lowContent.ai.anomalies.includes('数据矛盾待补充说明'));
  data=JSON.parse(await readFile(path.join(dir,'prototypeData.json')));assert.equal(data.weekly_scores.find(r=>r.user_id==='quality-evidence')['总分'],40,'low scores, confidence and anomalies do not create an approval gate');
  assert.equal(run('PRAGMA integrity_check;').trim(),'ok');
  console.log('live report sync tests passed: pagination, templates, normalization, AI validation, persistence, historical projections, cache/retry, inactive mixed/all batches, no empty imports, pre-import/queued/in-flight stop, closed-history maintenance allowlist and rechecks, no reactivation, zero real upstream requests');

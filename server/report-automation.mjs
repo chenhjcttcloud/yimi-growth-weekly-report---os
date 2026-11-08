@@ -2,12 +2,12 @@ import {randomUUID} from 'node:crypto';
 
 // Poll Feishu's report query API because the current integration has no submission webhook.
 // It never creates reminders or ratings, and reuses the sync engine's content/model cache.
-export function createReportAutomation({query,exec,sql,getConfig,isRunning,start,now=()=>new Date()}){
+export function createReportAutomation({query,exec,sql,getConfig,isRunning,start,getAiRequestsToday=async()=>0,now=()=>new Date()}){
  let busy=false;
  async function state(){return JSON.parse((await query("SELECT value_json FROM app_settings WHERE key='report_automation_state';"))[0]?.value_json||'{}');}
  async function overview(){
   const config=await getConfig(),saved=await state(),next=saved.lastAttemptAt?new Date(Date.parse(saved.lastAttemptAt)+config.intervalMinutes*60000).toISOString():null;
-  return {config,lastAttemptAt:saved.lastAttemptAt||null,nextCheckAt:config.enabled?next:null,lastStatus:saved.status||'idle',running:isRunning(),lookbackDays:45};
+  return {config,aiRequestsToday:await getAiRequestsToday(),lastAttemptAt:saved.lastAttemptAt||null,nextCheckAt:config.enabled?next:null,lastStatus:saved.status||'idle',running:isRunning(),lookbackDays:45};
  }
  async function tick(){
   if(busy)return {skipped:'running'};
