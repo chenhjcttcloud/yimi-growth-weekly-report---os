@@ -88,7 +88,7 @@ try{
 
  // Fail only one stale result; already validated employees must not rerun.
  phase='fail';run("UPDATE weekly_reports SET content_json=json_set(content_json,'$.aiModel','stale-B-model') WHERE id='B1';");
- await sync.run(options);assert.equal(status.phase,'partial');assert.equal(status.failed,1);assert.equal(status.cached,3);assert.equal(perPhaseCalls.get('fail:B1'),4);assert.equal(calls.filter(call=>call.phase==='fail').length,4);
+ await sync.run(options);assert.equal(status.phase,'partial');assert.equal(status.failed,1);assert.equal(status.cached,3);assert.equal(perPhaseCalls.get('fail:B1'),2);assert.equal(calls.filter(call=>call.phase==='fail').length,2);
  const bFailed=monthly(await performance.overview(),'B');assert.equal(bFailed.score,85);assert.equal(bFailed.status,'rescore_failed');assert.equal(content('B1').qualityRefresh.diagnostic.code,'evidence_not_in_source');
  assert(!JSON.stringify(content('B1').aiAnalysisAttempts).includes('PRIVATE_'),'persisted diagnostics cannot expose provider output');
  const successfulA=stored('A1'),successfulA2=stored('A2');

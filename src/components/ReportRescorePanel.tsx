@@ -44,8 +44,10 @@ function diagnosticLabel(value:Diagnostic){
  return '评分结果待修正';
 }
 
-export function ReportRescorePanel({scoringPaused}: {scoringPaused?:boolean}){
- const [month,setMonth]=useState(previousMonth),[overview,setOverview]=useState<SyncOverview|null>(null),[busy,setBusy]=useState(false),[error,setError]=useState(''),[notice,setNotice]=useState('');
+export function ReportRescorePanel({scoringPaused,scoringStartMonth=''}: {scoringPaused?:boolean;scoringStartMonth?:string}){
+ const [selectedMonth,setMonth]=useState<string|null>(null),[overview,setOverview]=useState<SyncOverview|null>(null),[busy,setBusy]=useState(false),[error,setError]=useState(''),[notice,setNotice]=useState('');
+ const lastMonth=previousMonth();
+ const month=selectedMonth??(lastMonth<scoringStartMonth?scoringStartMonth:lastMonth);
  const sequence=useRef(0),mounted=useRef(false);
  async function load(){
   const request=++sequence.current;
@@ -56,7 +58,7 @@ export function ReportRescorePanel({scoringPaused}: {scoringPaused?:boolean}){
  const status=overview?.status,processing=typeof overview?.processRunning==='boolean'?overview.processRunning:Boolean(status?.running);
  const interrupted=overview?.processRunning===false&&(status?.running===true||status?.phase==='interrupted');
  useEffect(()=>{if(!processing)return;const timer=window.setInterval(()=>void load(),5000);return()=>window.clearInterval(timer);},[processing]);
- const validMonth=/^\d{4}-(0[1-9]|1[0-2])$/.test(month)&&month<=chinaMonth();
+ const validMonth=/^\d{4}-(0[1-9]|1[0-2])$/.test(month)&&month>=scoringStartMonth&&month<=chinaMonth();
  const matches=status?.targetMonth===month;
  const blockedReason=status?.blockedReason||'';
  const savedLimit=overview?.automation?.config?.dailyAiRequestLimit;
@@ -75,7 +77,7 @@ export function ReportRescorePanel({scoringPaused}: {scoringPaused?:boolean}){
   try{
    const response=await fetch('/api/lark-report-sync',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({mode:'rescore',targetMonth:month})}),result=await response.json();
    if(response.status===409){setOverview({status:result.status||overview?.status,processRunning:true});setNotice('已有周报任务运行中，本次未重复创建任务；完成后可补跑所选月份。');await load();return;}
-   if(!response.ok)throw Error(({invalid_rescore_month:'请选择有效的评分月份。',invalid_target_month:'请选择有效的评分月份。',ai_not_configured:'请先配置 AI 模型和密钥。',boss_only:'当前账号没有补跑评分权限。',...pauseMessages} as Record<string,string>)[result.error]||'评分补跑未启动，请刷新状态后重试。');
+   if(!response.ok)throw Error(({invalid_rescore_month:'请选择有效的评分月份。',invalid_target_month:'请选择有效的评分月份。',rescore_before_start_month:'所选月份早于 AI 评分起始月，请选择起始月或之后的月份。',ai_not_configured:'请先配置 AI 模型和密钥。',boss_only:'当前账号没有补跑评分权限。',...pauseMessages} as Record<string,string>)[result.error]||'评分补跑未启动，请刷新状态后重试。');
    if(result.status)setOverview({status:result.status,processRunning:result.status.running===true});
    setNotice(`已启动${monthLabel(month)}未完成评分补跑。已通过的评分会复用，旧版分数继续保留。`);await load();
   }catch(value){setError(value instanceof Error?value.message:'评分补跑未启动，请刷新状态后重试。');}
@@ -84,13 +86,13 @@ export function ReportRescorePanel({scoringPaused}: {scoringPaused?:boolean}){
  return <section className="report-rescore" aria-label="按月补跑周报评分">
   <div className="report-rescore-heading"><div><h3>按月补跑周报评分</h3><p>使用系统中已保存的周报原文，只处理所选月份未完成或需要更新的评分。</p></div><span className={`pf-status ${Number(counts?.failed)>0?'is-warning':''}`} role="status">{label}</span></div>
   <form className="report-rescore-controls" onSubmit={event=>{event.preventDefault();void start();}}>
-   <label>评分月份<input type="month" aria-label="补跑评分月份" max={chinaMonth()} value={month} disabled={busy} onChange={event=>{setMonth(event.target.value);setNotice('');}}/></label>
+   <label>评分月份<input type="month" aria-label="补跑评分月份" min={scoringStartMonth||undefined} max={chinaMonth()} value={month} disabled={busy} onChange={event=>{setMonth(event.target.value);setNotice('');}}/></label>
    <button type="submit" className="primary-button" disabled={!overview||!validMonth||busy||processing||scoringDisabled}>{busy?'正在启动…':'补跑本月未完成评分'}</button>
    <button type="button" className="secondary-button" disabled={busy} onClick={()=>void load()}>刷新评分进度</button>
   </form>
   <p className="report-rescore-note">旧版分数继续展示并标记重评状态；每位员工当月评分全部通过后自动更新月分。原本没有分数的记录保持待分析，无需人工审核。</p>
   {paused&&<p className="pf-notice" role="status">{pauseMessage}已完成评分和历史分数继续保留。</p>}
-  {retryHeld>0&&<p className="report-rescore-note">{monthRetryHeld===undefined?'本次任务':'所选月份'}有 {retryHeld} 份周报因引文或格式多次校验失败，已暂停自动重试，{scoringDisabled?'评分恢复后可手动补跑。':'可手动补跑。'}</p>}
+  {retryHeld>0&&<p className="report-rescore-note">{monthRetryHeld===undefined?'本次任务':'所选月份'}有 {retryHeld} 份周报已达到自动重试上限，{scoringDisabled?'评分恢复后可手动补跑。':'可手动补跑。'}</p>}
   {notice&&<p className="pf-notice" role="status">{notice}</p>}
   {error&&<p className="pf-error" role="alert">{error}</p>}
   {counts?<dl className="report-rescore-progress" aria-label={`${monthLabel(month)}评分进度`}>

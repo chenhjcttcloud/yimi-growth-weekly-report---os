@@ -41,7 +41,8 @@ export function createPersonalWorkspace({ performance, readData, query, exec, sq
       const report=mine.find(r=>r.end===p.end),c=report?.content||{};
       const submitted=Boolean(report?.submitted);
       const schedule=weeklyReportSchedule(p.end,calendar(),policy.deadlineTime),dueAt=schedule.dueAt,future=Date.parse(dueAt||'')>Date.now();
-      const outsideEmployment=employment.length>0&&!employedOn(employment,schedule.deadlineDate||p.end);
+      const archived=submitted&&c.source?.provider==='legacy-reportos';
+      const outsideEmployment=!archived&&employment.length>0&&!employedOn(employment,schedule.deadlineDate||p.end);
       const status=outsideEmployment?'不在职':p.exempt||schedule.exempt?'免交':schedule.calendarPending?'等待日历':!report&&p.start<coverageStart?'未收集':submitted?(report.timestampUnknown?'待核实时间':report.late?'迟交':'准时'):future?'未到期':'未交';
       const facts={results:text(c,'本周成果摘要','results'),problems:text(c,'问题摘要','problems'),plan:text(c,'下周计划摘要','nextPlan'),reflection:text(c,'思考与复盘摘要','reflection')};
       const modules=[['成果','成果分'],['问题','问题分'],['计划','计划分'],['复盘','复盘分']];

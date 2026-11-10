@@ -93,8 +93,8 @@ for(const [name,header,minimum] of [['default',null,58000],['seconds','90',88000
 }
 
 const exhaustedRetries=await fixture('final-429-shared',{count:2,respond:({input})=>input.report.results.includes('虚构1')?failure(429):success(input)});
-await exhaustedRetries.execute();assert.equal(exhaustedRetries.calls.length,5);assert.equal(exhaustedRetries.report(1).qualityRefresh.attempts,4);assert.equal(exhaustedRetries.status.failed,1);assert.equal(exhaustedRetries.status.analyzed,1);
-assert(pausedBetween(exhaustedRetries,4,5)>=58000,'fourth 429 must cool down the next report too');
+await exhaustedRetries.execute();assert.equal(exhaustedRetries.calls.length,3);assert.equal(exhaustedRetries.report(1).qualityRefresh.attempts,2);assert.equal(exhaustedRetries.status.failed,1);assert.equal(exhaustedRetries.status.analyzed,1);
+assert(pausedBetween(exhaustedRetries,2,3)>=58000,'the final 429 must cool down the next report too');
 assert.equal(exhaustedRetries.report(1).previousQuality.ai.scores[0],79);assert.equal(exhaustedRetries.report(1).ai,undefined);assert(exhaustedRetries.report(1).aiAnalysisHistory.length>0);
 
 let quota=true;

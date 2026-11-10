@@ -2,6 +2,7 @@ import {createHash,randomUUID} from 'node:crypto';
 import {weeklyReportSchedule,monthFridays,shiftDate} from './weekly-report-schedule.mjs';
 import {employedOn,employedInMonth} from './employee-lifecycle.mjs';
 import {REPORT_QUALITY_VERSION,reportQualityAssessment} from './report-quality-scoring.mjs';
+import {legacyReportScore} from './report-rescore-state.mjs';
 import {encodeAutomaticEvidence,decodeAutomaticEvidence} from './automatic-evidence-storage.mjs';
 
 const canonical=value=>Array.isArray(value)?value.map(canonical):value&&typeof value==='object'?Object.fromEntries(Object.keys(value).sort().map(key=>[key,canonical(value[key])])):value;
@@ -19,7 +20,7 @@ function automaticReportBasis(report,kind){
   common.originalFacts=selected(content,['results','problems','nextPlan','reflection','本周成果摘要','问题摘要','下周计划摘要','思考与复盘摘要']);
   if(kind==='timeliness')return common;
   const refresh=report.qualityRefresh;
-  return {...common,moduleScores:report.qualityAssessment?.scores||selected(content,['成果分','问题分','计划分','复盘分']),weights:report.scoringPolicy?.weights,candidate:report.candidate,missing:report.missing,anomalies:report.anomalies,suggestions:report.suggestions,assessment:assessmentBasis(report.qualityAssessment),analysis:selected(content.ai,['version','promptVersion','scores','modules','summary','anomalies','questions','tasks']),model:content.aiModel||'',promptVersion:content.aiPromptVersion||'',refresh:refresh?{state:refresh.state==='ready'?'ready':refresh.state==='failed'?'failed':'pending',targetVersion:refresh.targetVersion}:null,displayQualityScore:report.displayQualityScore??null,qualityDisplaySource:report.qualityDisplaySource||null,previousQualityVersion:report.previousQualityVersion||null,previousScoringWeights:report.previousScoringWeights||null,previousAssessment:assessmentBasis(report.previousQualityAssessment)};
+  return {...common,moduleScores:report.qualityAssessment?.scores||selected(content,['成果分','问题分','计划分','复盘分']),weights:legacyReportScore(content)===null?report.scoringPolicy?.weights:undefined,candidate:report.candidate,missing:report.missing,anomalies:report.anomalies,suggestions:report.suggestions,assessment:assessmentBasis(report.qualityAssessment),analysis:selected(content.ai,['version','promptVersion','scores','modules','summary','anomalies','questions','tasks']),model:content.aiModel||'',promptVersion:content.aiPromptVersion||'',refresh:refresh?{state:refresh.state==='ready'?'ready':refresh.state==='failed'?'failed':'pending',targetVersion:refresh.targetVersion}:null,displayQualityScore:report.displayQualityScore??null,qualityDisplaySource:report.qualityDisplaySource||null,previousQualityVersion:report.previousQualityVersion||null,previousScoringWeights:report.previousScoringWeights||null,previousAssessment:assessmentBasis(report.previousQualityAssessment)};
 }
 function automaticBusinessHash(row,kind,result){
   // Collection jobs, retry diagnostics, historical analysis arrays and runtime
@@ -106,7 +107,8 @@ AND a.rowid=(SELECT MAX(b.rowid) FROM automatic_performance_results b WHERE b.mo
     const timeliness={...row.timeliness,rate:row.timeliness.pendingTimestamp||row.timeliness.pendingCalendar?null:row.timeliness.rate,status:row.timeliness.pendingCalendar?'pending_calendar':row.timeliness.pendingTimestamp?'pending_timestamp':row.timeliness.expected?'ready':'no_due_reports',publicationMode:'automatic'};
     for(const [kind,result] of [['quality',quality],['timeliness',timeliness]]){
       if(existing.some(r=>r.month===row.month&&r.employee_user_id===row.userId&&r.kind===kind&&r.scoring_rule==='legacy'))continue;
-      const evidence={userId:row.userId,name:row.name,department:row.department,publicationMode:'automatic',rule:kind==='quality'?'四模块按配置权重生成周分，全部已提交周报分析完成后取月度算术平均':'按提交时间和周五截止时间自动统计，及时率与质量分独立',reports:row.reports,statistics:row.timeliness,reviewNote:'系统自动计算，无需人工确认',deduction:0};
+      const qualityRule=submitted.some(r=>legacyReportScore(r.content)!==null)?'旧系统存档沿用原总分，其他周报按对应规则计分，取已提交周报月度算术平均':'四模块按配置权重生成周分，全部已提交周报分析完成后取月度算术平均';
+      const evidence={userId:row.userId,name:row.name,department:row.department,publicationMode:'automatic',rule:kind==='quality'?qualityRule:'按提交时间和周五截止时间自动统计，及时率与质量分独立',reports:row.reports,statistics:row.timeliness,reviewNote:'系统自动计算，无需人工确认',deduction:0};
       const hash=automaticBusinessHash(row,kind,result);
       // A read with unchanged inputs does not need a write transaction. Keep the
       // SQL comparison too: another request may publish between this read/write.
@@ -151,12 +153,13 @@ WHERE COALESCE((SELECT calculation_hash FROM automatic_performance_results WHERE
       }
       const scores=sections.map(([,key,w],index)=>({value:qualityAssessment?qualityAssessment.scores[index]:c[key]==null||String(c[key]).trim()===''?NaN:Number(c[key]),w}));
       const valid=scores.every(s=>Number.isFinite(s.value)&&s.value>=0&&s.value<=100)&&(c.ai?.version!==REPORT_QUALITY_VERSION||qualityAssessment!==null)&&!refreshPending;
+      const candidate=legacyReportScore(c)??(valid?round(scores.reduce((n,s)=>n+s.value*s.w,0)):null);
       const submitted=r.status!=='未交' && (!!r.submittedAt || sections.some(([key])=>String(c[key]||'').trim()));
       const ts=submitted?Date.parse(String(r.submittedAt).replace(' ','T')+(/(?:Z|[+-]\d\d:\d\d)$/.test(r.submittedAt)?'':'+08:00')):NaN;
       const schedule=weeklyReportSchedule(r.end,calendar?.()||{},policy.deadlineTime),deadline=Date.parse(schedule.dueAt||'');
       const late=submitted&&!schedule.exempt&&!schedule.calendarPending&&Number.isFinite(ts)&&ts>deadline;
       const status=schedule.exempt?'免交':schedule.calendarPending?'等待日历':!submitted?'未交':!Number.isFinite(ts)?'待核实时间':late?'迟交':'准时';
-      return {...r,status,schedule,scoringPolicy:policy,...(qualityAssessment&&!refreshPending?{qualityAssessment}:{}),...(qualityRefresh?{qualityRefresh,displayQualityScore:refreshPending?previousQualityScore:null,...(refreshPending&&previousQualityScore!==null?{qualityDisplaySource:'previous',previousQualityVersion:previous.ai.version||previous.aiPromptVersion||previous.promptVersion||'legacy',previousScoringWeights:previous.scoringWeights||policy.weights,...(previousQualityAssessment?{previousQualityAssessment}:{})}: {})}:{}), month:monthOf(r.end), submitted, timestampUnknown:submitted&&!Number.isFinite(ts),late,onTime:submitted&&!schedule.exempt&&!schedule.calendarPending&&Number.isFinite(ts)&&ts<=deadline, candidate:valid?round(scores.reduce((n,s)=>n+s.value*s.w,0)):null, missing, evidence:sections.map(([key])=>({module:key,text:c[key]||''})), anomalies:[...(Array.isArray(c.ai?.anomalies)?c.ai.anomalies:[]),...(c.source?.weekInference?['周次按提交日期推定，请核实补交或跨周汇报的归属']:[]),...missing.map(x=>`缺失：${x}`),...(!valid?['缺少有效的四模块候选分']:[]),...(submitted&&!Number.isFinite(ts)?['提交时间无法解析']:[])], suggestions:c.ai?.summary|| (missing.length?'请补齐缺失模块，并由主管核实事实与结果。':'请主管核实成果证据、问题影响和计划可验证性。')};
+      return {...r,status,schedule,scoringPolicy:policy,...(qualityAssessment&&!refreshPending?{qualityAssessment}:{}),...(qualityRefresh?{qualityRefresh,displayQualityScore:refreshPending?previousQualityScore:null,...(refreshPending&&previousQualityScore!==null?{qualityDisplaySource:'previous',previousQualityVersion:previous.ai.version||previous.aiPromptVersion||previous.promptVersion||'legacy',previousScoringWeights:previous.scoringWeights||policy.weights,...(previousQualityAssessment?{previousQualityAssessment}:{})}: {})}:{}), month:monthOf(r.end), submitted, timestampUnknown:submitted&&!Number.isFinite(ts),late,onTime:submitted&&!schedule.exempt&&!schedule.calendarPending&&Number.isFinite(ts)&&ts<=deadline, candidate, missing, evidence:sections.map(([key])=>({module:key,text:c[key]||''})), anomalies:[...(Array.isArray(c.ai?.anomalies)?c.ai.anomalies:[]),...(c.source?.weekInference?['周次按提交日期推定，请核实补交或跨周汇报的归属']:[]),...missing.map(x=>`缺失：${x}`),...(!valid?['缺少有效的四模块候选分']:[]),...(submitted&&!Number.isFinite(ts)?['提交时间无法解析']:[])], suggestions:c.ai?.summary|| (missing.length?'请补齐缺失模块，并由主管核实事实与结果。':'请主管核实成果证据、问题影响和计划可验证性。')};
     });
   }
   async function reports(options={}) {
@@ -228,10 +231,10 @@ WHERE COALESCE((SELECT calculation_hash FROM automatic_performance_results WHERE
     const employees=[...directory.values()];
     const monthly=[];
     for(const month of months) for(const employee of employees){
-      if(!employedInMonth(employee.employmentPeriods,month)&&!results.some(r=>r.month===month&&r.employee_user_id===employee.userId))continue;
+      const employeeReports=rs.filter(r=>r.employeeUserId===employee.userId&&r.month===month);
+      if(!employedInMonth(employee.employmentPeriods,month)&&!results.some(r=>r.month===month&&r.employee_user_id===employee.userId)&&!employeeReports.some(r=>legacyReportScore(r.content)!==null))continue;
       const monthPolicy=await readPolicy(month);
       const weeks=periods.filter(p=>{const schedule=weeklyReportSchedule(p.end,calendar?.()||{},monthPolicy.deadlineTime);return monthOf(p.end)===month&&(!calendar||p.start>=coverageStart)&&employedOn(employee.employmentPeriods,schedule.deadlineDate)&&!schedule.exempt&&Date.parse(schedule.dueAt)<=now().getTime()&&!(p.exempt_people||[]).includes(employee.name);});
-      const employeeReports=rs.filter(r=>r.employeeUserId===employee.userId&&r.month===month);
       const counted=employeeReports.filter(r=>employedOn(employee.employmentPeriods,r.schedule.deadlineDate)&&!r.schedule.exempt&&!(periods.find(p=>p.end===r.end)?.exempt_people||[]).includes(employee.name)),expected=new Set([...weeks.map(p=>p.end),...counted.map(r=>r.end)]).size;
       const submitted=counted.filter(r=>r.submitted).length;
       const onTime=counted.filter(r=>r.onTime).length;

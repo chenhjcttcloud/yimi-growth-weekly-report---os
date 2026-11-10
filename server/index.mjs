@@ -327,7 +327,7 @@ async function route(req, res) {
         else if(url.pathname==='/api/system-settings/features')await systemSettings.saveFeatures(body,userForPolicy);
         else return sendJson(res,404,{ok:false,error:'not_found'});
         return sendJson(res,200,{ok:true});
-      }catch(error){return sendJson(res,400,{ok:false,error:['invalid_event_config','event_credentials_required','invalid_integration_features','invalid_report_config','report_secret_required','future_cycle_required','invalid_weights','invalid_deadline','invalid_reminder_hours','policy_version_exists','invalid_ai_url','invalid_ai_model','invalid_monthly_reminders','feishu_required','invalid_report_automation','invalid_ai_request_limit','ai_required'].includes(error.message)?error.message:'settings_save_failed'});}
+      }catch(error){return sendJson(res,400,{ok:false,error:['invalid_event_config','event_credentials_required','invalid_integration_features','invalid_report_config','report_secret_required','future_cycle_required','invalid_weights','invalid_deadline','invalid_reminder_hours','policy_version_exists','invalid_ai_url','invalid_ai_model','invalid_monthly_reminders','feishu_required','invalid_report_automation','invalid_ai_request_limit','invalid_report_scoring_start_month','ai_required'].includes(error.message)?error.message:'settings_save_failed'});}
     }
     return sendJson(res,404,{ok:false,error:'not_found'});
   }
@@ -2978,6 +2978,7 @@ async function startLarkReportSync(req, res) {
   const body = await readJsonBody(req, { limitBytes: 30_000 });
   if(body.mode!==undefined&&!['sync','rescore'].includes(body.mode))return sendJson(res,400,{ok:false,error:'invalid_sync_mode'});
   if(body.mode==='rescore'&&(!/^\d{4}-(0[1-9]|1[0-2])$/.test(body.targetMonth||'')||body.targetMonth>new Intl.DateTimeFormat('sv-SE',{timeZone:'Asia/Shanghai'}).format(new Date()).slice(0,7)))return sendJson(res,400,{ok:false,error:'invalid_rescore_month'});
+  if(body.mode==='rescore'&&body.targetMonth<(await systemSettings.reportAutomationConfig()).scoringStartMonth)return sendJson(res,400,{ok:false,error:'rescore_before_start_month'});
   const started = await enqueueLarkReportSync({
     source: "manual",
     mode: body.mode,

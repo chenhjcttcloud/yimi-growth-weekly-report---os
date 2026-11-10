@@ -6,6 +6,12 @@ export const reportFacts = content => ({
  nextPlan:content?.nextPlan||content?.['下周计划摘要']||'',
  reflection:content?.reflection||content?.['思考与复盘摘要']||'',
 });
+export function legacyReportScore(content){
+ if(content?.source?.provider!=='legacy-reportos')return null;
+ const saved=content['总分'];
+ const score=typeof saved==='string'&&/^\d+(?:\.\d+)?$/.test(saved)?Number(saved):saved;
+ return Number.isFinite(score)&&score>=0&&score<=100?score:null;
+}
 const scoresValid = ai => Array.isArray(ai?.scores)&&ai.scores.length===4&&ai.scores.every(score=>typeof score==='number'&&Number.isFinite(score)&&score>=0&&score<=100)&&typeof ai.summary==='string'&&Boolean(ai.summary.trim());
 export function usableQuality(ai,facts){
  if(!scoresValid(ai))return false;

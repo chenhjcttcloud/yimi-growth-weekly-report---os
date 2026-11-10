@@ -22,6 +22,7 @@ const server=createServer(async(request,response)=>{
 await new Promise(resolve=>server.listen(0,'127.0.0.1',resolve));
 const base='http://127.0.0.1:'+server.address().port;
 let state=null,running=false,busyOnNextPost=false,failOnNextPost=false,browser;
+let scoringStartMonth;
 const posts=[],errors=[],unexpected=[];
 const snapshot=(values={})=>({mode:'rescore',targetMonth:'2026-10',rowCount:4,analyzed:0,failed:0,cached:1,remaining:3,active:0,phase:'queued',running:true,...values});
 try{
@@ -31,7 +32,7 @@ try{
  await context.route('**/*',async route=>{
   const url=new URL(route.request().url());if(url.origin!==base){unexpected.push(url.origin);return route.abort();}
   if(!url.pathname.startsWith('/api/'))return route.continue();
-  if(url.pathname==='/api/system-settings/report-automation'&&route.request().method()==='GET')return route.fulfill({status:200,json:{config:{enabled:true,intervalMinutes:15,feishuConfigured:true,aiConfigured:true},lastAttemptAt:null,nextCheckAt:null,running,lastStatus:'idle'}});
+  if(url.pathname==='/api/system-settings/report-automation'&&route.request().method()==='GET')return route.fulfill({status:200,json:{config:{enabled:true,intervalMinutes:15,feishuConfigured:true,aiConfigured:true,scoringStartMonth},lastAttemptAt:null,nextCheckAt:null,running,lastStatus:'idle'}});
   if(url.pathname==='/api/lark-report-sync'){
    if(route.request().method()==='GET')return route.fulfill({status:200,json:{ok:true,status:state,processRunning:running}});
    const payload=route.request().postDataJSON();posts.push(payload);assert.deepEqual(Object.keys(payload).sort(),['mode','targetMonth']);assert.equal(payload.mode,'rescore');
@@ -81,6 +82,14 @@ try{
  await refresh.click();await panel.getByText('上次任务已中断，可继续补跑',{exact:true}).waitFor();assert(await start.isEnabled(),'a stale persisted running status must not lock retries after restart');assert.equal(await panel.locator('.report-rescore-progress dd').nth(4).innerText(),'0');assert.equal(posts.length,3);
  state=snapshot({running:false,phase:'interrupted',analyzed:2,cached:1,remaining:1,active:0,diagnostics:[{weekEnd:'2026-10-16',code:'upstream_rate_limit',path:'$',attempt:4}]});
  await refresh.click();await panel.getByText('上次任务已中断，可继续补跑',{exact:true}).waitFor();assert(await start.isEnabled(),'an explicitly interrupted status also offers continuation after startup recovery');assert((await panel.innerText()).includes('当前阶段：待续跑'));assert.equal(posts.length,3);
+ scoringStartMonth='2026-11';
+ await page.reload();
+ await panel.locator('input[min="2026-11"]').waitFor();
+ assert.equal(await page.getByLabel('AI 评分起始月').inputValue(),'2026-11');
+ assert.equal(await monthInput.inputValue(),'2026-11','default month respects the saved scoring cutoff');
+ await monthInput.fill('2026-10');
+ assert(await start.isDisabled(),'the manual rescore UI excludes older months');
+ assert.equal(posts.length,3);
  assert.equal(await page.getByRole('button',{name:/确认质量分|审核通过/}).count(),0);assert.deepEqual(errors,[]);assert.deepEqual(unexpected,[]);
  const result={ok:true,previousMonthDefault:true,explicitMonthScopedPosts:true,openingAndRefreshReadOnly:true,cachedAndFailedProgressVisible:true,safeDiagnosticsVisible:true,rateLimitWaitVisible:true,quotaPauseKeepsRemaining:true,excessiveRetryDelayPauses:true,oldScorePreservationExplained:true,busy409NoDuplicateStart:true,failedStartKeepsMonth:true,completedProgressVisible:true,interruptedTaskRetryAvailable:true,noHumanApproval:true,mobileNoOverflow:true,providerRequests:0,businessDataWrites:0,artifacts:dir};
  await writeFile(dir+'/result.json',JSON.stringify(result,null,2));console.log(JSON.stringify(result));

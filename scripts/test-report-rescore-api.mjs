@@ -70,6 +70,14 @@ try{
  assert.equal((await call('GET',undefined,'admin')).status,200,'configured administrator retains the existing shared management access');assert.equal((await call('POST',{mode:'rescore',targetMonth:'2026-13'},'admin')).status,400);
  for(const targetMonth of [undefined,null,'2026-00','2026-13','2026-1','2026-10-01','2099-01']){const invalid=await call('POST',{mode:'rescore',targetMonth});assert.equal(invalid.status,400);assert.equal(invalid.body.error,'invalid_rescore_month');}
  assert.equal((await call('POST',{mode:'unexpected',targetMonth:'2026-10'})).status,400);
+ const automationRoute='/api/system-settings/report-automation';
+ assert.equal((await call('GET',undefined,'admin',automationRoute)).body.config.scoringStartMonth,'2026-11');
+ const rejectedHistory=await call('POST',{mode:'rescore',targetMonth:'2026-10'});
+ assert.equal(rejectedHistory.status,400);
+ assert.equal(rejectedHistory.body.error,'rescore_before_start_month');
+ const historicalFixtureSettings={enabled:false,intervalMinutes:15,scoringStartMonth:'2026-10'};
+ assert.equal((await call('POST',{...historicalFixtureSettings,scoringStartMonth:'2026-13'},'admin',automationRoute)).body.error,'invalid_report_scoring_start_month');
+ assert.equal((await call('POST',historicalFixtureSettings,'admin',automationRoute)).status,200);
  assert.equal((await providerCalls()).length,0,'authorization and validation never start a model or Feishu request');
  const start=await call('POST',{mode:'rescore',targetMonth:'2026-10'});assert.equal(start.status,202);
  const busy=await call('POST',{mode:'rescore',targetMonth:'2026-10'});assert.equal(busy.status,409);assert.equal(busy.body.alreadyRunning,true);
