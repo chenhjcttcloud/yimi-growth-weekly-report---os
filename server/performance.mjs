@@ -218,7 +218,8 @@ WHERE COALESCE((SELECT calculation_hash FROM automatic_performance_results WHERE
       for(const month of new Set([current,...[...periodMap.keys()].map(monthOf)]))for(const end of monthFridays(month))if(![...periodMap.values()].some(p=>p.start<=end&&p.end>=end))periodMap.set(end,{start:shiftDate(end,-4),end});
     }
     const periods=[...periodMap.values()];
-    const months=[...new Set([...periods.map(p=>monthOf(p.end)),...rs.map(r=>r.month),...collaborations.map(c=>c.month),...managerState.scores.map(s=>s.month),...managerState.bossScores.map(s=>s.month),...publicationMonths.map(r=>r.month)])].filter(m=>/^\d{4}-\d{2}$/.test(m)).sort().reverse();
+    const ratingMonths=[...managerState.scores,...managerState.bossScores,...(managerState.bossPersonScores||[])].map(score=>score.month);
+    const months=[...new Set([...periods.map(p=>monthOf(p.end)),...rs.map(r=>r.month),...collaborations.map(c=>c.month),...ratingMonths,...publicationMonths.map(r=>r.month)])].filter(m=>/^\d{4}-\d{2}$/.test(m)).sort().reverse();
     const directory = new Map((data.employee_summary||[]).filter(e=>!userId||e.user_id===userId).map(e=>[e.user_id,{name:e['姓名'],department:e['部门'],userId:e.user_id}]));
     const roster=await query(`SELECT user_id,name,department,is_active FROM employees${userId?` WHERE user_id=${sql(userId)}`:''};`);
     const servicePeriods=await query(`SELECT * FROM employee_employment_periods${userId?` WHERE employee_user_id=${sql(userId)}`:''};`);
@@ -252,7 +253,15 @@ WHERE COALESCE((SELECT calculation_hash FROM automatic_performance_results WHERE
     for(const row of monthly.filter(r=>r.collaborationComplete)) {
       if(results.some(r=>r.month===row.month&&r.employee_user_id===row.userId&&r.kind==='collaboration'))continue;
       const snapshot={...row,publicationMode:'weighted_30_70',reviewNote:'负责人或老板评分30%＋同事互评70%，两部分完成后自动发布',reviewer:'系统自动发布'};
-      await exec(`INSERT OR IGNORE INTO monthly_person_weighted_results(month,employee_user_id,employee_name,kind,result_json,evidence_json,confirmed_by,confirmed_at) VALUES(${sql(row.month)},${sql(row.userId)},${sql(row.name)},'collaboration',${sql(JSON.stringify({score:row.collaborationCandidate,peerScore:row.peerCandidate,managerScore:row.managerProgress.score,weights:{manager:30,peers:70}}))},${sql(JSON.stringify(snapshot))},'系统自动发布',datetime('now'));`);
+      const match=`month=${sql(row.month)} AND employee_user_id=${sql(row.userId)}`;
+      const {kind,expectedIds}=row.managerProgress;
+      const usesPersonScore=kind==='boss'&&expectedIds.length===1&&expectedIds[0]==='';
+      const personScoreGuard=usesPersonScore?'':`AND NOT EXISTS(SELECT 1 FROM boss_person_scores WHERE month=${sql(row.month)} AND leader_user_id=${sql(row.userId)})`;
+      await exec(`INSERT OR IGNORE INTO monthly_person_weighted_results(month,employee_user_id,employee_name,kind,result_json,evidence_json,confirmed_by,confirmed_at)
+SELECT ${sql(row.month)},${sql(row.userId)},${sql(row.name)},'collaboration',${sql(JSON.stringify({score:row.collaborationCandidate,peerScore:row.peerCandidate,managerScore:row.managerProgress.score,weights:{manager:30,peers:70}}))},${sql(JSON.stringify(snapshot))},'系统自动发布',datetime('now')
+WHERE NOT EXISTS(SELECT 1 FROM all_monthly_weighted_results WHERE ${match})
+ AND NOT EXISTS(SELECT 1 FROM performance_results WHERE ${match} AND kind='collaboration')
+ ${personScoreGuard};`);
     }
     return {months,employees,monthly,collaborations,results:await confirmed(clientSummary,userId)};
   }

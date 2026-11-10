@@ -1,7 +1,7 @@
 import {randomUUID,createHash} from 'node:crypto';
 import {employedInMonth} from './employee-lifecycle.mjs';
 export const departmentNames=value=>[...new Set(String(value||'').split(/[,，、]|\s+\/\s+/).map(x=>x.trim()).filter(Boolean))];
-export function createDepartments({query,exec,sql,employees,beforeScore,resolveScoreTarget}) {
+export function createDepartments({query,exec,sql,employees,beforeScore,resolveScoreTarget,resolveLeaderScoreTarget}) {
  let layoutSaving=false;
  const removed=async id=>(await query(`SELECT 1 FROM feishu_department_sync_states WHERE department_id=${sql(id)} AND state='deleted';`)).length>0;
  const leaderName=(d,roster)=>!d.leader_user_id?'':d.feishu_id?(d.synced_leader_name||roster.find(e=>e.userId===d.leader_user_id)?.name||''):(roster.find(e=>e.userId===d.leader_user_id)?.name||'');
@@ -13,7 +13,8 @@ export function createDepartments({query,exec,sql,employees,beforeScore,resolveS
   for(const name of [...new Set(roster.flatMap(e=>departmentNames(e.department)))].filter(n=>!aliases.has(n)))await exec(`INSERT OR IGNORE INTO organization_departments(id,name,updated_at) VALUES(${sql(randomUUID())},${sql(name)},datetime('now'));`);
   const all=await query("SELECT d.*,COALESCE(h.parent_id,'') AS parent_id,f.open_department_id AS feishu_id,f.leader_name AS synced_leader_name,f.member_count AS feishu_member_count,f.synced_at,f.aliases_json,COALESCE(l.sort_order,0) AS sort_order,COALESCE(l.leader_mode,'primary') AS leader_mode,CASE WHEN s.state='deleted' THEN 0 ELSE COALESCE(l.is_active,1) END AS is_active,s.state AS feishu_sync_state,s.reason AS removalReason,s.deleted_at AS removedAt,s.display_name AS archived_name,l.aliases_json AS local_aliases_json,l.department_id AS local_override FROM organization_departments d LEFT JOIN department_hierarchy h ON h.department_id=d.id LEFT JOIN feishu_department_links f ON f.department_id=d.id LEFT JOIN department_local_settings l ON l.department_id=d.id LEFT JOIN feishu_department_sync_states s ON s.department_id=d.id ORDER BY sort_order,d.name;");
   for(const d of all){d.sort_order=Number(d.sort_order);d.is_active=Number(d.is_active);d.feishu_deleted=d.feishu_sync_state==='deleted';if(d.feishu_deleted&&d.archived_name)d.name=d.archived_name;d.aliases_json=JSON.stringify([...new Set([...JSON.parse(d.aliases_json||'[]'),...JSON.parse(d.local_aliases_json||'[]')])]);}
-  const scores=await query('SELECT * FROM all_department_leader_scores ORDER BY month DESC;');
+  const scoreRows=await query('SELECT * FROM all_department_leader_scores ORDER BY month DESC;');
+  const scores=scoreRows.filter(score=>score.department_id!==''),personScores=scoreRows.filter(score=>score.department_id==='').map(({department_id,...score})=>score);
   // Hide only unused composite labels produced by the old automatic importer; retain their records.
   const archivedDepartments=all.filter(d=>d.feishu_deleted);
   const departments=all.filter(d=>!d.feishu_deleted).filter(d=>departmentNames(d.name).length<=1||d.leader_user_id||d.parent_id||all.some(x=>x.parent_id===d.id)||scores.some(x=>x.department_id===d.id));
@@ -24,7 +25,7 @@ export function createDepartments({query,exec,sql,employees,beforeScore,resolveS
    const names=departmentNames(e.department),direct=departments.filter(d=>names.includes(d.name)||e.department===d.name||JSON.parse(d.aliases_json||'[]').some(n=>names.includes(n))).map(d=>d.id),ids=new Set(direct);
    for(const id of direct){let p=departments.find(d=>d.id===id)?.parent_id;const visited=new Set([id]);while(p&&!visited.has(p)){visited.add(p);ids.add(p);p=departments.find(d=>d.id===p)?.parent_id;}}
    return {...e,directDepartmentIds:direct,departmentIds:[...ids]};
-  }),scores};
+  }),scores,personScores};
  }
  async function save(body){
   if(body.id&&await removed(body.id))throw Error('department_removed');
@@ -80,35 +81,55 @@ export function createDepartments({query,exec,sql,employees,beforeScore,resolveS
  }
  async function score(body,user){
   if(!/^\d{4}-(0[1-9]|1[0-2])$/.test(body.month||'')||body.month>new Date().toLocaleDateString('sv-SE',{timeZone:'Asia/Shanghai'}).slice(0,7))throw Error('invalid_month');
-  if(await removed(body.departmentId))throw Error('department_removed');
+  const departmentId=body.departmentId;
+  if(departmentId&&await removed(departmentId))throw Error('department_removed');
   const value=Number(body.score),comment=String(body.comment||'').trim();
   if(body.score===''||body.score==null||!Number.isFinite(value)||value<0||value>100||!comment||comment.length>4000)throw Error('score_and_comment_required');
-  const current=(await query(`SELECT * FROM organization_departments WHERE id=${sql(body.departmentId)};`))[0],target=await resolveScoreTarget?.(body.month,body.departmentId),department=current?{...current,leader_user_id:target?.leaderUserId||current.leader_user_id}:null;
-  if(!department?.leader_user_id)throw Error('department_leader_required');
-  if(body.leaderUserId&&body.leaderUserId!==department.leader_user_id)throw Error('rating_responsibility_changed');
-  if(department.leader_user_id===user.userId)throw Error('self_scoring_forbidden');
-  const leader=(await overview()).employees.find(e=>e.userId===department.leader_user_id);
-  const source=(await query(`SELECT raw_json FROM feishu_department_links WHERE department_id=${sql(department.id)};`))[0];
-  const officialLeader=source&&JSON.parse(source.raw_json).leader_user_id===department.leader_user_id;
-  if(!leader){const identity=(await query(`SELECT is_active FROM employees WHERE user_id=${sql(department.leader_user_id)};`))[0];throw Error(identity&&Number(identity.is_active)===0?'leader_inactive':'leader_not_registered');}
+  const rounded=Math.round(value*10)/10;
+  const data=await overview(),department=departmentId?data.departments.find(d=>d.id===departmentId):undefined;
+  const leaderId=departmentId?department?.leader_user_id:body.leaderUserId;
+  if(typeof leaderId!=='string'||!leaderId)throw Error('department_leader_required');
+  if(body.leaderUserId&&body.leaderUserId!==leaderId)throw Error('rating_responsibility_changed');
+  if(leaderId===user.userId)throw Error('self_scoring_forbidden');
+  const leader=data.employees.find(e=>e.userId===leaderId);
+  if(!leader){const identity=(await query(`SELECT is_active FROM employees WHERE user_id=${sql(leaderId)};`))[0];throw Error(identity&&Number(identity.is_active)===0?'leader_inactive':'leader_not_registered');}
   const periods=await query(`SELECT * FROM employee_employment_periods WHERE employee_user_id=${sql(leader.userId)};`);
   if(periods.length&&!employedInMonth(periods,body.month))throw Error('employee_not_employed');
-  if(target?.ratingRequired===false)throw Error('rating_scope_frozen');
-  const local=(await query(`SELECT leader_mode,is_active FROM department_local_settings WHERE department_id=${sql(department.id)};`))[0];
-  if(local&&Number(local.is_active)===0)throw Error('department_inactive');
-  if(!target?.frozen&&!leader.departmentIds.includes(department.id)&&!officialLeader&&local?.leader_mode!=='concurrent')throw Error('leader_must_be_department_member');
-  if((await query(`SELECT 1 FROM all_department_leader_scores WHERE department_id=${sql(department.id)} AND month=${sql(body.month)} AND leader_user_id=${sql(department.leader_user_id)};`)).length)throw Error('result_locked');
-  await beforeScore?.(body.month,leader.userId);
-  // Recheck suspension in the write itself: either account can be stopped while
-  // the monthly scope is loading. Injected external rosters remain supported;
-  // normal runtime rosters are backed by employees, whose stopped rows survive.
-  await exec(`INSERT INTO department_person_scores SELECT ${sql(department.id)},${sql(body.month)},${sql(department.leader_user_id)},${value},${sql(comment)},${sql(user.userId)},${sql(user.name)},datetime('now') WHERE NOT EXISTS(SELECT 1 FROM employees WHERE user_id IN(${sql(department.leader_user_id)},${sql(user.userId)}) AND is_active<>1);`);
-  const saved=await query(`SELECT 1 FROM department_person_scores WHERE department_id=${sql(department.id)} AND month=${sql(body.month)} AND leader_user_id=${sql(department.leader_user_id)} AND scorer_user_id=${sql(user.userId)} AND score=${value} AND comment=${sql(comment)};`);
-  if(!saved.length){
-   if((await query(`SELECT 1 FROM employees WHERE user_id=${sql(department.leader_user_id)} AND is_active<>1;`)).length)throw Error('leader_inactive');
-   if((await query(`SELECT 1 FROM employees WHERE user_id=${sql(user.userId)} AND is_active<>1;`)).length)throw Error('account_inactive');
-   throw Error('result_locked');
+  if(department?.is_active===0)throw Error('department_inactive');
+  if(data.personScores.some(s=>s.month===body.month&&s.leader_user_id===leaderId))throw Error('result_locked');
+  const led=data.departments.filter(d=>d.leader_user_id===leaderId&&d.is_active!==0);
+  const target=await resolveLeaderScoreTarget?.(body.month,leaderId);
+  if(target?.unavailableReason==='result_locked')throw Error('result_locked');
+  if(target?.unavailableReason==='department_inactive')throw Error('department_inactive');
+  if(!led.length||resolveLeaderScoreTarget&&!target?.ratingRequired)throw Error('rating_scope_frozen');
+  if(!resolveLeaderScoreTarget&&resolveScoreTarget){
+   const legacyTarget=await resolveScoreTarget(body.month,department?.id||led[0].id);
+   if(legacyTarget?.ratingRequired===false)throw Error('rating_scope_frozen');
   }
+  const candidates=department?[department]:led;
+  const eligibleDepartments=candidates.filter(d=>leader.departmentIds.includes(d.id)||d.leader_mode==='concurrent');
+  const officialDepartments=candidates.filter(d=>d.feishu_id&&!eligibleDepartments.includes(d));
+  if(officialDepartments.length){
+   const trusted=await query(`SELECT department_id FROM feishu_department_links WHERE department_id IN(${officialDepartments.map(d=>sql(d.id)).join(',')}) AND json_extract(raw_json,'$.leader_user_id')=${sql(leaderId)};`);
+   eligibleDepartments.push(...officialDepartments.filter(d=>trusted.some(row=>row.department_id===d.id)));
+  }
+  if(!eligibleDepartments.length)throw Error('leader_must_be_department_member');
+  await beforeScore?.(body.month,leader.userId);
+  // Verify that the organization and accounts still permit scoring at write time.
+  // The empty scope key is reserved for a single rating per person and month.
+  const scope=`EXISTS(SELECT 1 FROM organization_departments d LEFT JOIN department_local_settings l ON l.department_id=d.id LEFT JOIN feishu_department_sync_states s ON s.department_id=d.id WHERE d.leader_user_id=${sql(leaderId)} AND d.id IN(${eligibleDepartments.map(d=>sql(d.id)).join(',')}) AND COALESCE(l.is_active,1)=1 AND COALESCE(s.state,'')<>'deleted')`;
+  try{
+   await exec(`INSERT INTO department_person_scores(department_id,month,leader_user_id,score,comment,scorer_user_id,scorer_name,created_at)
+    SELECT '',${sql(body.month)},${sql(leaderId)},${rounded},${sql(comment)},${sql(user.userId)},${sql(user.name)},datetime('now')
+    WHERE ${scope} AND NOT EXISTS(SELECT 1 FROM employees WHERE user_id IN(${sql(leaderId)},${sql(user.userId)}) AND is_active<>1);`);
+  }catch(error){if(/result_locked|UNIQUE constraint failed: department_person_scores/.test(error.message))throw Error('result_locked');throw error;}
+  const saved=await query(`SELECT 1 FROM boss_person_scores WHERE month=${sql(body.month)} AND leader_user_id=${sql(leaderId)} AND scorer_user_id=${sql(user.userId)} AND score=${rounded} AND comment=${sql(comment)};`);
+  if(!saved.length){
+   if((await query(`SELECT 1 FROM employees WHERE user_id=${sql(leaderId)} AND is_active<>1;`)).length)throw Error('leader_inactive');
+   if((await query(`SELECT 1 FROM employees WHERE user_id=${sql(user.userId)} AND is_active<>1;`)).length)throw Error('account_inactive');
+   throw Error('rating_responsibility_changed');
+  }
+  return leaderId;
  }
  async function dashboard(month,performance){
   const current=new Date().toLocaleDateString('sv-SE',{timeZone:'Asia/Shanghai'}).slice(0,7);
@@ -132,8 +153,14 @@ export function createDepartments({query,exec,sql,employees,beforeScore,resolveS
    return {headcount:members.length,expected,submitted,onTime,late:sum('late'),missing:sum('missing'),submissionRate:expected?Math.round(submitted/expected*1000)/10:null,onTimeRate:expected?Math.round(onTime/expected*1000)/10:null,quality:average(result('quality')),collaboration:average(result('collaboration')),qualityPublished:result('quality').length,collaborationPublished:result('collaboration').length,qualityReference:average(rows.flatMap(r=>r.reports.filter(x=>x.submitted&&x.candidate!==null).map(x=>x.candidate))),pendingRatings:rows.filter(r=>r.collaborationExpected>r.collaborationSubmitted).length};
   }
   const months=[...new Set([current,...performance.months])].filter(m=>m<=current).sort().reverse();
-  return {...data,month,months,departments:data.departments.map(d=>({...d,members:data.employees.filter(e=>e.departmentIds.includes(d.id)),metrics:summarize(d,month),trend:months.filter(m=>m<=month).slice(0,6).map(m=>({month:m,...summarize(d,m)})),leaderScore:data.scores.find(s=>s.department_id===d.id&&s.month===month&&s.leader_user_id===d.leader_user_id)||null})),memberCount:data.employees.filter(e=>e.departmentIds.length>0).length,multiDepartmentCount:data.employees.filter(e=>e.directDepartmentIds.length>1).length};
+  const personScoresByLeader=new Map(data.personScores.filter(s=>s.month===month).map(s=>[s.leader_user_id,{...s,scope:'person'}]));
+  return {...data,month,months,departments:data.departments.map(d=>({...d,members:data.employees.filter(e=>e.departmentIds.includes(d.id)),metrics:summarize(d,month),trend:months.filter(m=>m<=month).slice(0,6).map(m=>({month:m,...summarize(d,m)})),leaderScore:personScoresByLeader.get(d.leader_user_id)||data.scores.find(s=>s.department_id===d.id&&s.month===month&&s.leader_user_id===d.leader_user_id)||null})),memberCount:data.employees.filter(e=>e.departmentIds.length>0).length,multiDepartmentCount:data.employees.filter(e=>e.directDepartmentIds.length>1).length};
  }
- async function personal(user){return query(`SELECT s.month,s.score,COALESCE(NULLIF(f.display_name,''),d.name) AS department,s.created_at FROM all_department_leader_scores s JOIN organization_departments d ON d.id=s.department_id LEFT JOIN feishu_department_sync_states f ON f.department_id=d.id WHERE s.leader_user_id=${sql(user.userId)} ORDER BY s.month DESC;`);}
+ async function personal(user){return query(`
+  SELECT s.month,s.score,COALESCE(NULLIF(f.display_name,''),d.name) AS department,s.created_at
+  FROM all_department_leader_scores s JOIN organization_departments d ON d.id=s.department_id LEFT JOIN feishu_department_sync_states f ON f.department_id=d.id
+  WHERE s.leader_user_id=${sql(user.userId)} AND NOT EXISTS(SELECT 1 FROM boss_person_scores p WHERE p.month=s.month AND p.leader_user_id=s.leader_user_id)
+  UNION ALL SELECT p.month,p.score,'负责人综合评分' AS department,p.created_at FROM boss_person_scores p WHERE p.leader_user_id=${sql(user.userId)}
+  ORDER BY month DESC;`);}
   return {overview,save,saveLayout,score,personal,dashboard};
 }

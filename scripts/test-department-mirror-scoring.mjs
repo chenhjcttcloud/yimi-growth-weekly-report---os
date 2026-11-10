@@ -48,20 +48,23 @@ const oldWorkbench=await wb.overview('2026-10');
 run("UPDATE feishu_department_sync_states SET state='deleted',reason='confirmed_absent',deleted_at='2026-10-30T02:01:00Z',checked_at='2026-10-30T02:01:00Z' WHERE department_id IN ('b','d');");
 
 let state=await reviews.snapshot(),progress=reviews.progress(state,'2026-10','head');
-assert.deepEqual(progress.expectedIds,['a','b']);
-assert.equal(progress.expected,2);assert.equal(progress.submitted,1);assert.equal(progress.complete,false);assert.equal(progress.score,null);
-assert.deepEqual(progress.blockedDepartmentIds,['b']);assert.equal(progress.departmentReviewBlocked,true);
-assert.deepEqual(progress.records.map(row=>row.department_id),['a']);
+assert.deepEqual(progress.expectedIds,['']);
+assert.equal(progress.expected,1);assert.equal(progress.submitted,0);assert.equal(progress.complete,false);assert.equal(progress.score,null);
+assert(!progress.blockedDepartmentIds,'an archived department does not block an eligible person rating');
+assert.deepEqual(progress.records,[],'a partial legacy rating does not count as a new person score');
 assert(!state.plans.get('head').expectedIds.includes('b'),'new organizational plans must not include an archived department');
 assert.deepEqual(state.archivedDepartments.map(d=>d.id),['b','d']);
 const completed=reviews.progress(state,'2026-10','published');
 assert.equal(completed.complete,true);assert.equal(completed.score,80);assert.deepEqual(completed.expectedIds,['c','d']);
 assert(!completed.blockedDepartmentIds,'already-submitted archived records do not block a complete historical result');
 assert(!(await reviews.bossTargets('2026-10')).scoreTargets.some(row=>['b','d'].includes(row.departmentId)),'removed departments cannot create new score targets');
+const personTargets=(await reviews.bossTargets('2026-10')).leaderScoreTargets;
+assert.equal(personTargets.find(target=>target.leaderUserId==='head').ratingRequired,true);
+assert.equal(personTargets.find(target=>target.leaderUserId==='published').legacyScore,80);
 
 const changedWorkbench=await wb.overview('2026-10');
 assert.notEqual(changedWorkbench.revision,oldWorkbench.revision,'archive state must invalidate the scoring configuration revision');
-assert(changedWorkbench.checks.some(issue=>issue.userId==='head'&&issue.type==='department'));
+assert(!changedWorkbench.checks.some(issue=>issue.userId==='head'&&issue.type==='department'));
 await assert.rejects(()=>wb.mutate({month:'2026-10',revision:oldWorkbench.revision,action:'saveEmployee',employeeUserId:'head',evaluatorUserIds:['peer']},{userId:'boss',name:'测试老板'}),/setup_changed/);
 run("UPDATE feishu_department_sync_states SET checked_at='2026-10-30T02:02:00Z' WHERE department_id='b';");
 assert.equal((await wb.overview('2026-10')).revision,changedWorkbench.revision,'a timestamp-only recheck does not invalidate edits');
@@ -73,12 +76,18 @@ assert.equal(run('SELECT * FROM monthly_review_plans ORDER BY employee_user_id;'
 assert.equal(run('SELECT * FROM department_person_scores ORDER BY department_id;'),scoresBefore);
 assert.equal(run('SELECT * FROM all_monthly_weighted_results ORDER BY employee_user_id;'),publishedBefore);
 
+run("INSERT INTO department_person_scores VALUES('','2026-10','head',86,'本月综合评价','boss','测试老板','2026-10-30T02:03:00Z');");
+await performance.overview();
+assert.equal((await performance.personal('待完成负责人','head')).history.find(row=>row.month==='2026-10').collaboration,74.8);
+assert.equal((await performance.personal('已完成负责人','published')).history.find(row=>row.month==='2026-10').collaboration,73);
+assert.equal(run("SELECT * FROM department_person_scores WHERE department_id<>'' ORDER BY department_id;"),scoresBefore);
+
 now=new Date('2026-11-02T02:00:00Z');state=await reviews.snapshot();progress=reviews.progress(state,'2026-11','head');
-assert.deepEqual(progress.expectedIds,['a']);assert.equal(progress.frozen,false);assert.equal(progress.expected,1);
+assert.deepEqual(progress.expectedIds,['']);assert.equal(progress.frozen,false);assert.equal(progress.expected,1);
 assert(!(await reviews.bossTargets('2026-11')).scoreTargets.some(row=>['b','d'].includes(row.departmentId)));
-assert.equal(reviews.progress(state,'2026-10','head').expected,2,'old frozen scope remains intact when viewing a new month');
+assert.equal(reviews.progress(state,'2026-10','head').score,86,'the prior month retains its person rating');
 assert.equal(run('SELECT count(*) FROM organization_departments;'),'4','all department identity rows are retained');
 assert.equal(run('SELECT count(*) FROM monthly_score_reminder_deliveries;'),'0');
 assert.equal(run('PRAGMA integrity_check;'),'ok');
-const result={ok:true,frozenDenominatorPreserved:true,ungradedArchiveDoesNotCompleteMonth:true,archivedPendingIdentified:true,newTargetsExcludeArchived:true,completedScoreAndWeightedHistoryPreserved:true,newMonthUsesCurrentOrganization:true,plansAndScoresUnchanged:true,archiveStateInvalidatesRevision:true,recheckTimestampDoesNotInvalidateRevision:true,staleRevisionBlocked:true,departmentRowsRetained:true,realMessagesSent:0,externalRequests:0,artifacts:dir};
+const result={ok:true,ungradedArchiveDoesNotCompleteMonth:true,onePendingPersonRating:true,personRatingSupersedesPartialLegacy:true,newTargetsExcludeArchived:true,completedScoreAndWeightedHistoryPreserved:true,newMonthUsesCurrentOrganization:true,legacyPlansAndScoresUnchanged:true,archiveStateInvalidatesRevision:true,recheckTimestampDoesNotInvalidateRevision:true,staleRevisionBlocked:true,departmentRowsRetained:true,realMessagesSent:0,externalRequests:0,artifacts:dir};
 await writeFile(dir+'/result.json',JSON.stringify(result,null,2));console.log(JSON.stringify(result));

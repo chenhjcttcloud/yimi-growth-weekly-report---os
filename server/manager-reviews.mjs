@@ -6,8 +6,9 @@ const key=(month,id)=>JSON.stringify([month,id]);
 export function createManagerReviews({query,exec,sql,organization,reports,isBossUserId=()=>false,now=()=>new Date()}){
  const monthNow=()=>now().toLocaleDateString('sv-SE',{timeZone:'Asia/Shanghai'}).slice(0,7);
  const validMonth=month=>{if(!/^\d{4}-(0[1-9]|1[0-2])$/.test(month||'')||month>monthNow())throw Error('invalid_month');return month;};
- async function snapshot(){
-  const data=await organization(),departments=data.departments.filter(d=>Number(d.is_active)!==0),byId=new Map(departments.map(d=>[d.id,d]));
+ async function snapshot(organizationData){
+  const data=organizationData||await organization(),departments=data.departments.filter(d=>Number(d.is_active)!==0),byId=new Map(departments.map(d=>[d.id,d]));
+  const inactiveDepartments=data.departments.filter(d=>Number(d.is_active)===0&&!d.feishu_deleted);
   const archivedDepartments=(data.archivedDepartments||[]).filter(d=>d.feishu_deleted===true);
   const roster=await query('SELECT user_id,name,department,manager_user_id,is_active FROM employees;'),periods=await query('SELECT * FROM employee_employment_periods;');
   const people=new Map(roster.map(e=>[e.user_id,{userId:e.user_id,name:e.name,department:e.department,managerUserId:e.manager_user_id,active:Number(e.is_active)===1,employmentPeriods:periods.filter(p=>p.employee_user_id===e.user_id)}]));
@@ -25,15 +26,16 @@ export function createManagerReviews({query,exec,sql,organization,reports,isBoss
    plans.set(employee.userId,{employee,kind:led.length?'boss':'manager',expectedIds:led.length?led.map(d=>d.id):[...managers.keys()],managers:[...managers.values()]});
   }
   const scores=await query('SELECT * FROM monthly_manager_scores ORDER BY created_at,rowid;'),frozen=new Map();
+  const bossScores=data.scores.filter(score=>score.department_id!==''),bossPersonScores=data.personScores||data.scores.filter(score=>score.department_id==='');
   for(const row of await query('SELECT month,employee_user_id,plan_json,created_at FROM monthly_review_plans;'))frozen.set(key(row.month,row.employee_user_id),{...JSON.parse(row.plan_json),frozenAt:row.created_at});
   // Recover the original scope of scores submitted before monthly plans were introduced.
   for(const score of scores){const k=key(score.month,score.employee_user_id);if(frozen.has(k))continue;const saved=JSON.parse(score.snapshot_json||'{}'),base=plans.get(score.employee_user_id),employee=people.get(score.employee_user_id)||saved.employee;
    if(employee)frozen.set(k,{...base,employee,kind:'manager',expectedIds:saved.expectedIds?.length?saved.expectedIds:[score.evaluator_user_id],frozenAt:score.created_at});
   }
-  for(const score of data.scores){const k=key(score.month,score.leader_user_id);if(frozen.has(k))continue;const base=plans.get(score.leader_user_id),employee=people.get(score.leader_user_id);if(employee)frozen.set(k,{...base,employee,kind:'boss',expectedIds:[...new Set([...data.scores.filter(s=>s.month===score.month&&s.leader_user_id===score.leader_user_id).map(s=>s.department_id),...(base?.kind==='boss'?base.expectedIds:[])])],frozenAt:score.created_at});}
+  for(const score of [...bossScores,...bossPersonScores]){const k=key(score.month,score.leader_user_id);if(frozen.has(k))continue;const base=plans.get(score.leader_user_id),employee=people.get(score.leader_user_id);if(employee)frozen.set(k,{...base,employee,kind:'boss',expectedIds:[...new Set([...bossScores.filter(s=>s.month===score.month&&s.leader_user_id===score.leader_user_id).map(s=>s.department_id),...(base?.kind==='boss'?base.expectedIds:[])])],frozenAt:score.created_at});}
   const handoffs=await query('SELECT * FROM monthly_manager_handoffs ORDER BY rowid;');
   const eligibleIds=new Set([...departments.map(d=>d.leader_user_id),...roster.map(e=>e.manager_user_id),...roster.filter(e=>isBossUserId(e.user_id)).map(e=>e.user_id)]);
-  return {plans,people,departments,archivedDepartments,frozen,handoffs,scores,bossScores:data.scores,eligibleManagers:[...people.values()].filter(e=>e.active&&eligibleIds.has(e.userId))};
+  return {plans,people,departments,inactiveDepartments,archivedDepartments,frozen,handoffs,scores,bossScores,bossPersonScores,eligibleManagers:[...people.values()].filter(e=>e.active&&eligibleIds.has(e.userId))};
  }
  function planFor(state,month,userId){
   const original=state.frozen.get(key(month,userId))||state.plans.get(userId);if(!original)return null;
@@ -50,10 +52,20 @@ export function createManagerReviews({query,exec,sql,organization,reports,isBoss
  }
  function progress(state,month,userId){
   const plan=planFor(state,month,userId);if(!plan)return {kind:'unassigned',expectedIds:[],expected:0,submitted:0,complete:false,score:null,records:[],blockedIds:[],handoffRequired:false};
-  const records=plan.kind==='boss'?state.bossScores.filter(s=>s.month===month&&s.leader_user_id===userId&&plan.expectedIds.includes(s.department_id)):state.scores.filter(s=>s.month===month&&s.employee_user_id===userId&&plan.expectedIds.includes(s.evaluator_user_id));
-  const complete=plan.expectedIds.length>0&&records.length===plan.expectedIds.length,blockedIds=plan.kind==='manager'?plan.expectedIds.filter(id=>!records.some(r=>r.evaluator_user_id===id)&&!state.people.get(id)?.active):[];
-  const blockedDepartmentIds=plan.kind==='boss'?plan.expectedIds.filter(id=>!records.some(r=>r.department_id===id)&&(state.archivedDepartments||[]).some(d=>d.id===id)):[];
-  return {kind:plan.kind,expectedIds:plan.expectedIds,expected:plan.expectedIds.length,submitted:records.length,complete,score:complete?average(records.map(r=>r.score)):null,records,blockedIds,...(blockedDepartmentIds.length?{blockedDepartmentIds,departmentReviewBlocked:true}:{}),handoffRequired:blockedIds.length>0,taskStartedAt:plan.taskStartedAt,taskStartById:plan.taskStartById,frozen:Boolean(plan.frozenAt)};
+  let expectedIds=plan.expectedIds,records;
+  if(plan.kind==='boss'){
+   records=state.bossScores.filter(s=>s.month===month&&s.leader_user_id===userId&&expectedIds.includes(s.department_id));
+   const personScore=state.bossPersonScores?.find(s=>s.month===month&&s.leader_user_id===userId);
+   const legacyComplete=expectedIds.length>0&&records.length===expectedIds.length;
+   if(personScore||!legacyComplete&&state.departments.some(d=>d.leader_user_id===userId)){
+    // The reserved scope key lets the publication guard validate this one score
+    // against the same immutable score source as historical department rows.
+    expectedIds=[''];records=personScore?[{...personScore,department_id:''}]:[];
+   }
+  }else records=state.scores.filter(s=>s.month===month&&s.employee_user_id===userId&&expectedIds.includes(s.evaluator_user_id));
+  const complete=expectedIds.length>0&&records.length===expectedIds.length,blockedIds=plan.kind==='manager'?expectedIds.filter(id=>!records.some(r=>r.evaluator_user_id===id)&&!state.people.get(id)?.active):[];
+  const blockedDepartmentIds=plan.kind==='boss'?expectedIds.filter(id=>!records.some(r=>r.department_id===id)&&(state.archivedDepartments||[]).some(d=>d.id===id)):[];
+  return {kind:plan.kind,expectedIds,expected:expectedIds.length,submitted:records.length,complete,score:complete?average(records.map(r=>r.score)):null,records,blockedIds,...(blockedDepartmentIds.length?{blockedDepartmentIds,departmentReviewBlocked:true}:{}),handoffRequired:blockedIds.length>0,taskStartedAt:plan.taskStartedAt,taskStartById:plan.taskStartById,frozen:Boolean(plan.frozenAt)};
  }
  async function freeze(month,userId,kind){
   const state=await snapshot(),plan=planFor(state,month,userId);if(!plan)throw Error('employee_not_employed');if(kind&&plan.kind!==kind)throw Error('not_your_subordinate');
@@ -104,14 +116,44 @@ export function createManagerReviews({query,exec,sql,organization,reports,isBoss
   return handoffOverview(month);
  }
  async function freezeBossPlan(month,userId){validMonth(month);await freeze(month,userId,'boss');}
- async function bossTargets(month=monthNow()){
-  validMonth(month);const state=await snapshot();return {month,scoreTargets:state.departments.map(d=>{
+ const publishedForMonth=async month=>new Set((await query(`SELECT employee_user_id FROM all_monthly_weighted_results WHERE month=${sql(month)} UNION SELECT employee_user_id FROM performance_results WHERE month=${sql(month)} AND kind='collaboration';`)).map(row=>row.employee_user_id));
+ function leaderTargetFor(state,month,leaderUserId,published){
+  const current=state.departments.filter(d=>d.leader_user_id===leaderUserId),person=state.people.get(leaderUserId);
+  const inactive=state.inactiveDepartments.filter(d=>d.leader_user_id===leaderUserId);
+  const saved=state.bossPersonScores.find(score=>score.month===month&&score.leader_user_id===leaderUserId);
+  const history=state.bossScores.filter(score=>score.month===month&&score.leader_user_id===leaderUserId);
+  if(!current.length&&!inactive.length&&!saved&&!history.length)return undefined;
+  const frozen=state.frozen.get(key(month,leaderUserId)),plan=planFor(state,month,leaderUserId),p=progress(state,month,leaderUserId);
+  const legacyScore=!saved&&p.kind==='boss'&&p.complete?p.score:undefined;
+  let unavailableReason='';
+  if(saved||legacyScore!==undefined||published.has(leaderUserId))unavailableReason='result_locked';
+  else if(!current.length&&inactive.length)unavailableReason='department_inactive';
+  else if(!person)unavailableReason='leader_not_registered';
+  else if(!person.active)unavailableReason='leader_inactive';
+  else if(isBossUserId(leaderUserId))unavailableReason='boss_exempt';
+  else if(!plan)unavailableReason='employee_not_employed';
+  else if(plan.kind!=='boss'||!current.length)unavailableReason=frozen?'rating_scope_frozen':'not_required';
+  const context=current.length?current:inactive;
+  const departmentIds=[...new Set([...context.map(d=>d.id),...(saved&&frozen?.kind==='boss'?frozen.expectedIds:[]),...history.map(score=>score.department_id)])];
+  return {leaderUserId,departmentIds,name:person?.name||context.find(d=>d.leaderName)?.leaderName||frozen?.employee?.name||'姓名待同步',active:person?.active===true,ratingRequired:!unavailableReason,unavailableReason,frozen:Boolean(frozen),...(legacyScore===undefined?{}:{legacyScore})};
+ }
+ async function leaderScoreTarget(month,leaderUserId){
+  validMonth(month);const [state,published]=await Promise.all([snapshot(),publishedForMonth(month)]);
+  return leaderTargetFor(state,month,leaderUserId,published);
+ }
+ async function bossTargets(month=monthNow(),organizationData){
+  validMonth(month);const [state,published]=await Promise.all([snapshot(organizationData),publishedForMonth(month)]);
+  const ids=new Set([...[...state.departments,...state.inactiveDepartments].map(d=>d.leader_user_id),...[...state.bossScores,...state.bossPersonScores].filter(score=>score.month===month).map(score=>score.leader_user_id)]);
+  const leaderScoreTargets=[...ids].filter(Boolean).map(id=>leaderTargetFor(state,month,id,published));
+  const leaderById=new Map(leaderScoreTargets.map(target=>[target.leaderUserId,target]));
+  const savedIds=new Set(state.bossPersonScores.filter(score=>score.month===month).map(score=>score.leader_user_id));
+  return {month,leaderScoreTargets,scoreTargets:state.departments.map(d=>{
    const leaderUserId=d.leader_user_id,person=state.people.get(leaderUserId),saved=state.bossScores.find(s=>s.month===month&&s.department_id===d.id&&s.leader_user_id===leaderUserId),plan=planFor(state,month,leaderUserId);
-   const ratingRequired=plan?.kind==='boss'&&plan.expectedIds.includes(d.id);
-   const unavailableReason=!leaderUserId?'missing_leader':!person?'leader_not_registered':!person.active?'leader_inactive':isBossUserId(leaderUserId)?'boss_exempt':!plan?'employee_not_employed':!ratingRequired?(state.frozen.has(key(month,leaderUserId))?'rating_scope_frozen':'not_required'):'';
-   return {departmentId:d.id,leaderUserId,name:leaderUserId?(person?.name||d.leaderName||'姓名待同步'):'负责人未设置',frozen:Boolean(saved),ratingRequired,active:person?.active===true,unavailableReason};
+   const target=leaderById.get(leaderUserId),ratingRequired=target?.ratingRequired===true&&plan?.kind==='boss'&&plan.expectedIds.includes(d.id);
+   const unavailableReason=!leaderUserId?'missing_leader':target?.unavailableReason||(!ratingRequired?(state.frozen.has(key(month,leaderUserId))?'rating_scope_frozen':'not_required'):'');
+   return {departmentId:d.id,leaderUserId,name:leaderUserId?(person?.name||d.leaderName||'姓名待同步'):'负责人未设置',frozen:Boolean(saved)||savedIds.has(leaderUserId),ratingRequired,active:person?.active===true,unavailableReason};
   })};
  }
  async function bossTarget(month,id){return (await bossTargets(month)).scoreTargets.find(t=>t.departmentId===id);}
- return {snapshot,progress,tasks,submit,handoffOverview,handoff,freezeBossPlan,bossTargets,bossTarget};
+ return {snapshot,progress,tasks,submit,handoffOverview,handoff,freezeBossPlan,bossTargets,bossTarget,leaderScoreTarget};
 }

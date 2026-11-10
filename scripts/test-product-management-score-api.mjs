@@ -36,7 +36,11 @@ function database(db,sql){
 }
 function fingerprint(db){
  const tables=database(db,"SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' ORDER BY name;");
- return createHash('sha256').update(JSON.stringify(tables.map(({name})=>[name,database(db,`SELECT * FROM "${name.replaceAll('"','""')}" ORDER BY rowid;`)]))).digest('hex');
+ const contents=tables.map(({name})=>{
+  const rows=database(db,`SELECT * FROM "${name.replaceAll('"','""')}";`);
+  return [name,rows.map(row=>JSON.stringify(row)).sort()];
+ });
+ return createHash('sha256').update(JSON.stringify(contents)).digest('hex');
 }
 async function freePort(){
  const socket=createServer();await new Promise(resolve=>socket.listen(0,resolve));

@@ -11,7 +11,7 @@ await mkdir('outputs/tests',{recursive:true});
 const root=await mkdtemp(path.resolve('outputs/tests/report-rate-limit-'));
 const schema=await readFile('db/schema.sql','utf8'),sql=value=>value==null?'NULL':"'"+String(value).replaceAll("'","''")+"'";
 let scenarios=0;
-async function fixture(name,{count=1,respond,reserveAiRequest,pauseHook=async()=>{}}={}){
+async function fixture(name,{count=1,respond,reserveAiRequest,pauseHook=async()=>{},statusHook=()=>{}}={}){
  const directory=path.join(root,name);await mkdir(directory);
  const database=path.join(directory,'test.sqlite');
  const run=(statement,json=false)=>{const result=spawnSync('sqlite3',['-bail','-cmd','.timeout 10000',...(json?['-json']:[]),database],{input:statement,encoding:'utf8',maxBuffer:32*1024*1024});assert.equal(result.status,0,result.stderr);return json?JSON.parse(result.stdout||'[]'):result.stdout.trim();};
@@ -23,13 +23,14 @@ async function fixture(name,{count=1,respond,reserveAiRequest,pauseHook=async()=
  }
  await writeFile(path.join(directory,'prototypeData.json'),JSON.stringify({meta:{periods:[]},employee_summary:[],weekly_scores:[]}));
  const events=[],calls=[],statuses=[];let inFlight=0,maxInFlight=0,status;
+ const config={dataDir:directory,moonshotApiKey:'synthetic-fixture-key',moonshotBaseUrl:'https://fixture.invalid/v1',kimiFollowupModel:'synthetic-model'};
  const fetcher=async(url,options)=>{
   assert.equal(url,'https://fixture.invalid/v1/chat/completions');
   const request=JSON.parse(options.body),input=JSON.parse(request.messages.find(message=>message.role==='user').content);
   calls.push({request,input});events.push({kind:'request',number:calls.length,input});inFlight++;maxInFlight=Math.max(maxInFlight,inFlight);
   try{await new Promise(resolve=>setImmediate(resolve));return await respond({request,input,number:calls.length,calls,run});}finally{inFlight--;}
  };
- const sync=createLiveReportSync({query:async statement=>run(statement,true),exec:async statement=>run(statement),sql,config:{dataDir:directory,moonshotApiKey:'synthetic-fixture-key',moonshotBaseUrl:'https://fixture.invalid/v1',kimiFollowupModel:'synthetic-model'},settings:{policyFor:async()=>({weights:[30,25,25,20],deadlineTime:'20:00'})},refreshDirectory:async()=>{},writeStatus:async value=>{status=structuredClone(value);statuses.push(status);},fetcher,reserveAiRequest,pause:async milliseconds=>{assert(milliseconds>0&&milliseconds<=60000);events.push({kind:'pause',milliseconds});await pauseHook({milliseconds,run,calls});}});
+ const sync=createLiveReportSync({query:async statement=>run(statement,true),exec:async statement=>run(statement),sql,config,settings:{policyFor:async()=>({weights:[30,25,25,20],deadlineTime:'20:00'})},refreshDirectory:async()=>{},writeStatus:async value=>{status=structuredClone(value);statuses.push(status);statusHook({status,config});},fetcher,reserveAiRequest,pause:async milliseconds=>{assert(milliseconds>0&&milliseconds<=60000);events.push({kind:'pause',milliseconds});await pauseHook({milliseconds,run,calls,config});}});
  const execute=()=>sync.run({mode:'rescore',targetMonth:'2026-10'});
  const report=index=>JSON.parse(run(`SELECT content_json FROM weekly_reports WHERE id=${sql('R'+index)};`,true)[0].content_json);
  scenarios++;
@@ -134,6 +135,36 @@ for(const kind of ['source','active','job']){
  assert.equal(guarded.report(1).ai,undefined);
 }
 
+for(const [kind,change] of [
+ ['model',{kimiFollowupModel:'another-model'}],
+ ['address',{moonshotBaseUrl:'https://another.fixture.invalid/v1'}],
+ ['key-clear',{moonshotApiKey:''}],
+ ['key-replace',{moonshotApiKey:'synthetic-replacement-key'}],
+]){
+ let changed=false;
+ const guarded=await fixture('ai-configuration-change-after-request-'+kind,{count:2,respond:()=>failure(429),pauseHook:({milliseconds,config})=>{
+  if(milliseconds>=58000){Object.assign(config,change);changed=true;}
+ }});
+ await guarded.execute();
+ assert(changed);
+ assert.equal(guarded.calls.length,1,'a change to '+kind+' blocks the next provider request');
+ assert.equal(guarded.status.phase,'paused');
+ assert.equal(guarded.status.blockedReason,'ai_model_changed');
+ assert.equal(guarded.status.remaining,2);
+ assert.equal(guarded.status.failed,0);
+ assert.equal(guarded.report(1).qualityRefresh.state,'queued');
+ assert(!JSON.stringify(guarded.statuses).includes('synthetic-replacement-key'));
+}
+
+const configurationChangedBeforeSend=await fixture('ai-configuration-change-after-reservation',{
+ respond:({input})=>success(input),
+ statusHook:({status,config})=>{if(status.phase==='analysis'&&status.active===1)config.moonshotApiKey='';},
+});
+await configurationChangedBeforeSend.execute();
+assert.equal(configurationChangedBeforeSend.calls.length,0,'a configuration change while saving the attempt must stop the request');
+assert.equal(configurationChangedBeforeSend.status.blockedReason,'ai_model_changed');
+assert.equal(configurationChangedBeforeSend.status.remaining,1);
+
 const corrective=await fixture('strict-evidence-retry',{respond:({number,input,request})=>{
  const result=makeReportQualityAnalysis(input.report);
  if(number===1)result.modules[0].criteria[0].evidence=[{quote:'PRIVATE_FORGED_QUOTE',type:'reported_fact'}];
@@ -142,5 +173,5 @@ const corrective=await fixture('strict-evidence-retry',{respond:({number,input,r
 }});
 await corrective.execute();assert.equal(corrective.calls.length,2);assert.equal(corrective.status.analyzed,1);assert.equal(corrective.report(1).qualityRefresh.state,'ready');assert(!JSON.stringify(corrective.report(1).aiAnalysisAttempts).includes('PRIVATE_'));
 
-const result={ok:true,scenarios,singleFlight:true,dailyLimitPausesAndResumes:true,retriesRequireReservation:true,retryAfterSecondsAndDate:true,defaultAndFinal429Cooldown:true,quotaPausesUnrequestedReports:true,quotaRecovery:true,overloadRetry:true,nonJsonHttpDiagnostics:true,oversizedWaitPauses:true,sourceJobAndActiveRechecked:true,strictEvidenceRetry:true,externalRequests:0,notifications:0};
+const result={ok:true,scenarios,singleFlight:true,dailyLimitPausesAndResumes:true,retriesRequireReservation:true,retryAfterSecondsAndDate:true,defaultAndFinal429Cooldown:true,quotaPausesUnrequestedReports:true,quotaRecovery:true,overloadRetry:true,nonJsonHttpDiagnostics:true,oversizedWaitPauses:true,sourceJobAndActiveRechecked:true,aiConfigurationChangesPause:true,strictEvidenceRetry:true,externalRequests:0,notifications:0};
 await writeFile(path.join(root,'result.json'),JSON.stringify(result,null,2));console.log(JSON.stringify(result));console.log('Synthetic artifacts retained:',root);

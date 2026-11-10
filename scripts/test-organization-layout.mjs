@@ -25,7 +25,7 @@ try{
  await assert.rejects(save(view.departments.map(d=>d.id==='promotion'?{...d,leader_mode:'primary'}:d)),/leader_must/);
  const month=new Date().toLocaleDateString('sv-SE',{timeZone:'Asia/Shanghai'}).slice(0,7);
  await service.score({departmentId:'promotion',month,score:90,comment:'兼任推广职责'}, {userId:'boss',name:'老板'});
- assert.equal((await service.personal({userId:'overseas'}))[0].department,'产品推广');
+ assert.equal((await service.personal({userId:'overseas'}))[0].department,'负责人综合评分');
  const cycle=view.departments.map(d=>d.id===domestic.id?{...d,parent_id:overseas.id}:d.id===overseas.id?{...d,parent_id:domestic.id}:d);
  await assert.rejects(save(cycle),/hierarchy_cycle/);
  assert.equal((await service.overview()).departments.find(d=>d.id===domestic.id).parent_id,'','failed validation is atomic');

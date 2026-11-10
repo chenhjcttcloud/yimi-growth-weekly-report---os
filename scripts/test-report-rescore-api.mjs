@@ -43,16 +43,29 @@ import {appendFile,access} from 'node:fs/promises';
 import {makeReportQualityAnalysis} from ${JSON.stringify(new URL('./report-quality-test-fixtures.mjs',import.meta.url).href)};
 const RealDate=Date,stamp=Date.parse('2026-11-02T08:00:00Z');globalThis.Date=class extends RealDate{constructor(...args){super(...(args.length?args:[stamp]));}static now(){return stamp;}};
 let requests=0;
+const completion=(content,usage)=>new Response(JSON.stringify({choices:[{finish_reason:'stop',message:{content}}],usage}));
 globalThis.fetch=async(url,options={})=>{
  const target=String(url);
  if(target!=='https://fixture-ai.invalid/v1/chat/completions'){await appendFile(${JSON.stringify(callsFile)},JSON.stringify({kind:'unexpected',url:target})+'\\n');throw Error('fixture_external_request_blocked');}
- requests++;const body=JSON.parse(options.body),input=JSON.parse(body.messages.find(message=>message.role==='user').content),feedbackMessage=body.messages.find(message=>message.role==='user'&&message.content.includes('validationFeedback'));
+ const body=JSON.parse(options.body),prompt=body.messages.find(message=>message.role==='user').content;
+ if(prompt.startsWith('请基于以下上下文回答最后的追问：')){
+  const input=JSON.parse(prompt.slice(prompt.indexOf('\\n')+1));
+  const kind=input.question==='教练用量测试'?'personal_coach':'task_followup';
+  await appendFile(${JSON.stringify(callsFile)},JSON.stringify({kind})+'\\n');
+  return completion('虚构回答',kind==='personal_coach'?{prompt_tokens:20,completion_tokens:5,total_tokens:25}:{prompt_tokens:7,completion_tokens:3,total_tokens:10});
+ }
+ const input=JSON.parse(prompt);
+ if(input.period){
+  await appendFile(${JSON.stringify(callsFile)},JSON.stringify({kind:'management_summary'})+'\\n');
+  return completion('虚构管理摘要',{prompt_tokens:50,completion_tokens:10,total_tokens:60});
+ }
+ requests++;const feedbackMessage=body.messages.find(message=>message.role==='user'&&message.content.includes('validationFeedback'));
  const feedback=feedbackMessage?JSON.parse(feedbackMessage.content).validationFeedback:null;
  await appendFile(${JSON.stringify(callsFile)},JSON.stringify({kind:'ai',week:input.week,marker:input.report.results.split('：')[0],feedback})+'\\n');
  if(requests===1){let released=false;for(let attempt=0;attempt<500;attempt++){try{await access(${JSON.stringify(releaseGate)});released=true;break;}catch{}await new Promise(resolve=>setTimeout(resolve,20));}if(!released)throw Error('fixture_gate_not_released');}
  const analysis=makeReportQualityAnalysis(input.report,{summary:'虚构修正后的评分理由'});
  if(requests===1)analysis.modules[0].criteria[0].evidence=[{quote:'PRIVATE_UNTRUSTED_MODEL_QUOTE',type:'reported_fact'}];
- return {ok:true,status:200,json:async()=>({choices:[{finish_reason:'stop',message:{content:JSON.stringify(analysis)}}]})};
+ return completion(JSON.stringify(analysis),{prompt_tokens:100,completion_tokens:30,total_tokens:130,prompt_tokens_details:{cached_tokens:20}});
 };
 `);
 const portProbe=createServer();await new Promise(resolve=>portProbe.listen(0,'127.0.0.1',resolve));const port=portProbe.address().port;await new Promise(resolve=>portProbe.close(resolve));
@@ -78,6 +91,13 @@ try{
  const historicalFixtureSettings={enabled:false,intervalMinutes:15,scoringStartMonth:'2026-10'};
  assert.equal((await call('POST',{...historicalFixtureSettings,scoringStartMonth:'2026-13'},'admin',automationRoute)).body.error,'invalid_report_scoring_start_month');
  assert.equal((await call('POST',historicalFixtureSettings,'admin',automationRoute)).status,200);
+ const usageRoute='/api/system-settings/ai/usage';
+ assert.equal((await call('GET',undefined,'a',usageRoute)).status,403);
+ assert.equal((await call('GET',undefined,'admin',usageRoute+'?days=0')).body.error,'invalid_ai_usage_range');
+ const legacyKeySave=await call('POST',{baseUrl:'https://fixture-ai.invalid/v1',model:'fixture-quality-model',apiKey:'unintended-replacement'},'admin','/api/system-settings/ai');
+ assert.equal(legacyKeySave.status,400);assert.equal(legacyKeySave.body.error,'ai_key_action_required');
+ const explicitKeySave=await call('POST',{action:'replace',apiKey:'explicit-fixture-key'},'admin','/api/system-settings/ai/key');
+ assert.deepEqual(explicitKeySave,{status:200,body:{ok:true,keyConfigured:true}});
  assert.equal((await providerCalls()).length,0,'authorization and validation never start a model or Feishu request');
  const start=await call('POST',{mode:'rescore',targetMonth:'2026-10'});assert.equal(start.status,202);
  const busy=await call('POST',{mode:'rescore',targetMonth:'2026-10'});assert.equal(busy.status,409);assert.equal(busy.body.alreadyRunning,true);
@@ -98,5 +118,20 @@ try{
  assert.equal(JSON.stringify(humanTables.map(table=>[table,run('SELECT * FROM '+table+' ORDER BY rowid;',true)])),humanBefore,'rescore API does not submit human ratings or legacy results');
  for(const table of ['weekly_reminder_sends','scoring360_reminder_sends','monthly_score_reminder_deliveries'])assert.equal(run('SELECT count(*) AS n FROM '+table+';',true)[0].n,0);
  assert.equal(run('SELECT count(*) AS n FROM import_batches;',true)[0].n,0,'stored-only rescore creates no Feishu import batch');assert.equal(run('PRAGMA integrity_check;'),'ok');
- const result={ok:true,actualLocalServer:true,managementBoundaryPreserved:true,ordinaryMemberDenied:true,invalidMonthRejected:true,busy409:true,storedMonthScope:true,onlyActiveSubmitted:true,version1And2CacheAccepted:true,preciseProgress:true,safeDiagnostic:true,correctionFeedback:true,oldScorePreserved:true,successfulCacheResume:true,humanScoresUntouched:true,feishuQueries:0,realProviderRequests:0,syntheticProviderCalls:calls.length,messagesSent:0,artifacts:dir};await writeFile(dir+'/result.json',JSON.stringify(result,null,2));console.log(JSON.stringify(result));
+ const summaryRequest={periodId:'period-2026-10-09'};
+ const summary=await call('POST',summaryRequest,'admin','/api/management/summary');assert.equal(summary.status,200,JSON.stringify(summary.body));
+ assert.equal((await call('POST',summaryRequest,'admin','/api/management/summary')).body.summary.cached,true);
+ const coach=await call('POST',{month:'2026-10',weekId:'period-2026-10-09',question:'教练用量测试'},'a','/api/personal/coach');
+ assert.equal(coach.status,200,JSON.stringify(coach.body));
+ const task=await call('POST',{candidateId:'fixture-task',question:'任务用量测试'},'admin','/api/ai/followup');
+ assert.equal(task.status,200,JSON.stringify(task.body));
+ const usage=await call('GET',undefined,'admin',usageRoute+'?days=7');
+ assert.equal(usage.status,200);assert.equal(usage.body.days,7);
+ const totals=Object.fromEntries(usage.body.modules.map(row=>[row.module,[row.requests,row.failed,row.unreported,row.inputTokens,row.outputTokens,row.cachedInputTokens,row.totalTokens]]));
+ assert.deepEqual(totals,{
+  report_scoring:[2,0,0,200,60,40,260],management_summary:[1,0,0,50,10,0,60],
+  personal_coach:[1,0,0,20,5,0,25],task_followup:[1,0,0,7,3,0,10],
+ });
+ assert.equal((await providerCalls()).length,5,'cached results do not add provider usage');
+ const result={ok:true,actualLocalServer:true,managementBoundaryPreserved:true,ordinaryMemberDenied:true,invalidMonthRejected:true,busy409:true,storedMonthScope:true,onlyActiveSubmitted:true,version1And2CacheAccepted:true,preciseProgress:true,safeDiagnostic:true,correctionFeedback:true,oldScorePreserved:true,successfulCacheResume:true,humanScoresUntouched:true,aiUsageByModule:true,explicitKeyReplacement:true,feishuQueries:0,realProviderRequests:0,syntheticProviderCalls:5,messagesSent:0,artifacts:dir};await writeFile(dir+'/result.json',JSON.stringify(result,null,2));console.log(JSON.stringify(result));
 }catch(error){console.error(logs);throw error;}finally{if(server?.exitCode===null){server.kill('SIGTERM');if(server.exitCode===null)await new Promise(resolve=>server.once('exit',resolve));}await writeFile(dir+'/server.log',logs);console.log('Test artifacts retained:',dir);}

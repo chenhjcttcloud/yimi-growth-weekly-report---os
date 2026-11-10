@@ -51,6 +51,20 @@ CREATE TABLE IF NOT EXISTS app_settings (
   updated_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
 
+CREATE TABLE IF NOT EXISTS ai_usage_daily (
+  usage_date TEXT NOT NULL,
+  module TEXT NOT NULL,
+  model TEXT NOT NULL,
+  requests INTEGER NOT NULL,
+  failed INTEGER NOT NULL,
+  unreported INTEGER NOT NULL,
+  input_tokens INTEGER NOT NULL,
+  output_tokens INTEGER NOT NULL,
+  cached_input_tokens INTEGER NOT NULL,
+  total_tokens INTEGER NOT NULL,
+  PRIMARY KEY (usage_date, module, model)
+) WITHOUT ROWID;
+
 -- Directory discovery does not imply an SSO login or any management role.
 CREATE TABLE IF NOT EXISTS employee_directory_profiles (
   user_id TEXT PRIMARY KEY,
@@ -714,6 +728,12 @@ CREATE TABLE IF NOT EXISTS monthly_person_weighted_results (
 );
 CREATE VIEW IF NOT EXISTS all_department_leader_scores AS
  SELECT * FROM department_leader_scores UNION ALL SELECT * FROM department_person_scores;
+-- A blank department ID is reserved for a boss rating of the person. The
+-- existing score key locks one such record per leader and month, and the
+-- existing weighted-result validator can verify that record as its evidence.
+CREATE VIEW IF NOT EXISTS boss_person_scores AS
+ SELECT month,leader_user_id,score,comment,scorer_user_id,scorer_name,created_at
+ FROM department_person_scores WHERE department_id='';
 CREATE VIEW IF NOT EXISTS all_monthly_weighted_results AS
  SELECT * FROM monthly_weighted_results UNION ALL SELECT * FROM monthly_person_weighted_results;
 CREATE TRIGGER IF NOT EXISTS person_monthly_manager_scores_no_update BEFORE UPDATE ON monthly_manager_scores BEGIN SELECT RAISE(ABORT,'result_locked'); END;
@@ -775,6 +795,36 @@ CREATE TRIGGER IF NOT EXISTS department_person_scores_person_publication_lock BE
 WHEN EXISTS(SELECT 1 FROM all_department_leader_scores WHERE department_id=NEW.department_id AND month=NEW.month AND leader_user_id=NEW.leader_user_id)
  OR EXISTS(SELECT 1 FROM all_monthly_weighted_results WHERE month=NEW.month AND employee_user_id=NEW.leader_user_id)
  OR EXISTS(SELECT 1 FROM performance_results WHERE month=NEW.month AND employee_user_id=NEW.leader_user_id AND kind='collaboration')
+BEGIN SELECT RAISE(ABORT,'result_locked'); END;
+CREATE TRIGGER IF NOT EXISTS legacy_department_scores_after_boss_person_lock BEFORE INSERT ON department_leader_scores
+WHEN NEW.department_id='' OR EXISTS(SELECT 1 FROM boss_person_scores WHERE month=NEW.month AND leader_user_id=NEW.leader_user_id)
+BEGIN SELECT RAISE(ABORT,'result_locked'); END;
+CREATE TRIGGER IF NOT EXISTS department_scores_after_boss_person_lock BEFORE INSERT ON department_person_scores
+WHEN NEW.department_id<>'' AND EXISTS(SELECT 1 FROM boss_person_scores WHERE month=NEW.month AND leader_user_id=NEW.leader_user_id)
+BEGIN SELECT RAISE(ABORT,'result_locked'); END;
+CREATE TRIGGER IF NOT EXISTS boss_person_score_plan_guard BEFORE INSERT ON department_person_scores
+WHEN NEW.department_id='' AND EXISTS(
+ SELECT 1 FROM monthly_review_plans p
+ WHERE p.month=NEW.month AND p.employee_user_id=NEW.leader_user_id AND (
+  COALESCE(json_extract(p.plan_json,'$.kind'),'')<>'boss'
+  OR (COALESCE(json_array_length(p.plan_json,'$.expectedIds'),0)>0 AND NOT EXISTS(
+   SELECT 1 FROM json_each(p.plan_json,'$.expectedIds') id
+   WHERE id.value='' OR NOT EXISTS(
+    SELECT 1 FROM all_department_leader_scores s
+    WHERE s.month=NEW.month AND s.leader_user_id=NEW.leader_user_id AND s.department_id=id.value
+   )
+  ))
+ )
+)
+BEGIN SELECT RAISE(ABORT,'result_locked'); END;
+CREATE TRIGGER IF NOT EXISTS legacy_weighted_result_after_boss_person_lock BEFORE INSERT ON monthly_weighted_results
+WHEN EXISTS(SELECT 1 FROM boss_person_scores WHERE month=NEW.month AND leader_user_id=NEW.employee_user_id)
+BEGIN SELECT RAISE(ABORT,'result_locked'); END;
+CREATE TRIGGER IF NOT EXISTS weighted_result_requires_boss_person_score BEFORE INSERT ON monthly_person_weighted_results
+WHEN EXISTS(SELECT 1 FROM boss_person_scores WHERE month=NEW.month AND leader_user_id=NEW.employee_user_id)
+ AND (COALESCE(json_extract(NEW.evidence_json,'$.managerProgress.kind'),'')<>'boss'
+ OR COALESCE(json_array_length(NEW.evidence_json,'$.managerProgress.expectedIds'),0)<>1
+ OR COALESCE(json_extract(NEW.evidence_json,'$.managerProgress.expectedIds[0]'),'unassigned')<>'')
 BEGIN SELECT RAISE(ABORT,'result_locked'); END;
 CREATE TRIGGER IF NOT EXISTS person_monthly_handoff_guard BEFORE INSERT ON monthly_manager_handoffs
 WHEN EXISTS(SELECT 1 FROM all_monthly_weighted_results WHERE month=NEW.month AND employee_user_id=NEW.employee_user_id)

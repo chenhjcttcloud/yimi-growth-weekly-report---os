@@ -5,14 +5,22 @@ const DEFAULT_REPORT_SCORING_START_MONTH='2026-11';
 const dailyReportAiRequestLimitSql=`COALESCE((SELECT json_extract(value_json,'$.dailyAiRequestLimit') FROM app_settings WHERE key='report_automation_config'),${DEFAULT_DAILY_REPORT_AI_REQUEST_LIMIT})`;
 export function createSystemSettings({query,exec,sql,config,now=()=>new Date()}) {
  const key=createHash('sha256').update(config.sessionSecret).digest();
+ let aiWrites=Promise.resolve();
  const month=()=>now().toLocaleDateString('sv-SE',{timeZone:'Asia/Shanghai'}).slice(0,7);
  function encrypt(value){const iv=randomBytes(12),cipher=createCipheriv('aes-256-gcm',key,iv);return [iv.toString('hex'),Buffer.concat([cipher.update(value,'utf8'),cipher.final()]).toString('hex'),cipher.getAuthTag().toString('hex')].join(':');}
  function decrypt(value){const [iv,data,tag]=value.split(':');const decipher=createDecipheriv('aes-256-gcm',key,Buffer.from(iv,'hex'));decipher.setAuthTag(Buffer.from(tag,'hex'));return Buffer.concat([decipher.update(Buffer.from(data,'hex')),decipher.final()]).toString('utf8');}
- async function setting(){const rows=await query("SELECT hex(value_json) AS value FROM app_settings WHERE key='ai_runtime';");return rows[0]?JSON.parse(Buffer.from(rows[0].value,'hex').toString('utf8')):null;}
+ const readAiSetting=row=>row?JSON.parse(Buffer.from(row.value,'hex').toString('utf8')):null;
+ async function setting(){const rows=await query("SELECT hex(value_json) AS value FROM app_settings WHERE key='ai_runtime';");return readAiSetting(rows[0]);}
+ function applyAiSetting(stored){
+  const apiKey=stored.encryptedKey?decrypt(stored.encryptedKey):'';
+  config.moonshotBaseUrl=stored.baseUrl;
+  config.kimiFollowupModel=stored.model;
+  config.moonshotApiKey=apiKey;
+ }
  async function reportSetting(){const rows=await query("SELECT hex(value_json) AS value FROM app_settings WHERE key='feishu_report';");return rows[0]?JSON.parse(Buffer.from(rows[0].value,'hex').toString('utf8')):null;}
  async function reportOverview(){const r=await reportSetting();return {appId:config.feishuAppId||'',secretConfigured:!!config.feishuAppSecret,templateName:r?.templateName||'周报（聚焦结果与协作）',ruleId:r?.ruleId||'',startDate:r?.startDate||''};}
  async function saveReport(body,user){const old=await reportSetting();const appId=String(body.appId||'').trim(),secret=String(body.appSecret||'').trim(),templateName=String(body.templateName||'').trim(),ruleId=String(body.ruleId||'').trim(),startDate=String(body.startDate||'');if(!/^cli_[a-zA-Z0-9]+$/.test(appId)||!templateName||templateName.length>200||secret.length>4000||ruleId.length>200||startDate&&!/^\d{4}-\d{2}-\d{2}$/.test(startDate))throw Error('invalid_report_config');if(!secret&&appId!==config.feishuAppId)throw Error('report_secret_required');const stored={appId,encryptedSecret:secret?encrypt(secret):old?.encryptedSecret||(config.feishuAppSecret?encrypt(config.feishuAppSecret):''),templateName,ruleId,startDate};if(!stored.encryptedSecret)throw Error('report_secret_required');await exec(`INSERT INTO app_settings(key,value_json,updated_at) VALUES('feishu_report',${sql(JSON.stringify(stored))},datetime('now')) ON CONFLICT(key) DO UPDATE SET value_json=excluded.value_json,updated_at=excluded.updated_at;`);config.feishuAppId=appId;config.feishuAppSecret=decrypt(stored.encryptedSecret);await audit(user,'飞书汇报配置已保存',{appId,templateName,ruleId,startDate});}
- async function initialize(){const report=await reportSetting();if(report){config.feishuAppId=report.appId;config.feishuAppSecret=report.encryptedSecret?decrypt(report.encryptedSecret):'';}const stored=await setting();if(stored){config.moonshotBaseUrl=stored.baseUrl;config.kimiFollowupModel=stored.model;config.moonshotApiKey=stored.encryptedKey?decrypt(stored.encryptedKey):'';}const events=await eventSetting();if(events){config.eventVerificationToken=events.token?decrypt(events.token):'';config.eventEncryptKey=events.key?decrypt(events.key):'';config.eventReceiverEnabled=events.enabled===true;}else config.eventReceiverEnabled=!!(config.eventVerificationToken||config.eventEncryptKey);const features=await featureSettings();config.taskCreateEnabled=features.taskCreateEnabled;}
+ async function initialize(){const report=await reportSetting();if(report){config.feishuAppId=report.appId;config.feishuAppSecret=report.encryptedSecret?decrypt(report.encryptedSecret):'';}const stored=await setting();if(stored)applyAiSetting(stored);const events=await eventSetting();if(events){config.eventVerificationToken=events.token?decrypt(events.token):'';config.eventEncryptKey=events.key?decrypt(events.key):'';config.eventReceiverEnabled=events.enabled===true;}else config.eventReceiverEnabled=!!(config.eventVerificationToken||config.eventEncryptKey);const features=await featureSettings();config.taskCreateEnabled=features.taskCreateEnabled;}
  async function eventSetting(){const row=(await query("SELECT value_json FROM app_settings WHERE key='feishu_event_security';"))[0];return row?JSON.parse(row.value_json):null;}
  async function eventOverview(){return {enabled:config.eventReceiverEnabled===true,tokenConfigured:!!config.eventVerificationToken,signatureConfigured:!!config.eventEncryptKey,callbackPath:'/api/feishu/events'};}
  async function saveEvents(body,user){
@@ -84,18 +92,62 @@ export function createSystemSettings({query,exec,sql,config,now=()=>new Date()})
   await exec(`INSERT INTO system_policy_versions VALUES(${sql(body.effectiveMonth)},${sql(JSON.stringify(policy))},${sql(user.name)},datetime('now'));`);
   await audit(user,'评分与周期规则已保存',{effectiveMonth:body.effectiveMonth,policy});
  }
+ function enqueueAiWrite(write){
+  const result=aiWrites.then(write);
+  aiWrites=result.catch(()=>{});
+  return result;
+ }
+ async function saveAiSetting(initial,updateSql,{user,action,details,guardSql='',expectedBaseUrl}){
+  // Check the saved address under the same write lock as the credential update.
+  const addressMatches=expectedBaseUrl===undefined?'1':`COALESCE(
+    (SELECT json_extract(value_json,'$.baseUrl') IS ${sql(expectedBaseUrl)} FROM app_settings WHERE key='ai_runtime'),
+    ${Number(initial.baseUrl===expectedBaseUrl)})`;
+  const [row]=await query(`BEGIN IMMEDIATE;
+    INSERT INTO app_settings(key,value_json,updated_at)
+    SELECT 'ai_runtime',${sql(JSON.stringify(initial))},datetime('now') WHERE ${addressMatches}
+    ON CONFLICT(key) DO UPDATE SET value_json=${updateSql},updated_at=excluded.updated_at
+    ${guardSql} RETURNING hex(value_json) AS value;
+    INSERT OR ROLLBACK INTO system_operation_logs(id,actor_user_id,actor_name,action,details_json,created_at)
+    SELECT ${sql(randomUUID())},${sql(user.userId)},${sql(user.name)},${sql(action)},
+      json_set(${sql(JSON.stringify(details))},'$.keyConfigured',json(CASE WHEN NULLIF(json_extract(value_json,'$.encryptedKey'),'') IS NULL THEN 'false' ELSE 'true' END)),datetime('now')
+    FROM app_settings WHERE key='ai_runtime' AND changes()=1;
+    COMMIT;`);
+  if(!row)throw Error(expectedBaseUrl===undefined?'ai_key_host_change_requires_clear':'ai_key_service_address_changed');
+  applyAiSetting(readAiSetting(row));
+ }
  async function saveAI(body,user){
-  const baseUrl=String(body.baseUrl||'').replace(/\/$/,''),model=String(body.model||'').trim(),apiKey=String(body.apiKey||'').trim();
+  if(String(body.apiKey??'').trim()||body.clearKey)throw Error('ai_key_action_required');
+  const baseUrl=String(body.baseUrl||'').replace(/\/$/,''),model=String(body.model||'').trim();
   let url;try{url=new URL(baseUrl);}catch{throw Error('invalid_ai_url');}
   if(url.protocol!=='https:'||url.username||url.password||url.search||url.hash||!url.hostname.includes('.')||/^(localhost|127\.|10\.|192\.168\.|169\.254\.|172\.(1[6-9]|2\d|3[01])\.)/i.test(url.hostname))throw Error('invalid_ai_url');
-  if(!model||model.length>150||apiKey.length>4000)throw Error('invalid_ai_model');
-  const old=await setting();
-  const stored={baseUrl,model,encryptedKey:body.clearKey?'':apiKey?encrypt(apiKey):old?.encryptedKey||(config.moonshotApiKey?encrypt(config.moonshotApiKey):'')};
-  await exec(`INSERT INTO app_settings(key,value_json,updated_at) VALUES('ai_runtime',${sql(JSON.stringify(stored))},datetime('now')) ON CONFLICT(key) DO UPDATE SET value_json=excluded.value_json,updated_at=excluded.updated_at;`);
-  config.moonshotBaseUrl=baseUrl;config.kimiFollowupModel=model;
-  if(body.clearKey)config.moonshotApiKey='';else if(apiKey)config.moonshotApiKey=apiKey;
-  await audit(user,'AI 服务配置已更新',{baseUrl,model,keyConfigured:!!config.moonshotApiKey});
+  if(!model||model.length>150)throw Error('invalid_ai_model');
+  return enqueueAiWrite(async()=>{
+   const stored=await setting();
+   const currentBaseUrl=stored?.baseUrl??config.moonshotBaseUrl;
+   const sameOrigin=URL.canParse(currentBaseUrl)&&new URL(currentBaseUrl).origin===url.origin;
+   const hasKey=stored?!!stored.encryptedKey:!!config.moonshotApiKey;
+   if(hasKey&&!sameOrigin)throw Error('ai_key_host_change_requires_clear');
+   // Preserve an environment-provided key on the first save. Existing rows keep their exact ciphertext.
+   const initial={baseUrl,model,encryptedKey:!stored&&config.moonshotApiKey?encrypt(config.moonshotApiKey):''};
+   // Recheck the origin snapshot if another process wrote a key or a different address while we waited.
+   const matchingAddress=sameOrigin?` OR json_extract(app_settings.value_json,'$.baseUrl')=${sql(currentBaseUrl)}`:'';
+   const guard=`WHERE NULLIF(json_extract(app_settings.value_json,'$.encryptedKey'),'') IS NULL${matchingAddress}`;
+   await saveAiSetting(initial,`json_set(app_settings.value_json,'$.baseUrl',${sql(baseUrl)},'$.model',${sql(model)})`,{user,action:'AI 模型与服务地址已保存',details:{baseUrl,model},guardSql:guard});
+  });
+ }
+ async function saveAIKey(body,user){
+  const {action,expectedBaseUrl}=body;
+  if(!['replace','clear'].includes(action))throw Error('invalid_ai_key_action');
+  const apiKey=typeof body.apiKey==='string'?body.apiKey.trim():'';
+  if(action==='replace'&&(!apiKey||apiKey.length>4000||/[\s\p{Cc}]/u.test(apiKey))||action==='clear'&&body.apiKey!==undefined)throw Error('invalid_ai_key');
+  if(expectedBaseUrl!==undefined&&(typeof expectedBaseUrl!=='string'||!expectedBaseUrl||/\p{Cc}/u.test(expectedBaseUrl)))throw Error('invalid_ai_url');
+  return enqueueAiWrite(async()=>{
+   const encryptedKey=action==='replace'?encrypt(apiKey):'';
+   const initial={baseUrl:config.moonshotBaseUrl,model:config.kimiFollowupModel,encryptedKey};
+   await saveAiSetting(initial,`json_set(app_settings.value_json,'$.encryptedKey',${sql(encryptedKey)})`,{user,action:action==='replace'?'AI 服务密钥已替换':'AI 服务密钥已清除',details:{action},expectedBaseUrl});
+   return {keyConfigured:!!config.moonshotApiKey};
+  });
  }
  async function logs(){return (await query('SELECT id,actor_name,action,hex(details_json) AS details_hex,created_at FROM system_operation_logs ORDER BY created_at DESC,rowid DESC LIMIT 100;')).map(r=>({...r,details:JSON.parse(Buffer.from(r.details_hex,'hex').toString('utf8')),details_hex:undefined}));}
- return {initialize,overview,saveReport,savePolicy,saveAI,policyFor,policies,audit,logs,monthlyReminderConfig,saveMonthlyReminders,scoringRemindersEnabled,reportAutomationConfig,saveReportAutomation,reportAiRequestsToday,reserveReportAiRequest,eventOverview,saveEvents,featureSettings,saveFeatures};
+ return {initialize,overview,saveReport,savePolicy,saveAI,saveAIKey,policyFor,policies,audit,logs,monthlyReminderConfig,saveMonthlyReminders,scoringRemindersEnabled,reportAutomationConfig,saveReportAutomation,reportAiRequestsToday,reserveReportAiRequest,eventOverview,saveEvents,featureSettings,saveFeatures};
 }

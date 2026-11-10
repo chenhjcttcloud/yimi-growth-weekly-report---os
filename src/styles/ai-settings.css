@@ -1,0 +1,53 @@
+.ai-settings-section {
+  display: grid;
+  gap: 14px;
+  margin-top: 24px;
+  padding-top: 20px;
+  border-top: 1px solid var(--v2-line);
+  min-width: 0;
+}
+.ai-settings-heading,
+.ai-settings-actions {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.ai-settings-heading { justify-content: space-between; }
+.ai-settings-heading h3,
+.ai-settings-heading h4 { margin: 0; }
+.ai-settings-heading h3 { font-size: 15px; }
+.ai-settings-heading h4 { font-size: 13px; }
+.ai-settings-section > p { margin: 0; }
+.ai-settings-actions > .secondary-button[aria-pressed="true"] {
+  color: var(--v2-brand-deep);
+  background: var(--v2-brand-softer);
+  border-color: var(--v2-brand);
+}
+.system-config > .ai-settings-actions { margin-top: 14px; }
+.ai-key-confirmation,
+.ai-usage-module {
+  padding: 14px;
+  border: 1px solid var(--v2-line-soft);
+  border-radius: 10px;
+  background: var(--v2-bg-soft);
+}
+.ai-key-confirmation > .ai-settings-actions { margin-top: 12px; }
+.ai-usage-grid {
+  display: grid;
+  grid-template-columns: repeat(2,minmax(0,1fr));
+  gap: 12px;
+}
+.ai-usage-module .ai-settings-heading span { color: var(--v2-ink-2); font-size: 12px; }
+.ai-usage-module .ai-settings-heading strong { color: var(--v2-ink); font-size: 17px; }
+.ai-usage-module dl {
+  display: grid;
+  grid-template-columns: repeat(3,minmax(0,1fr));
+  gap: 10px 8px;
+  margin: 12px 0 0;
+}
+.ai-usage-module dt { color: var(--v2-ink-3); font-size: 11px; }
+.ai-usage-module dd { margin: 4px 0 0; font-size: 13px; font-variant-numeric: tabular-nums; overflow-wrap: anywhere; }
+@media (max-width: 900px) {
+  .ai-usage-grid { grid-template-columns: 1fr; }
+}

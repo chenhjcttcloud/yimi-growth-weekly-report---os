@@ -84,7 +84,7 @@ try{
       assert.equal(url.searchParams.get('employeeId'),employee.userId);
       return json({ok:true,monthly:monthly.find(value=>value.month===url.searchParams.get('month')),collaborations:[],results:[]});
     }
-    if(p==='/api/departments')return json({ok:true,month:url.searchParams.get('month')||month,canScore:role==='boss',currentUserId:role==='boss'?boss.userId:admin.userId,departments:[department],archivedDepartments:[],employees:[employee],scoreTargets:[{departmentId:department.id,leaderUserId:employee.userId,name:employee.name,ratingRequired:true}],scores:[]});
+    if(p==='/api/departments')return json({ok:true,month:url.searchParams.get('month')||month,canScore:role==='boss',currentUserId:role==='boss'?boss.userId:admin.userId,departments:[department],archivedDepartments:[],employees:[employee],scoreTargets:[{departmentId:department.id,leaderUserId:employee.userId,name:employee.name,ratingRequired:true}],leaderScoreTargets:[{departmentIds:[department.id],leaderUserId:employee.userId,name:employee.name,ratingRequired:true}],scores:[],personScores:[]});
     if(p==='/api/manager-reviews'){
       const enabled=managerFixtureEnabled&&role==='boss';
       return json({ok:true,month:url.searchParams.get('month')||month,canReview:enabled,hasResponsibilities:enabled,tasks:enabled?[{...managerTask,submitted:managerSaved,locked:managerSaved,...(managerSaved?{score:89,comment:managerComment}:{})}]:[]});
@@ -157,7 +157,7 @@ try{
 
   // Repeated entry is idempotent and must leave existing draft persistence intact.
   await score().fill('83');await comment().fill('虚构草稿：重复点击左侧工作台后继续编辑。');
-  const storageKey='boss-leader-drafts:'+boss.userId,draftKey=JSON.stringify([month,department.id,employee.userId]);
+  const storageKey='boss-leader-person-drafts:'+boss.userId,draftKey=JSON.stringify([month,employee.userId]);
   await page.waitForFunction(({storageKey,draftKey})=>JSON.parse(sessionStorage.getItem(storageKey)||'{}')[draftKey]?.score==='83',{storageKey,draftKey});
   const savedDrafts=await page.evaluate(key=>sessionStorage.getItem(key),storageKey);
   for(let attempt=0;attempt<2;attempt++){

@@ -19,7 +19,7 @@ const pauseMessages:Record<string,string>={
  ai_scoring_paused:scoringPausedMessage,
  daily_ai_request_limit:dailyLimitMessage,
  ai_request_budget_unavailable:'暂时无法读取或记录 AI 评分请求次数，本次任务已暂停。恢复后可继续评分。',
- ai_model_changed:'本次任务运行期间 AI 模型配置已更改，评分已暂停。后续可按新的配置继续评分。',
+ ai_model_changed:'本次任务运行期间 AI 服务配置已更改，评分已暂停。后续可按新的配置继续评分。',
  upstream_quota_exhausted:'AI 服务额度不足，已暂停本次任务。请检查服务账户后继续补跑；尚未请求的周报仍保留在待处理队列。',
  upstream_retry_after_too_long:'AI 服务要求长时间等待，已暂停本次任务；稍后可继续补跑未完成评分。',
 };

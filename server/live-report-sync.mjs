@@ -54,17 +54,19 @@ export function validateAnalysis(value,facts){
  if(!Array.isArray(quality.scores)||quality.scores.length!==4||quality.scores.some(x=>typeof x!=='number'||!Number.isFinite(x)||x<0||x>100))throw Error('invalid_ai_analysis');
  return {...quality,summary:a.summary.slice(0,6000),questions:(Array.isArray(a.questions)?a.questions:[]).filter(x=>typeof x==='string').slice(0,5),anomalies:(Array.isArray(a.anomalies)?a.anomalies:[]).filter(x=>typeof x==='string').slice(0,10),tasks:(Array.isArray(a.tasks)?a.tasks:[]).filter(x=>x&&typeof x.title==='string'&&typeof x.description==='string').slice(0,4).map(x=>({title:x.title.slice(0,240),description:x.description.slice(0,6000),evidence:String(x.evidence||'').slice(0,4000),metric:String(x.metric||'').slice(0,2000),firstStep:String(x.firstStep||'').slice(0,2000),supportNeeded:String(x.supportNeeded||'').slice(0,2000),priority:['P0','P1','P2'].includes(x.priority)?x.priority:'P2'}))};
 }
-export function createLiveReportSync({query,exec,sql,config,settings,refreshDirectory,writeStatus,reserveAiRequest=async()=>true,onComplete=async()=>{},observeEmployee=async()=>{},calendar=()=>({}),fetcher=fetch,pause=ms=>new Promise(resolve=>setTimeout(resolve,ms))}){
+export function createLiveReportSync({query,exec,sql,config,settings,refreshDirectory,writeStatus,reserveAiRequest=async()=>true,measureAiRequest=(_model,operation)=>operation(),onComplete=async()=>{},observeEmployee=async()=>{},calendar=()=>({}),fetcher=fetch,pause=ms=>new Promise(resolve=>setTimeout(resolve,ms))}){
  let running=false,statusWrites=Promise.resolve(),projection=Promise.resolve(),collectionStartDate='';
  let modelQueue=Promise.resolve(),modelCooldownUntil=0;
  const emit=state=>{statusWrites=statusWrites.catch(()=>{}).then(()=>writeStatus(state));return statusWrites;};
  const jsonFile=async name=>{try{return JSON.parse(await readFile(path.join(config.dataDir,name+'.json'),'utf8'));}catch{return {};}};
  const saveFile=async(name,value)=>{await mkdir(config.dataDir,{recursive:true});const p=path.join(config.dataDir,name+'.json'),tmp=p+'.tmp';await writeFile(tmp,JSON.stringify(value,null,2));await rename(tmp,p);};
  const inactive=async userId=>Number((await query(`SELECT is_active FROM employees WHERE user_id=${sql(userId)};`))[0]?.is_active)===0;
- async function request(url,body,token,model=false){
+ async function request(url,body,token,model=false,receive){
   let response;try{response=await fetcher(url,{method:'POST',headers:{'content-type':'application/json',...(token?{authorization:'Bearer '+token}:{})},body:JSON.stringify(body),signal:AbortSignal.timeout(120000)});}catch(error){if(['AbortError','TimeoutError'].includes(error?.name))throw error;throw Object.assign(Error('upstream_network_error'),{code:'upstream_network_error'});}
   let value;try{value=await response.json();}catch(error){if(!response.ok)throw upstreamFailure(response,null,model);throw error;}
-  if(!response.ok||value?.code&&value.code!==0)throw upstreamFailure(response,value,model);
+  const ok=response.ok&&(!value?.code||value.code===0);
+  receive?.(ok,value?.usage);
+  if(!ok)throw upstreamFailure(response,value,model);
   return value;
  }
  async function waitForModel(attempt){
@@ -73,6 +75,9 @@ export function createLiveReportSync({query,exec,sql,config,settings,refreshDire
   // requested interval without waiting in wall-clock time.
   while(remaining>0){const step=Math.min(60000,remaining);await pause(step);remaining-=step;}
   modelCooldownUntil=0;
+ }
+ function aiConfigurationChanged(batch){
+  return config.kimiFollowupModel!==batch.model||config.moonshotBaseUrl!==batch.baseUrl||config.moonshotApiKey!==batch.apiKey;
  }
  function analyze(report,canProcess,weights,onAttempt,batch,automaticAttemptsLeft){
   const job=modelQueue.then(()=>{
@@ -89,20 +94,21 @@ export function createLiveReportSync({query,exec,sql,config,settings,refreshDire
   for(let attempt=1;attempt<=MAX_ANALYSIS_ATTEMPTS;attempt++){
    await waitForModel(attempt);
    if(!await canProcess(report))return null;
-   if(config.kimiFollowupModel!==batch.model){batch.blockedReason='ai_model_changed';return ANALYSIS_DEFERRED;}
+   if(aiConfigurationChanged(batch)){batch.blockedReason='ai_model_changed';return ANALYSIS_DEFERRED;}
    try{
     const reservation=await reserveAiRequest();
     if(reservation!==true){batch.blockedReason=reservation==='ai_scoring_paused'?reservation:'daily_ai_request_limit';return ANALYSIS_DEFERRED;}
    }catch{batch.blockedReason='ai_request_budget_unavailable';return ANALYSIS_DEFERRED;}
    if(await onAttempt(attempt,null)===false)return null;
-   if(config.kimiFollowupModel!==batch.model){batch.blockedReason='ai_model_changed';return ANALYSIS_DEFERRED;}
+   if(aiConfigurationChanged(batch)){batch.blockedReason='ai_model_changed';return ANALYSIS_DEFERRED;}
    try{
     const messages=[{role:'system',content:buildReportQualityPrompt()},{role:'user',content:JSON.stringify({week:report.end,report:report.facts,previousPlan})}];
     if(feedback){
      if(lastOutput)messages.push({role:'assistant',content:lastOutput.slice(0,100000)});
      messages.push({role:'user',content:JSON.stringify({validationFeedback:feedback,instruction:'上一份结果未通过程序校验。请针对指定字段修正，保持原评分细则和原文证据要求，重新输出完整JSON；不得编造引文。'})});
     }
-    const value=await request(config.moonshotBaseUrl+'/chat/completions',{model:batch.model,max_completion_tokens:10000,thinking:{type:'disabled'},response_format:{type:'json_object'},messages},config.moonshotApiKey,true);
+    const value=await measureAiRequest(batch.model,receive=>request(batch.baseUrl+'/chat/completions',
+      {model:batch.model,max_completion_tokens:10000,thinking:{type:'disabled'},response_format:{type:'json_object'},messages},batch.apiKey,true,receive));
     lastOutput=value.choices?.[0]?.message?.content||'';
     if(value.choices?.[0]?.finish_reason==='length')throw Object.assign(Error('response_truncated'),{code:'response_truncated'});
     const ai=validateAnalysis(JSON.parse(lastOutput.replace(/^```(?:json)?\s*|\s*```$/g,'')),report.facts);
@@ -173,7 +179,8 @@ export function createLiveReportSync({query,exec,sql,config,settings,refreshDire
    return periods.some(period=>/^\d{4}-\d{2}-\d{2}$/.test(period.start_date)&&/^\d{4}-\d{2}-\d{2}$/.test(period.end_date)&&period.start_date<=report.start&&period.end_date>=report.end&&period.end_date<=today);
   }
   const canProcess=async report=>!await inactive(report.userId)||await closedHistoryCovers(report);
-  if(!config.moonshotApiKey)throw Error('ai_not_configured');
+  const analysisBatch={blockedReason:null,model:config.kimiFollowupModel,baseUrl:config.moonshotBaseUrl,apiKey:config.moonshotApiKey};
+  if(!analysisBatch.apiKey)throw Error('ai_not_configured');
   const stat={ok:true,running:true,mode:rescore?'rescore':'sync',...(rescore?{targetMonth:options.targetMonth}:{}),phase:rescore?'prepare':'pull',message:rescore?'正在读取所选月份未完成评分':'正在读取飞书汇报',startedAt:new Date().toISOString(),rowCount:0,analyzed:0,failed:0,cached:0,retryHeld:0,remaining:0,active:0,skippedInactive:0,skippedInactiveAnalysis:0,skippedSourceChanged:0,historicalInactiveReports:0,errors:[],diagnostics:[],byMonth:{}};
   await emit(stat);
   const reports=new Map();
@@ -219,7 +226,7 @@ export function createLiveReportSync({query,exec,sql,config,settings,refreshDire
   }
   const skippedMessage=()=>`${stat.skippedInactive?`；已跳过 ${stat.skippedInactive} 份已停用人员汇报`:''}${stat.skippedInactiveAnalysis?`；已停止 ${stat.skippedInactiveAnalysis} 份停用人员的排队分析`:''}`;
   if(!reports.size){await emit({...stat,running:false,phase:'done',message:rescore?'所选月份没有可补跑的在职员工周报':`本次没有需要导入的汇报${skippedMessage()}。`,finishedAt:new Date().toISOString()});return;}
-  const work=[],analysisBatch={blockedReason:null,model:config.kimiFollowupModel};let batch='';
+  const work=[];let batch='';
   function monthCell(report){return stat.byMonth[report.end.slice(0,7)]??={total:0,completed:0,failed:0,cached:0,remaining:0,active:0,skipped:0};}
   function recordRetryHold(cell){stat.retryHeld++;cell.retryHeld=(cell.retryHeld||0)+1;}
   function updateRemaining(){
