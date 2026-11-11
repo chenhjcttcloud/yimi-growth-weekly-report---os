@@ -37,15 +37,21 @@ const retained=Object.fromEntries(untouchedIds.map(id=>[id,record(id)]));
 const humanTables=['scoring360_responses','monthly_manager_scores','department_leader_scores','department_person_scores','performance_results'];
 const humanBefore=JSON.stringify(humanTables.map(table=>[table,run('SELECT * FROM '+table+' ORDER BY rowid;',true)]));
 for(const name of ['prototypeData','scoring360','kimiInsights','kimiInsightsByPeriod','monthlyMeetingInsights'])await writeFile(data+'/'+name+'.json',JSON.stringify(name==='prototypeData'?{meta:{collectionStartDate:'2026-09-01',periods:[]},employee_summary:[],weekly_scores:[]}:name==='scoring360'?{cycles:[],assignments:[],responses:[]}:{}));
-const callsFile=dir+'/upstream-calls.log',releaseGate=dir+'/release-ai.flag';
+const callsFile=dir+'/upstream-calls.log',modelsCallsFile=dir+'/upstream-models.log',releaseGate=dir+'/release-ai.flag';
 await writeFile(dir+'/provider.mjs',`
 import {appendFile,access} from 'node:fs/promises';
 import {makeReportQualityAnalysis} from ${JSON.stringify(new URL('./report-quality-test-fixtures.mjs',import.meta.url).href)};
 const RealDate=Date,stamp=Date.parse('2026-11-02T08:00:00Z');globalThis.Date=class extends RealDate{constructor(...args){super(...(args.length?args:[stamp]));}static now(){return stamp;}};
-let requests=0;
+let requests=0,modelListings=0;
 const completion=(content,usage)=>new Response(JSON.stringify({choices:[{finish_reason:'stop',message:{content}}],usage}));
 globalThis.fetch=async(url,options={})=>{
  const target=String(url);
+ if(target==='https://fixture-ai.invalid/v1/models'){
+  const authorized=new Headers(options.headers).get('authorization')==='Bearer explicit-fixture-key';
+  await appendFile(${JSON.stringify(modelsCallsFile)},JSON.stringify({authorized,method:options.method,redirect:options.redirect})+'\\n');
+  if(!authorized||++modelListings>1)return new Response('PRIVATE_PROVIDER_MODELS_ERROR',{status:403});
+  return Response.json({data:[{id:'fixture-quality-model'},{id:'fixture-fast-model'},{id:'fixture-fast-model'},{id:'model-explicit-fixture-key'},{id:42}]});
+ }
  if(target!=='https://fixture-ai.invalid/v1/chat/completions'){await appendFile(${JSON.stringify(callsFile)},JSON.stringify({kind:'unexpected',url:target})+'\\n');throw Error('fixture_external_request_blocked');}
  const body=JSON.parse(options.body),prompt=body.messages.find(message=>message.role==='user').content;
  if(prompt.startsWith('请基于以下上下文回答最后的追问：')){
@@ -98,6 +104,20 @@ try{
  assert.equal(legacyKeySave.status,400);assert.equal(legacyKeySave.body.error,'ai_key_action_required');
  const explicitKeySave=await call('POST',{action:'replace',apiKey:'explicit-fixture-key'},'admin','/api/system-settings/ai/key');
  assert.deepEqual(explicitKeySave,{status:200,body:{ok:true,keyConfigured:true}});
+ const modelsRoute='/api/system-settings/ai/models';
+ assert.equal((await call('GET',undefined,'a',modelsRoute)).status,403);
+ await assert.rejects(readFile(modelsCallsFile,'utf8'),{code:'ENOENT'});
+ const beforeDiscovery=run("SELECT value_json FROM app_settings WHERE key='ai_runtime';",true);
+ const listed=await fetch(base+modelsRoute+'?baseUrl=https%3A%2F%2Fwrong-provider.invalid%2Fv1&apiKey=unsaved-key',{headers:{cookie:cookie('admin')}});
+ assert.equal(listed.status,200);
+ assert.equal(listed.headers.get('cache-control'),'no-store');
+ const modelList=await listed.json();
+ assert.equal(modelList.baseUrl,'https://fixture-ai.invalid/v1');
+ assert.deepEqual([...modelList.models].sort(),['fixture-fast-model','fixture-quality-model']);
+ assert.deepEqual(await call('GET',undefined,'admin',modelsRoute),{status:502,body:{ok:false,error:'ai_models_unavailable'}});
+ assert.deepEqual((await readFile(modelsCallsFile,'utf8')).trim().split('\n').map(line=>JSON.parse(line)),
+  Array(2).fill({authorized:true,method:'GET',redirect:'error'}));
+ assert.deepEqual(run("SELECT value_json FROM app_settings WHERE key='ai_runtime';",true),beforeDiscovery,'discovering models leaves the saved settings intact');
  assert.equal((await providerCalls()).length,0,'authorization and validation never start a model or Feishu request');
  const start=await call('POST',{mode:'rescore',targetMonth:'2026-10'});assert.equal(start.status,202);
  const busy=await call('POST',{mode:'rescore',targetMonth:'2026-10'});assert.equal(busy.status,409);assert.equal(busy.body.alreadyRunning,true);
@@ -133,5 +153,9 @@ try{
   personal_coach:[1,0,0,20,5,0,25],task_followup:[1,0,0,7,3,0,10],
  });
  assert.equal((await providerCalls()).length,5,'cached results do not add provider usage');
+ const clearForDiscovery=await call('POST',{action:'clear'},'admin','/api/system-settings/ai/key');
+ assert.deepEqual(clearForDiscovery,{status:200,body:{ok:true,keyConfigured:false}});
+ assert.deepEqual(await call('GET',undefined,'admin',modelsRoute),{status:503,body:{ok:false,error:'ai_not_configured'}});
+ assert.equal((await readFile(modelsCallsFile,'utf8')).trim().split('\n').length,2,'no saved key means no provider discovery request');
  const result={ok:true,actualLocalServer:true,managementBoundaryPreserved:true,ordinaryMemberDenied:true,invalidMonthRejected:true,busy409:true,storedMonthScope:true,onlyActiveSubmitted:true,version1And2CacheAccepted:true,preciseProgress:true,safeDiagnostic:true,correctionFeedback:true,oldScorePreserved:true,successfulCacheResume:true,humanScoresUntouched:true,aiUsageByModule:true,explicitKeyReplacement:true,feishuQueries:0,realProviderRequests:0,syntheticProviderCalls:5,messagesSent:0,artifacts:dir};await writeFile(dir+'/result.json',JSON.stringify(result,null,2));console.log(JSON.stringify(result));
 }catch(error){console.error(logs);throw error;}finally{if(server?.exitCode===null){server.kill('SIGTERM');if(server.exitCode===null)await new Promise(resolve=>server.once('exit',resolve));}await writeFile(dir+'/server.log',logs);console.log('Test artifacts retained:',dir);}

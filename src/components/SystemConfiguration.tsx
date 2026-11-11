@@ -1,12 +1,76 @@
 import {useEffect,useState} from 'react';
 import {AiUsagePanel} from './AiUsagePanel';
+import {AppSelect} from './AppSelect';
 import {MonthlyScoreReminderSettings} from './MonthlyScoreReminderSettings';
 import '../styles/ai-settings.css';
 const errors:Record<string,string>={future_cycle_required:'规则须从下个月或更晚月份生效',invalid_weights:'四模块权重必须为 0–100 的数字，合计 100%',invalid_deadline:'请填写有效截止时间',invalid_reminder_hours:'提醒时间须为 1–720 的整数小时',policy_version_exists:'该月份已配置规则，请选择新的生效月份',invalid_ai_url:'请填写公开的 HTTPS API 服务地址，不含密钥或查询参数',invalid_ai_model:'请填写模型名称',ai_key_host_change_requires_clear:'切换到另一服务来源前，请先清除当前密钥。保存新地址后，再为该服务设置密钥。',ai_key_service_address_changed:'API 服务地址已变更，请确认当前地址后重新操作。',ai_key_action_required:'请通过「更换 API 密钥」或「清除 API 密钥」管理密钥。',invalid_ai_key_action:'请选择有效的密钥操作。',invalid_ai_key:'请填写有效的 API 密钥。',settings_save_failed:'保存失败，请稍后重试'};
 type KeyAction='replace'|'clear';
+type AiDraft={baseUrl:string;model:string};
+type AiConnection=AiDraft&{keyConfigured:boolean};
+type ModelList={baseUrl:string;keyRevision:number;models:string[];notice?:string};
+
+function AiModelField({connection,draft,keyRevision,disabled,onChange}:{
+ connection:AiConnection;draft:AiDraft;keyRevision:number;disabled:boolean;onChange:(model:string)=>void;
+}){
+ const {baseUrl,keyConfigured}=connection;
+ const [modelList,setModelList]=useState<ModelList|null>(null);
+ const [refreshCount,setRefreshCount]=useState(0);
+ const [manual,setManual]=useState(false);
+
+ useEffect(()=>{
+  if(!keyConfigured||!baseUrl)return;
+  const controller=new AbortController();
+  setModelList(null);
+  async function loadModels(){
+   let models:string[]=[];
+   let notice:string|undefined;
+   try{
+    const response=await fetch('/api/system-settings/ai/models',{signal:controller.signal,cache:'no-store'});
+    const result=await response.json();
+    if(!response.ok||result?.ok!==true||!Array.isArray(result.models)){
+     notice=response.status===504?'读取模型列表超时，可手动填写。':'暂时无法读取模型列表，可手动填写。';
+    }else if(result.baseUrl!==baseUrl){
+     notice='API 服务地址已变更，请刷新配置后重新读取模型列表。';
+    }else{
+     models=result.models.filter((value:unknown):value is string=>typeof value==='string'&&Boolean(value));
+    }
+   }catch{notice='暂时无法读取模型列表，可手动填写。';}
+   if(!controller.signal.aborted)setModelList({baseUrl,keyRevision,models,notice});
+  }
+  void loadModels();
+  return()=>controller.abort();
+ },[baseUrl,keyConfigured,keyRevision,refreshCount]);
+
+ const savedAddress=draft.baseUrl.trim().replace(/\/$/,'')===baseUrl.trim().replace(/\/$/,'');
+ const listAvailable=Boolean(keyConfigured&&baseUrl&&savedAddress);
+ const currentList=listAvailable&&modelList?.baseUrl===baseUrl&&modelList.keyRevision===keyRevision?modelList:null;
+ const hasModels=Boolean(currentList?.models.length);
+ const options=[...new Set([draft.model,connection.model,...(currentList?.models??[])].filter(Boolean))];
+ const loading=listAvailable&&!currentList;
+ const notice=!savedAddress?'保存 API 服务地址后可读取该服务的模型列表。'
+  :!listAvailable?'设置 API 密钥后可读取模型列表。'
+  :loading?'正在读取模型列表…'
+  :currentList?.notice||(!hasModels?'服务商暂无可选模型，可手动填写。':'');
+
+ return <div className="ai-model-field">
+  <label>模型名称{hasModels&&!manual?
+   <AppSelect aria-label="模型名称" value={draft.model} onValueChange={onChange} searchable searchPlaceholder="搜索模型…" placeholder="选择模型" disabled={disabled}>
+    {options.map(model=><option key={model} value={model}>{model}</option>)}
+   </AppSelect>:
+   <input autoComplete="off" value={draft.model} disabled={disabled} onChange={event=>{setManual(true);onChange(event.target.value);}}/>}
+  </label>
+  <div className="ai-settings-actions ai-model-actions">
+   <button type="button" className="secondary-button" disabled={disabled||!listAvailable||loading} onClick={()=>{setModelList(null);setRefreshCount(count=>count+1);}}>刷新模型列表</button>
+   {hasModels&&<button type="button" className="secondary-button" disabled={disabled} onClick={()=>setManual(value=>!value)}>{manual?'从列表选择':'手动填写'}</button>}
+  </div>
+  {notice&&<p className="pf-caption ai-model-notice" role="status">{notice}</p>}
+ </div>;
+}
+
 export function SystemConfiguration({section}:{section:'rules'|'ai'|'cycles'|'logs'}){
- const [data,setData]=useState<any>(null),[logs,setLogs]=useState<any[]>([]),[message,setMessage]=useState(''),[busy,setBusy]=useState(false),[policy,setPolicy]=useState<any>(null),[effective,setEffective]=useState(''),[ai,setAi]=useState({baseUrl:'',model:''});
+ const [data,setData]=useState<any>(null),[logs,setLogs]=useState<any[]>([]),[message,setMessage]=useState(''),[busy,setBusy]=useState(false),[policy,setPolicy]=useState<any>(null),[effective,setEffective]=useState(''),[ai,setAi]=useState<AiDraft>({baseUrl:'',model:''});
  const [keyAction,setKeyAction]=useState<KeyAction|null>(null),[apiKey,setApiKey]=useState('');
+ const [keyRevision,setKeyRevision]=useState(0);
  function selectKeyAction(action:KeyAction|null){setApiKey('');setKeyAction(action);}
  async function load(){selectKeyAction(null);try{const r=await fetch('/api/system-settings');if(!r.ok)throw Error();const j=await r.json();setData(j);setPolicy(j.policy);setAi({baseUrl:j.ai.baseUrl,model:j.ai.model});const d=new Date(j.currentMonth+'-01T00:00:00Z');d.setUTCMonth(d.getUTCMonth()+1);setEffective(d.toISOString().slice(0,7));if(section==='logs'){const r=await fetch('/api/system-settings/logs');if(!r.ok)throw Error();setLogs((await r.json()).logs||[]);}}catch{setMessage('无法读取系统配置，请刷新重试');}}
  useEffect(()=>{void load();},[section]);
@@ -26,6 +90,7 @@ export function SystemConfiguration({section}:{section:'rules'|'ai'|'cycles'|'lo
     return;
    }
    setData((current:any)=>({...current,ai:{...current.ai,keyConfigured:result.keyConfigured}}));
+   setKeyRevision(revision=>revision+1);
    setKeyAction(null);
    setMessage(result.keyConfigured?'API 密钥已保存。':'API 密钥已清除，实时 AI 调用已关闭。');
   }catch{setMessage('密钥操作失败，请稍后重试。');}finally{setBusy(false);}
@@ -36,9 +101,9 @@ export function SystemConfiguration({section}:{section:'rules'|'ai'|'cycles'|'lo
  {section==='cycles'&&<MonthlyScoreReminderSettings onSaved={refreshReminderStatus}/>}
  {(section==='rules'||section==='cycles')&&<><div className="pf-notice">月度最终分：负责人或老板评分30%＋同事互评70%，两部分全部完成自动发布。周报质量分与提交统计自动生成，无需手动确认。</div><div className="pf-form"><label>新规则生效月份<input type="month" value={effective} onChange={e=>setEffective(e.target.value)}/></label><label>周报截止时间（周五／假前最后工作日，北京时间）<input type="time" value={policy.deadlineTime} onChange={e=>setPolicy({...policy,deadlineTime:e.target.value})}/></label>{['本周成果','问题与挑战','下周计划','思考与复盘'].map((label,index)=><label key={label}>{label}权重（%）<input type="number" min="0" max="100" value={policy.weights[index]} onChange={e=>setPolicy({...policy,weights:policy.weights.map((w:number,i:number)=>i===index?Number(e.target.value):w)})}/></label>)}<label>催评等待时间（小时）<input type="number" min="1" max="720" value={policy.reminderWaitHours} onChange={e=>setPolicy({...policy,reminderWaitHours:Number(e.target.value)})}/></label><label>催评冷却时间（小时）<input type="number" min="1" max="720" value={policy.reminderCooldownHours} onChange={e=>setPolicy({...policy,reminderCooldownHours:Number(e.target.value)})}/></label></div><p className="pf-caption">周报质量月分按已提交周报质量分算术平均；提交及时率独立计算；遇假期按最后工作日截止，整周放假免交。个人催评外发状态：{data.integration.remindersEnabled?'已启用':'未开启'}，修改等待时间不会开启外发。在「周期与提醒」统一配置飞书评分提醒开关及生效月份，个人催评与月末自动提醒共同生效；管理员手动发送需显式点击。评分关系在「协作评分关系」中管理。</p><button className="primary-button" disabled={busy} onClick={()=>void save('policy',{effectiveMonth:effective,policy})}>保存新周期规则</button><h3>规则版本</h3><div className="pf-table-scroll"><table className="pf-table"><thead><tr><th>生效月份</th><th>四模块权重</th><th>截止时间</th><th>催评等待 / 冷却</th></tr></thead><tbody><tr><td>初始规则</td><td>30 / 25 / 25 / 20</td><td>周五／假前最后工作日 20:00</td><td>24 / 24 小时</td></tr>{data.versions.map((v:any)=><tr key={v.effective_month}><td>{v.effective_month}</td><td>{v.policy.weights.join(' / ')}</td><td>{v.policy.deadlineTime}</td><td>{v.policy.reminderWaitHours} / {v.policy.reminderCooldownHours} 小时</td></tr>)}</tbody></table></div></>}
  {section==='ai'&&<>
-  <div className="pf-form">
+  <div className="pf-form ai-connection-form">
    <label>API 服务地址<input autoComplete="off" value={ai.baseUrl} disabled={busy} onChange={e=>setAi({...ai,baseUrl:e.target.value})} placeholder="https://服务地址/v1"/></label>
-   <label>模型名称<input autoComplete="off" value={ai.model} disabled={busy} onChange={e=>setAi({...ai,model:e.target.value})}/></label>
+   <AiModelField connection={data.ai} draft={ai} keyRevision={keyRevision} disabled={busy} onChange={model=>setAi(current=>({...current,model}))}/>
   </div>
   <p className="pf-caption">此配置用于周报 AI 评分、管理摘要、个人 AI 教练和任务追问。模型配置与密钥分别保存。</p>
   <div className="ai-settings-actions"><button type="button" className="primary-button" disabled={busy||Boolean(keyAction)} onClick={()=>void save('ai',{baseUrl:ai.baseUrl,model:ai.model})}>保存 AI 配置</button></div>

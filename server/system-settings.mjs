@@ -2,8 +2,30 @@ import {createCipheriv,createDecipheriv,createHash,randomBytes,randomUUID} from 
 export const defaultPolicy={weights:[30,25,25,20],deadlineTime:'20:00',reminderWaitHours:24,reminderCooldownHours:24};
 const DEFAULT_DAILY_REPORT_AI_REQUEST_LIMIT=60;
 const DEFAULT_REPORT_SCORING_START_MONTH='2026-11';
+const AI_MODELS_TIMEOUT_MS=8000;
+const AI_MODELS_RESPONSE_LIMIT=1024*1024;
+const AI_MODELS_LIMIT=500;
 const dailyReportAiRequestLimitSql=`COALESCE((SELECT json_extract(value_json,'$.dailyAiRequestLimit') FROM app_settings WHERE key='report_automation_config'),${DEFAULT_DAILY_REPORT_AI_REQUEST_LIMIT})`;
-export function createSystemSettings({query,exec,sql,config,now=()=>new Date()}) {
+
+function parseAiBaseUrl(baseUrl){
+ let url;
+ try{url=new URL(baseUrl);}catch{return null;}
+ if(url.protocol!=='https:'||url.username||url.password||url.search||url.hash||!url.hostname.includes('.')||/^(localhost|127\.|10\.|192\.168\.|169\.254\.|172\.(1[6-9]|2\d|3[01])\.)/i.test(url.hostname))return null;
+ return url;
+}
+
+async function readAiModelsResponse(response){
+ const chunks=[];
+ let bytes=0;
+ for await(const chunk of response.body){
+  bytes+=chunk.byteLength;
+  if(bytes>AI_MODELS_RESPONSE_LIMIT)throw Error('ai_models_unavailable');
+  chunks.push(chunk);
+ }
+ return JSON.parse(Buffer.concat(chunks,bytes).toString('utf8'));
+}
+
+export function createSystemSettings({query,exec,sql,config,now=()=>new Date(),fetcher=fetch}) {
  const key=createHash('sha256').update(config.sessionSecret).digest();
  let aiWrites=Promise.resolve();
  const month=()=>now().toLocaleDateString('sv-SE',{timeZone:'Asia/Shanghai'}).slice(0,7);
@@ -118,8 +140,8 @@ export function createSystemSettings({query,exec,sql,config,now=()=>new Date()})
  async function saveAI(body,user){
   if(String(body.apiKey??'').trim()||body.clearKey)throw Error('ai_key_action_required');
   const baseUrl=String(body.baseUrl||'').replace(/\/$/,''),model=String(body.model||'').trim();
-  let url;try{url=new URL(baseUrl);}catch{throw Error('invalid_ai_url');}
-  if(url.protocol!=='https:'||url.username||url.password||url.search||url.hash||!url.hostname.includes('.')||/^(localhost|127\.|10\.|192\.168\.|169\.254\.|172\.(1[6-9]|2\d|3[01])\.)/i.test(url.hostname))throw Error('invalid_ai_url');
+  const url=parseAiBaseUrl(baseUrl);
+  if(!url)throw Error('invalid_ai_url');
   if(!model||model.length>150)throw Error('invalid_ai_model');
   return enqueueAiWrite(async()=>{
    const stored=await setting();
@@ -148,6 +170,34 @@ export function createSystemSettings({query,exec,sql,config,now=()=>new Date()})
    return {keyConfigured:!!config.moonshotApiKey};
   });
  }
+ async function listAiModels(){
+  const {moonshotBaseUrl:baseUrl,moonshotApiKey:apiKey}=config;
+  const url=typeof baseUrl==='string'?parseAiBaseUrl(baseUrl):null;
+  if(!url||typeof apiKey!=='string'||!apiKey||/[\s\p{Cc}]/u.test(apiKey))throw Error('ai_not_configured');
+  const containsKey=value=>value===apiKey||(apiKey.length>=12&&value.includes(apiKey));
+  if(containsKey(baseUrl))throw Error('ai_not_configured');
+  url.pathname=url.pathname.replace(/\/+$/,'')+'/models';
+  const signal=AbortSignal.timeout(AI_MODELS_TIMEOUT_MS);
+  try{
+   const response=await fetcher(url.href,{method:'GET',headers:{accept:'application/json',authorization:'Bearer '+apiKey},redirect:'error',signal});
+   if(!response.ok){
+    void response.body?.cancel().catch(()=>{});
+    throw Error('ai_models_unavailable');
+   }
+   const value=await readAiModelsResponse(response);
+   if(!Array.isArray(value?.data)||config.moonshotBaseUrl!==baseUrl||config.moonshotApiKey!==apiKey)throw Error('ai_models_unavailable');
+   const models=new Set();
+   for(const entry of value.data){
+    const id=typeof entry?.id==='string'?entry.id.trim():'';
+    if(!id||id.length>150||/[\s\p{Cc}]/u.test(id)||containsKey(id))continue;
+    models.add(id);
+    if(models.size===AI_MODELS_LIMIT)break;
+   }
+   return {baseUrl,models:[...models]};
+  }catch(error){
+   throw Error(signal.aborted||error?.name==='TimeoutError'?'ai_models_timeout':'ai_models_unavailable');
+  }
+ }
  async function logs(){return (await query('SELECT id,actor_name,action,hex(details_json) AS details_hex,created_at FROM system_operation_logs ORDER BY created_at DESC,rowid DESC LIMIT 100;')).map(r=>({...r,details:JSON.parse(Buffer.from(r.details_hex,'hex').toString('utf8')),details_hex:undefined}));}
- return {initialize,overview,saveReport,savePolicy,saveAI,saveAIKey,policyFor,policies,audit,logs,monthlyReminderConfig,saveMonthlyReminders,scoringRemindersEnabled,reportAutomationConfig,saveReportAutomation,reportAiRequestsToday,reserveReportAiRequest,eventOverview,saveEvents,featureSettings,saveFeatures};
+ return {initialize,overview,saveReport,savePolicy,saveAI,saveAIKey,listAiModels,policyFor,policies,audit,logs,monthlyReminderConfig,saveMonthlyReminders,scoringRemindersEnabled,reportAutomationConfig,saveReportAutomation,reportAiRequestsToday,reserveReportAiRequest,eventOverview,saveEvents,featureSettings,saveFeatures};
 }

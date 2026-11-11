@@ -325,6 +325,14 @@ async function route(req, res) {
     res.setHeader('cache-control','no-store');
     if(req.method==='GET'&&url.pathname==='/api/system-settings')return sendJson(res,200,{ok:true,...await systemSettings.overview()});
     if(req.method==='GET'&&url.pathname==='/api/system-settings/logs')return sendJson(res,200,{ok:true,logs:await systemSettings.logs()});
+    if(req.method==='GET'&&url.pathname==='/api/system-settings/ai/models'){
+      try{return sendJson(res,200,{ok:true,...await systemSettings.listAiModels()});}
+      catch(error){
+        const statuses={ai_not_configured:503,ai_models_timeout:504,ai_models_unavailable:502};
+        const code=Object.hasOwn(statuses,error.message)?error.message:'ai_models_unavailable';
+        return sendJson(res,statuses[code],{ok:false,error:code});
+      }
+    }
     if(req.method==='GET'&&url.pathname==='/api/system-settings/ai/usage'){
       try{return sendJson(res,200,{ok:true,...await aiUsage.overview(Number(url.searchParams.get('days')??30))});}
       catch(error){if(error.message==='invalid_ai_usage_range')return sendJson(res,400,{ok:false,error:error.message});throw error;}

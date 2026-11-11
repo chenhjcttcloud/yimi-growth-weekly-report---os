@@ -25,6 +25,10 @@
   border-color: var(--v2-brand);
 }
 .system-config > .ai-settings-actions { margin-top: 14px; }
+.system-config .ai-connection-form { align-items: start; }
+.ai-model-field { min-width: 0; }
+.ai-model-actions { margin-top: 8px; }
+.ai-model-notice { margin-top: 6px; }
 .ai-key-confirmation,
 .ai-usage-module {
   padding: 14px;
