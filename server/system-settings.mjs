@@ -5,7 +5,10 @@ const DEFAULT_REPORT_SCORING_START_MONTH='2026-11';
 const AI_MODELS_TIMEOUT_MS=8000;
 const AI_MODELS_RESPONSE_LIMIT=1024*1024;
 const AI_MODELS_LIMIT=500;
-const dailyReportAiRequestLimitSql=`COALESCE((SELECT json_extract(value_json,'$.dailyAiRequestLimit') FROM app_settings WHERE key='report_automation_config'),${DEFAULT_DAILY_REPORT_AI_REQUEST_LIMIT})`;
+const reportAiPausedSql=`COALESCE((SELECT CASE
+ WHEN json_type(value_json,'$.scoringPaused') IN ('true','false') THEN json_extract(value_json,'$.scoringPaused')
+ ELSE json_extract(value_json,'$.dailyAiRequestLimit')=0 END
+ FROM app_settings WHERE key='report_automation_config'),0)`;
 
 function parseAiBaseUrl(baseUrl){
  let url;
@@ -66,29 +69,33 @@ export function createSystemSettings({query,exec,sql,config,now=()=>new Date(),f
  async function scoringRemindersEnabled(targetMonth=month()){const c=await monthlyReminderConfig();return c.enabled&&c.configured&&(!c.startMonth||targetMonth>=c.startMonth);}
  async function reportAutomationConfig(){
   const row=(await query("SELECT value_json FROM app_settings WHERE key='report_automation_config';"))[0],stored=row?JSON.parse(row.value_json):null;
-  return {enabled:stored?stored.enabled===true:config.larkReportAutoSyncEnabled===true,intervalMinutes:stored?.intervalMinutes||15,dailyAiRequestLimit:stored?.dailyAiRequestLimit??DEFAULT_DAILY_REPORT_AI_REQUEST_LIMIT,scoringStartMonth:stored?.scoringStartMonth??DEFAULT_REPORT_SCORING_START_MONTH,feishuConfigured:!!(config.feishuAppId&&config.feishuAppSecret),aiConfigured:!!config.moonshotApiKey};
+  const scoringPaused=typeof stored?.scoringPaused==='boolean'?stored.scoringPaused:stored?.dailyAiRequestLimit===0;
+  // Keep the pause indicator compatible with older settings clients.
+  const dailyAiRequestLimit=scoringPaused?0:stored?.dailyAiRequestLimit||DEFAULT_DAILY_REPORT_AI_REQUEST_LIMIT;
+  return {enabled:stored?stored.enabled===true:config.larkReportAutoSyncEnabled===true,intervalMinutes:stored?.intervalMinutes||15,scoringPaused,dailyAiRequestLimit,scoringStartMonth:stored?.scoringStartMonth??DEFAULT_REPORT_SCORING_START_MONTH,feishuConfigured:!!(config.feishuAppId&&config.feishuAppSecret),aiConfigured:!!config.moonshotApiKey};
  }
- function reportAiBudgetKey(){return sql('report_ai_requests:'+now().toLocaleDateString('sv-SE',{timeZone:'Asia/Shanghai'}));}
+ function reportAiUsageKey(){return sql('report_ai_requests:'+now().toLocaleDateString('sv-SE',{timeZone:'Asia/Shanghai'}));}
  async function reportAiRequestsToday(){
-  const row=(await query(`SELECT value_json FROM app_settings WHERE key=${reportAiBudgetKey()};`))[0];
+  const row=(await query(`SELECT value_json FROM app_settings WHERE key=${reportAiUsageKey()};`))[0];
   return Number(row?.value_json??0);
  }
  async function reserveReportAiRequest(){
-  // Reserve before calling the provider, so restarts and concurrent processes cannot overspend.
+  // Check the persisted pause and count each request atomically across processes.
   const rows=await query(`INSERT INTO app_settings(key,value_json,updated_at)
-    SELECT ${reportAiBudgetKey()},'1',datetime('now') WHERE ${dailyReportAiRequestLimitSql}>0
+    SELECT ${reportAiUsageKey()},'1',datetime('now') WHERE ${reportAiPausedSql}=0
     ON CONFLICT(key) DO UPDATE SET value_json=CAST(app_settings.value_json AS INTEGER)+1,updated_at=excluded.updated_at
-    WHERE CAST(app_settings.value_json AS INTEGER)<${dailyReportAiRequestLimitSql} RETURNING key;`);
-  if(rows.length===1)return true;
-  return (await reportAutomationConfig()).dailyAiRequestLimit===0?'ai_scoring_paused':false;
+    RETURNING key;`);
+  return rows.length===1?true:'ai_scoring_paused';
  }
  async function saveReportAutomation(body,user){
   if(typeof body.enabled!=='boolean'||body.intervalMinutes!==undefined&&(!Number.isInteger(body.intervalMinutes)||body.intervalMinutes<5||body.intervalMinutes>1440))throw Error('invalid_report_automation');
+  if(body.scoringPaused!==undefined&&typeof body.scoringPaused!=='boolean')throw Error('invalid_report_scoring_pause');
   if(body.dailyAiRequestLimit!==undefined&&(!Number.isInteger(body.dailyAiRequestLimit)||body.dailyAiRequestLimit<0||body.dailyAiRequestLimit>500))throw Error('invalid_ai_request_limit');
   if(body.scoringStartMonth!==undefined&&(typeof body.scoringStartMonth!=='string'||!/^\d{4}-(0[1-9]|1[0-2])$/.test(body.scoringStartMonth)))throw Error('invalid_report_scoring_start_month');
   if(body.enabled&&!(config.feishuAppId&&config.feishuAppSecret))throw Error('feishu_required');
   if(body.enabled&&!config.moonshotApiKey)throw Error('ai_required');
-  const value={enabled:body.enabled,...(body.intervalMinutes===undefined?{}:{intervalMinutes:body.intervalMinutes}),...(body.dailyAiRequestLimit===undefined?{}:{dailyAiRequestLimit:body.dailyAiRequestLimit}),...(body.scoringStartMonth===undefined?{}:{scoringStartMonth:body.scoringStartMonth})};
+  const scoringPaused=body.scoringPaused??(body.dailyAiRequestLimit===undefined?undefined:body.dailyAiRequestLimit===0);
+  const value={enabled:body.enabled,scoringPaused,intervalMinutes:body.intervalMinutes,dailyAiRequestLimit:body.dailyAiRequestLimit,scoringStartMonth:body.scoringStartMonth};
   await exec(`INSERT INTO app_settings(key,value_json,updated_at) VALUES('report_automation_config',${sql(JSON.stringify(value))},datetime('now')) ON CONFLICT(key) DO UPDATE SET value_json=json_patch(app_settings.value_json,excluded.value_json),updated_at=excluded.updated_at;`);
   await audit(user,'周报自动收集与AI评分配置已保存',value);
  }

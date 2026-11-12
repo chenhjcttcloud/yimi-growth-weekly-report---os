@@ -59,12 +59,14 @@ try{
  const savedReports=userId=>run(`SELECT * FROM weekly_reports WHERE employee_user_id=${sql(userId)} ORDER BY id;`,true);
  await sync.run(options);
  assert.equal(status.ok,true);assert.equal(pages,2);assert.equal(calls,1);assert.equal(count('weekly_reports'),1);
+ assert.equal(status.aiRequestBudget,2,'only matching templates enter the analysis budget');assert.equal(status.aiRequests,1);
  let data=JSON.parse(await readFile(path.join(dir,'prototypeData.json')));
  assert.equal(data.weekly_scores.length,1);assert.equal(data.weekly_scores[0]['总分'],83.3);
  const insights=JSON.parse(await readFile(path.join(dir,'kimiInsightsByPeriod.json')));
  assert.equal(insights['period-2026-10-16'].employeeInsights[0].coachSummary,'AI 测试点评');
  assert.equal(insights['period-2026-10-16'].attentionQueue.length,1);
  await sync.run(options);assert.equal(calls,1,'unchanged reports reuse cached analysis');assert.equal(count('weekly_reports'),1);
+ assert.equal(status.aiRequestBudget,0);assert.equal(status.aiRequests,0);
  const firstContent=JSON.parse(savedReports('ou_1')[0].content_json);
  assert.equal(firstContent.aiPromptVersion,REPORT_QUALITY_PROMPT_VERSION);assert.equal(firstContent.ai.version,REPORT_QUALITY_VERSION);assert.equal(firstContent.ai.modules.length,4);assert(firstContent.ai.modules[0].criteria[0].reason);assert.equal(firstContent.ai.modules[0].criteria[0].evidence[0].quote,'完成3项验收');
  run("UPDATE weekly_reports SET content_json=json_set(content_json,'$.aiPromptVersion','old-prompt-version');");
@@ -88,6 +90,7 @@ try{
  await sync.run(options);
  assert.equal(status.ok,true);assert.equal(status.rowCount,2);assert.equal(status.skippedInactive,1);assert.equal(status.skippedInactiveAnalysis,0);
  assert.equal(calls,beforeMixed+1,'active cache is reused and only the new active member needs AI');
+ assert.equal(status.aiRequestBudget,2,'the cached and inactive reports add no requests to the new employee’s analysis budget');assert.equal(status.aiRequests,1);
  assert.deepEqual(savedReports('stopped-member'),retained,'stopped history is preserved without new rows');
  assert.deepEqual(run("SELECT * FROM employees WHERE user_id='stopped-member';",true),stoppedEmployee,'sync never reactivates the stopped member');
  assert.deepEqual(observed.slice(observedBefore),['ou_1','new-member'],'excluded reports do not observe employment dates');
@@ -100,6 +103,7 @@ try{
  incoming=[changedStopped];config.kimiFollowupModel='another-model';failAi=true;
  for(let attempt=0;attempt<2;attempt++){
   await sync.run(options);assert.equal(status.ok,true);assert.equal(status.phase,'done');assert.equal(status.rowCount,0);assert.equal(status.skippedInactive,1);
+  assert.equal(status.aiRequestBudget,0);assert.equal(status.aiRequests,0);
   assert.match(status.message,/已跳过 1 份已停用人员汇报/);
  }
  assert.equal(calls,beforeAllStopped.calls,'all-stopped repeated batches never call AI, even after model changes');

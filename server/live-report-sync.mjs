@@ -97,7 +97,7 @@ export function createLiveReportSync({query,exec,sql,config,settings,refreshDire
    if(aiConfigurationChanged(batch)){batch.blockedReason='ai_model_changed';return ANALYSIS_DEFERRED;}
    try{
     const reservation=await reserveAiRequest();
-    if(reservation!==true){batch.blockedReason=reservation==='ai_scoring_paused'?reservation:'daily_ai_request_limit';return ANALYSIS_DEFERRED;}
+    if(reservation!==true){batch.blockedReason=reservation==='ai_scoring_paused'?reservation:'ai_request_budget_unavailable';return ANALYSIS_DEFERRED;}
    }catch{batch.blockedReason='ai_request_budget_unavailable';return ANALYSIS_DEFERRED;}
    if(await onAttempt(attempt,null)===false)return null;
    if(aiConfigurationChanged(batch)){batch.blockedReason='ai_model_changed';return ANALYSIS_DEFERRED;}
@@ -107,8 +107,11 @@ export function createLiveReportSync({query,exec,sql,config,settings,refreshDire
      if(lastOutput)messages.push({role:'assistant',content:lastOutput.slice(0,100000)});
      messages.push({role:'user',content:JSON.stringify({validationFeedback:feedback,instruction:'上一份结果未通过程序校验。请针对指定字段修正，保持原评分细则和原文证据要求，重新输出完整JSON；不得编造引文。'})});
     }
-    const value=await measureAiRequest(batch.model,receive=>request(batch.baseUrl+'/chat/completions',
-      {model:batch.model,max_completion_tokens:10000,thinking:{type:'disabled'},response_format:{type:'json_object'},messages},batch.apiKey,true,receive));
+    const value=await measureAiRequest(batch.model,receive=>{
+     batch.requests++;
+     return request(batch.baseUrl+'/chat/completions',
+      {model:batch.model,max_completion_tokens:10000,thinking:{type:'disabled'},response_format:{type:'json_object'},messages},batch.apiKey,true,receive);
+    });
     lastOutput=value.choices?.[0]?.message?.content||'';
     if(value.choices?.[0]?.finish_reason==='length')throw Object.assign(Error('response_truncated'),{code:'response_truncated'});
     const ai=validateAnalysis(JSON.parse(lastOutput.replace(/^```(?:json)?\s*|\s*```$/g,'')),report.facts);
@@ -179,9 +182,9 @@ export function createLiveReportSync({query,exec,sql,config,settings,refreshDire
    return periods.some(period=>/^\d{4}-\d{2}-\d{2}$/.test(period.start_date)&&/^\d{4}-\d{2}-\d{2}$/.test(period.end_date)&&period.start_date<=report.start&&period.end_date>=report.end&&period.end_date<=today);
   }
   const canProcess=async report=>!await inactive(report.userId)||await closedHistoryCovers(report);
-  const analysisBatch={blockedReason:null,model:config.kimiFollowupModel,baseUrl:config.moonshotBaseUrl,apiKey:config.moonshotApiKey};
+  const analysisBatch={blockedReason:null,requests:0,model:config.kimiFollowupModel,baseUrl:config.moonshotBaseUrl,apiKey:config.moonshotApiKey};
   if(!analysisBatch.apiKey)throw Error('ai_not_configured');
-  const stat={ok:true,running:true,mode:rescore?'rescore':'sync',...(rescore?{targetMonth:options.targetMonth}:{}),phase:rescore?'prepare':'pull',message:rescore?'正在读取所选月份未完成评分':'正在读取飞书汇报',startedAt:new Date().toISOString(),rowCount:0,analyzed:0,failed:0,cached:0,retryHeld:0,remaining:0,active:0,skippedInactive:0,skippedInactiveAnalysis:0,skippedSourceChanged:0,historicalInactiveReports:0,errors:[],diagnostics:[],byMonth:{}};
+  const stat={ok:true,running:true,mode:rescore?'rescore':'sync',...(rescore?{targetMonth:options.targetMonth}:{}),phase:rescore?'prepare':'pull',message:rescore?'正在读取所选月份未完成评分':'正在读取飞书汇报',startedAt:new Date().toISOString(),rowCount:0,analyzed:0,failed:0,cached:0,retryHeld:0,remaining:0,active:0,aiRequestBudget:0,aiRequests:0,skippedInactive:0,skippedInactiveAnalysis:0,skippedSourceChanged:0,historicalInactiveReports:0,errors:[],diagnostics:[],byMonth:{}};
   await emit(stat);
   const reports=new Map();
   if(rescore){
@@ -231,6 +234,7 @@ export function createLiveReportSync({query,exec,sql,config,settings,refreshDire
   function monthCell(report){return stat.byMonth[report.end.slice(0,7)]??={total:0,completed:0,failed:0,cached:0,remaining:0,active:0,skipped:0};}
   function recordRetryHold(cell){stat.retryHeld++;cell.retryHeld=(cell.retryHeld||0)+1;}
   function updateRemaining(){
+   stat.aiRequests=analysisBatch.requests;
    stat.remaining=Math.max(0,stat.rowCount-stat.cached-stat.analyzed-stat.failed-stat.retryHeld-stat.skippedInactiveAnalysis-stat.skippedSourceChanged);
    for(const cell of Object.values(stat.byMonth))cell.remaining=Math.max(0,cell.total-cell.cached-cell.completed-cell.failed-(cell.retryHeld||0)-cell.skipped);
    const held=stat.retryHeld?`，已停止自动重试 ${stat.retryHeld} 份`:'';
@@ -270,6 +274,7 @@ export function createLiveReportSync({query,exec,sql,config,settings,refreshDire
    else work.push({report,content,automaticAttemptsLeft:rescore?Infinity:MAX_ANALYSIS_ATTEMPTS-automaticFailures});
   }
   if(batch)await exec(`UPDATE import_batches SET record_count=${stat.rowCount} WHERE id=${sql(batch)};`);
+  stat.aiRequestBudget=work.length*MAX_ANALYSIS_ATTEMPTS;
   updateRemaining();
   if(!stat.rowCount){await emit({...stat,running:false,phase:'done',message:`本次没有需要导入的汇报${skippedMessage()}。`,finishedAt:new Date().toISOString()});return;}
   const notify=()=>{projection=projection.catch(()=>{}).then(async()=>{await project();await refreshDirectory();await onComplete();stat.publicationPending=false;}).catch(()=>{stat.publicationPending=true;stat.publicationFailures=(stat.publicationFailures||0)+1;stat.diagnostics=[...stat.diagnostics,{code:'publication_update_failed',path:'publication',retryable:true}].slice(-50);});return projection;};
@@ -319,7 +324,6 @@ export function createLiveReportSync({query,exec,sql,config,settings,refreshDire
    }
   }));
   await projection;await notify();
-  if(analysisBatch.blockedReason==='daily_ai_request_limit')stat.message+='；今日 AI 评分请求已达上限';
   if(analysisBatch.blockedReason==='ai_scoring_paused')stat.message+='；AI 评分已暂停';
   const partial=Boolean(stat.failed||stat.retryHeld||stat.publicationPending);
   await emit({...stat,ok:!partial&&!analysisBatch.blockedReason,running:false,phase:analysisBatch.blockedReason?'paused':partial?'partial':'done',...(analysisBatch.blockedReason?{blockedReason:analysisBatch.blockedReason}:{}),finishedAt:new Date().toISOString()});

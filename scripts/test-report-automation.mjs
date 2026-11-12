@@ -14,7 +14,7 @@ const sql=v=>v==null?'NULL':"'"+String(v).replaceAll("'","''")+"'";
 const run=(input,json=false,database=db)=>{const r=spawnSync('sqlite3',['-bail',...(json?['-json']:[]),database],{input,encoding:'utf8'});if(r.status)throw Error(r.stderr);return json?JSON.parse(r.stdout||'[]'):r.stdout;};
 const schema=await readFile('db/schema.sql','utf8');
 const query=async s=>run(s,true),exec=async s=>run(s);run(schema);
-let now=new Date('2026-10-23T19:59:00+08:00'),aiCalls=0,queries=0,providerFailure='',invalidQuality=false,lock=false,status,availableRequests=null;
+let now=new Date('2026-10-23T19:59:00+08:00'),aiCalls=0,queries=0,providerFailure='',invalidQuality=false,lock=false,status,reservationsBeforePause=null;
 const config={sessionSecret:'test-key',dataDir:dir,feishuAppId:'cli_test',feishuAppSecret:'test-secret',moonshotApiKey:'test-ai-key',moonshotBaseUrl:'https://ai.example.test/v1',kimiFollowupModel:'test-model',larkReportAutoSyncEnabled:false};
 const settings=createSystemSettings({query,exec,sql,config,now:()=>now});
 const item={task_id:'test-task',from_user_id:'test-staff',from_user_name:'测试员工',department_name:'测试部门',rule_id:'test-rule',rule_name:'周报（聚焦结果与协作）',commit_time:Math.floor(Date.parse('2026-10-23T19:00:00+08:00')/1000),form_contents:[{field_name:'本周成果',field_value:'完成3项验收'},{field_name:'问题与挑战',field_value:'接口待确认'},{field_name:'下周工作计划与目标',field_value:'完成接口验证'},{field_name:'思考与复盘',field_value:'提前确认验收口径'}]};
@@ -38,12 +38,12 @@ const fetcher=async(url,options)=>{
 };
 const managerReviews={snapshot:async()=>({plans:new Map(),scores:[],bossScores:[]}),progress:()=>({kind:'unassigned',expected:0,submitted:0,complete:false,score:null})};
 const performance=createPerformance({query,exec,sql,managerReviews,policyFor:settings.policyFor,readData:name=>JSON.parse(readFileSync(path.join(dir,name+'.json'),'utf8')),now:()=>now});
-let published=0,useStoredBudget=false;
+let published=0,useStoredReservations=false;
 const reserveAiRequest=async()=>{
- if(useStoredBudget)return settings.reserveReportAiRequest();
- if(availableRequests===null)return true;
- if(availableRequests===0)return false;
- availableRequests--;
+ if(useStoredReservations)return settings.reserveReportAiRequest();
+ if(reservationsBeforePause===null)return true;
+ if(reservationsBeforePause===0)return 'ai_scoring_paused';
+ reservationsBeforePause--;
  return true;
 };
 const createSync=()=>createLiveReportSync({query,exec,sql,config,settings,refreshDirectory:async()=>{},writeStatus:async value=>{status=value;},pause:async()=>{},fetcher,reserveAiRequest,onComplete:async()=>{published++;await performance.overview();}});
@@ -90,7 +90,11 @@ const reportContent=()=>JSON.parse(run("SELECT content_json FROM weekly_reports 
 const generatedAt=reportContent().aiGeneratedAt;
 assert(generatedAt);
 const lateItem={...item,task_id:'test-late-task',from_user_id:'late-staff',from_user_name:'迟交测试员工',commit_time:Date.parse('2026-10-26T08:58:00+08:00')/1000};
-incoming=[item,lateItem];
+const earlierDuplicate={...lateItem,task_id:'test-late-duplicate',commit_time:lateItem.commit_time-60};
+incoming=[item,earlierDuplicate,lateItem];
+assert.equal(run("SELECT count(*) AS n FROM employees WHERE user_id='late-staff';",true)[0].n,0);
+run("UPDATE app_settings SET value_json=json_set(value_json,'$.dailyAiRequestLimit',64) WHERE key='report_automation_config'; INSERT INTO app_settings(key,value_json) VALUES('report_ai_requests:2026-10-26','64');");
+useStoredReservations=true;
 const followup=await tickAt('2026-10-26T09:00:00+08:00');
 assert.equal(followup.status,'started');
 assert.equal(followup.start,'2026-09-12','the existing 45-day lookback still covers earlier late reports');
@@ -98,6 +102,13 @@ assert.equal(followup.end,'2026-10-26','the follow-up covers submissions made af
 assert.equal(reportContent().aiGeneratedAt,generatedAt,'cache retains original AI generation time');
 assert.equal(queries,2);assert.equal(aiCalls,2,'only the newly submitted late report gets scored');
 assert.deepEqual(run("SELECT week_end,is_late FROM weekly_reports WHERE id='lark-report-test-late-task';",true),[{week_end:'2026-10-23',is_late:1}]);
+assert.equal(run("SELECT count(*) AS n FROM weekly_reports WHERE id='lark-report-test-late-duplicate';",true)[0].n,0,'only the latest submission contributes work');
+assert.equal(run("SELECT is_active FROM employees WHERE user_id='late-staff';",true)[0].is_active,1,'first-time submitter joins the active roster');
+assert.equal(status.rowCount,2);assert.equal(status.cached,1);assert.equal(status.analyzed,1);
+assert.equal(status.aiRequestBudget,2,'one new unique report can use an initial request and one retry');
+assert.equal(status.aiRequests,1,'successful first attempt uses only one request');
+assert.equal(await settings.reportAiRequestsToday(),65,'a previously saved cap of 64 does not defer the new employee');
+useStoredReservations=false;
 incoming=[item];
 await nextCheck(scheduler,'2026-10-30T20:05:00+08:00','deadline');
 assert.equal((await tickAt('2026-10-26T09:15:00+08:00')).skipped,'not_due');
@@ -122,13 +133,13 @@ run("UPDATE weekly_reports SET content_json=json_set(content_json,'$.ai.modules'
 
 item.form_contents[0].field_value='更新周报，模拟评分引文失败';
 invalidQuality=true;
-availableRequests=1;
+reservationsBeforePause=1;
 const beforeValidationFailures=aiCalls;
 await syncAt(25);
 assert.equal(aiCalls,beforeValidationFailures+1);
-assert.equal(status.blockedReason,'daily_ai_request_limit');
+assert.equal(status.blockedReason,'ai_scoring_paused');
 sync=createSync();
-availableRequests=5;
+reservationsBeforePause=null;
 await syncAt(30);
 assert.equal(aiCalls,beforeValidationFailures+2,'only the remaining automatic validation attempt is used after restarting');
 assert.equal(status.retryHeld,1,'the run that reaches two validation failures immediately reports the held item');
@@ -146,11 +157,11 @@ assert.equal(aiCalls,beforeValidationFailures+2,'immediate sync also holds a rep
 assert.equal(status.retryHeld,1);
 
 invalidQuality=false;
-availableRequests=0;
+reservationsBeforePause=0;
 await sync.run({mode:'rescore',targetMonth:'2026-10'});
-assert.equal(aiCalls,beforeValidationFailures+2,'manual continuation still respects the daily cap');
-assert.equal(status.blockedReason,'daily_ai_request_limit');
-availableRequests=1;
+assert.equal(aiCalls,beforeValidationFailures+2,'manual continuation also respects the scoring pause');
+assert.equal(status.blockedReason,'ai_scoring_paused');
+reservationsBeforePause=null;
 await sync.run({mode:'rescore',targetMonth:'2026-10'});
 assert.equal(aiCalls,beforeValidationFailures+3);
 assert.equal(status.analyzed,1);
@@ -166,10 +177,11 @@ legacyReport.aiAnalysisAttempts=Array.from({length:4},(_,index)=>({at:`2026-10-2
 legacyReport.qualityRefresh={state:'failed',targetVersion:REPORT_QUALITY_VERSION,model:config.kimiFollowupModel,sourceHash:legacyReport.sourceHash,jobId:'old-job',attempts:4,diagnostic:legacyDiagnostic};
 run(`UPDATE weekly_reports SET content_json=${sql(JSON.stringify(legacyReport))} WHERE id='lark-report-test-task';`);
 sync=createSync();
-availableRequests=1;
 await syncAt(45);
 assert.equal(aiCalls,beforeValidationFailures+3,'legacy matching validation failures are held without issuing another request');
 assert.equal(status.retryHeld,1);
+assert.equal(status.aiRequestBudget,0,'a report held after exhausting retries adds no planned requests');
+assert.equal(status.aiRequests,0);
 item.form_contents[0].field_value='再次更新周报，触发新的评分';
 await syncAt(50);
 assert.equal(aiCalls,beforeValidationFailures+4,'a different source hash starts a new validation budget');
@@ -178,9 +190,9 @@ assert.equal(status.analyzed,1);
 const state=await scheduler.overview();assert.equal(state.config.enabled,true);assert.equal(state.lastAttemptAt,'2026-10-26T01:00:00.000Z');assert(state.nextCheckAt);
 
 await assert.rejects(settings.saveReportAutomation({enabled:true,intervalMinutes:5,dailyAiRequestLimit:-1},admin),/invalid_ai_request_limit/);
-await settings.saveReportAutomation({enabled:true,intervalMinutes:5,dailyAiRequestLimit:3},admin);
+await assert.rejects(settings.saveReportAutomation({enabled:true,scoringPaused:'false'},admin));
 await settings.saveReportAutomation({enabled:true},admin);
-assert.equal((await settings.reportAutomationConfig()).dailyAiRequestLimit,3,'omitting the limit preserves the existing setting');
+assert.equal((await settings.reportAutomationConfig()).scoringPaused,false,'the old positive setting keeps scoring active');
 assert.equal((await settings.reportAutomationConfig()).scoringStartMonth,'2026-10','omitting the start month preserves the existing setting');
 now=new Date('2026-10-27T15:59:59Z');
 const restartedSettings=createSystemSettings({query,exec,sql,config,now:()=>now});
@@ -188,15 +200,19 @@ const reservations=await Promise.all([
  settings.reserveReportAiRequest(),restartedSettings.reserveReportAiRequest(),settings.reserveReportAiRequest(),
  restartedSettings.reserveReportAiRequest(),settings.reserveReportAiRequest(),
 ]);
-assert.equal(reservations.filter(result=>result===true).length,3);
-assert.equal(await restartedSettings.reportAiRequestsToday(),3,'usage is shared by all settings instances');
-assert.equal(await restartedSettings.reserveReportAiRequest(),false,'denied reservations do not advance the counter');
-assert.equal((await scheduler.overview()).aiRequestsToday,3);
+assert.deepEqual(reservations,[true,true,true,true,true]);
+assert.equal(await restartedSettings.reportAiRequestsToday(),5,'usage is shared by all settings instances');
+assert.equal((await scheduler.overview()).aiRequestsToday,5);
 
-useStoredBudget=true;
-await settings.saveReportAutomation({enabled:true,intervalMinutes:10,dailyAiRequestLimit:0},admin);
-assert.equal((await scheduler.overview()).config.dailyAiRequestLimit,0);
+useStoredReservations=true;
+await settings.saveReportAutomation({enabled:true,scoringPaused:true},admin);
+assert.equal((await scheduler.overview()).config.scoringPaused,true);
+assert.equal(await restartedSettings.reserveReportAiRequest(),'ai_scoring_paused','an explicit pause overrides a previously saved positive limit');
+const legacyPaused={enabled:true,intervalMinutes:10,dailyAiRequestLimit:0,scoringStartMonth:'2026-10'};
+run(`UPDATE app_settings SET value_json=${sql(JSON.stringify(legacyPaused))} WHERE key='report_automation_config';`);
+assert.equal((await scheduler.overview()).config.scoringPaused,true,'old zero-limit configuration remains paused');
 assert.equal(await restartedSettings.reserveReportAiRequest(),'ai_scoring_paused');
+assert.equal(await restartedSettings.reportAiRequestsToday(),5,'a denied reservation does not advance the usage counter');
 const beforePause=aiCalls;
 item.form_contents[0].field_value='评分暂停期间提交的新周报内容';
 await sync.run(octoberRange);
@@ -207,16 +223,17 @@ assert.equal(status.blockedReason,'ai_scoring_paused');
 assert.equal(status.remaining,1);
 
 now=new Date('2026-10-27T16:00:00Z');
-assert.equal(await settings.reportAiRequestsToday(),0,'the allowance resets at midnight in Shanghai');
+assert.equal(await settings.reportAiRequestsToday(),0,'the usage counter resets at midnight in Shanghai');
 assert.equal(await settings.reserveReportAiRequest(),'ai_scoring_paused','zero stays paused on the new day');
 await sync.run({mode:'rescore',targetMonth:'2026-10'});
 assert.equal(aiCalls,beforePause,'manual rescoring stays paused across midnight');
 assert.equal(status.blockedReason,'ai_scoring_paused');
 assert.equal(await restartedSettings.reportAiRequestsToday(),0);
 
-await settings.saveReportAutomation({enabled:true,intervalMinutes:10,dailyAiRequestLimit:3},admin);
+await settings.saveReportAutomation({enabled:true,scoringPaused:false},admin);
+assert.equal((await scheduler.overview()).config.scoringPaused,false,'an explicit resume overrides the saved legacy zero');
 await sync.run({mode:'rescore',targetMonth:'2026-10'});
-assert.equal(aiCalls,beforePause+1,'restoring a positive limit resumes pending scoring');
+assert.equal(aiCalls,beforePause+1,'resuming scoring processes the pending report');
 assert.equal(status.analyzed,1);
 assert.equal(await restartedSettings.reportAiRequestsToday(),1);
 
@@ -243,16 +260,16 @@ assert.equal(aiCalls,beforeNovember+1,'a historical rescore before the start mon
 assert.deepEqual(readOctober(),octoberBefore);
 
 const novemberRange={start:'2026-11-01',end:'2026-11-10'};
-useStoredBudget=false;
-availableRequests=1;
+useStoredReservations=false;
+reservationsBeforePause=1;
 providerFailure='network';
 november.form_contents[0].field_value='模拟同一份周报跨批次发生网络错误';
 const beforeNetworkFailures=aiCalls;
 await sync.run(novemberRange);
 assert.equal(aiCalls,beforeNetworkFailures+1);
-assert.equal(status.blockedReason,'daily_ai_request_limit');
+assert.equal(status.blockedReason,'ai_scoring_paused');
 sync=createSync();
-availableRequests=null;
+reservationsBeforePause=null;
 await sync.run(novemberRange);
 assert.equal(aiCalls,beforeNetworkFailures+2);
 assert.equal(status.retryHeld,1,'two ambiguous network failures count across runs');

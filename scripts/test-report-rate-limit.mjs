@@ -46,45 +46,45 @@ function pausedBetween(value,leftRequest,rightRequest){
 
 const single=await fixture('single-flight',{count:4,respond:({input})=>success(input)});
 await single.execute();assert.equal(single.maxInFlight,1);assert.equal(single.calls.length,4);assert.equal(single.status.analyzed,4);assert.equal(single.status.failed,0);
+assert.equal(single.status.aiRequestBudget,8);assert.equal(single.status.aiRequests,4);
 
-let availableRequests=1;
-const dailyLimit=await fixture('daily-request-limit',{
- count:3,respond:({input})=>success(input),reserveAiRequest:async()=>{
-  if(availableRequests===0)return false;
-  availableRequests--;
-  return true;
- },
+let scoringPaused=false;
+const batchPause=await fixture('manual-pause-during-batch',{
+ count:3,respond:({input,number})=>{if(number===1)scoringPaused=true;return success(input);},
+ reserveAiRequest:async()=>scoringPaused?'ai_scoring_paused':true,
 });
-await dailyLimit.execute();
-assert.equal(dailyLimit.calls.length,1);
-assert.equal(dailyLimit.status.phase,'paused');
-assert.equal(dailyLimit.status.blockedReason,'daily_ai_request_limit');
-assert.equal(dailyLimit.status.analyzed,1);
-assert.equal(dailyLimit.status.failed,0);
-assert.equal(dailyLimit.status.remaining,2);
-for(const index of [2,3])assert.equal(dailyLimit.report(index).qualityRefresh.state,'queued');
-availableRequests=2;
-await dailyLimit.execute();
-assert.equal(dailyLimit.status.phase,'done');
-assert.equal(dailyLimit.status.cached,1);
-assert.equal(dailyLimit.status.analyzed,2);
-assert.equal(dailyLimit.calls.length,3);
-assert.equal(availableRequests,0);
+await batchPause.execute();
+assert.equal(batchPause.calls.length,1);
+assert.equal(batchPause.status.phase,'paused');
+assert.equal(batchPause.status.blockedReason,'ai_scoring_paused');
+assert.equal(batchPause.status.analyzed,1);
+assert.equal(batchPause.status.failed,0);
+assert.equal(batchPause.status.remaining,2);
+assert.equal(batchPause.status.aiRequestBudget,6);assert.equal(batchPause.status.aiRequests,1);
+for(const index of [2,3])assert.equal(batchPause.report(index).qualityRefresh.state,'queued');
+scoringPaused=false;
+await batchPause.execute();
+assert.equal(batchPause.status.phase,'done');
+assert.equal(batchPause.status.cached,1);
+assert.equal(batchPause.status.analyzed,2);
+assert.equal(batchPause.calls.length,3);
+assert.equal(batchPause.status.aiRequestBudget,4);assert.equal(batchPause.status.aiRequests,2);
 
 let reservations=0;
-const retryBudget=await fixture('daily-limit-on-retry',{
+const retryReservation=await fixture('reservation-unavailable-on-retry',{
  respond:()=>({ok:true,status:200,json:async()=>({choices:[{message:{content:'invalid JSON'}}]})}),
  reserveAiRequest:async()=>++reservations===1,
 });
-await retryBudget.execute();
+await retryReservation.execute();
 assert.equal(reservations,2,'a retry needs its own reservation');
-assert.equal(retryBudget.calls.length,1);
-assert.equal(retryBudget.status.phase,'paused');
-assert.equal(retryBudget.status.blockedReason,'daily_ai_request_limit');
-assert.equal(retryBudget.status.remaining,1);
-assert.equal(retryBudget.status.failed,0);
-assert.equal(retryBudget.report(1).qualityRefresh.state,'queued');
-assert.equal(retryBudget.report(1).qualityRefresh.attempts,1);
+assert.equal(retryReservation.calls.length,1);
+assert.equal(retryReservation.status.phase,'paused');
+assert.equal(retryReservation.status.blockedReason,'ai_request_budget_unavailable');
+assert.equal(retryReservation.status.remaining,1);
+assert.equal(retryReservation.status.failed,0);
+assert.equal(retryReservation.report(1).qualityRefresh.state,'queued');
+assert.equal(retryReservation.report(1).qualityRefresh.attempts,1);
+assert.equal(retryReservation.status.aiRequestBudget,2);assert.equal(retryReservation.status.aiRequests,1);
 
 for(const [name,header,minimum] of [['default',null,58000],['seconds','90',88000],['http-date',new Date(Date.now()+120000).toUTCString(),115000],['invalid-header','not-a-retry-date',58000],['negative-header','-1',58000],['fractional-header','1.5',58000]]){
  const sample=await fixture('retry-'+name,{respond:({number,input})=>number===1?failure(429,'rate_limit_reached_error',header):success(input)});
@@ -162,6 +162,7 @@ const configurationChangedBeforeSend=await fixture('ai-configuration-change-afte
 });
 await configurationChangedBeforeSend.execute();
 assert.equal(configurationChangedBeforeSend.calls.length,0,'a configuration change while saving the attempt must stop the request');
+assert.equal(configurationChangedBeforeSend.status.aiRequests,0,'a cancelled reservation does not count as a model call');
 assert.equal(configurationChangedBeforeSend.status.blockedReason,'ai_model_changed');
 assert.equal(configurationChangedBeforeSend.status.remaining,1);
 
@@ -172,6 +173,7 @@ const corrective=await fixture('strict-evidence-retry',{respond:({number,input,r
  return {ok:true,status:200,json:async()=>({choices:[{message:{content:JSON.stringify(result)},finish_reason:'stop'}]})};
 }});
 await corrective.execute();assert.equal(corrective.calls.length,2);assert.equal(corrective.status.analyzed,1);assert.equal(corrective.report(1).qualityRefresh.state,'ready');assert(!JSON.stringify(corrective.report(1).aiAnalysisAttempts).includes('PRIVATE_'));
+assert.equal(corrective.status.aiRequestBudget,2);assert.equal(corrective.status.aiRequests,2);
 
-const result={ok:true,scenarios,singleFlight:true,dailyLimitPausesAndResumes:true,retriesRequireReservation:true,retryAfterSecondsAndDate:true,defaultAndFinal429Cooldown:true,quotaPausesUnrequestedReports:true,quotaRecovery:true,overloadRetry:true,nonJsonHttpDiagnostics:true,oversizedWaitPauses:true,sourceJobAndActiveRechecked:true,aiConfigurationChangesPause:true,strictEvidenceRetry:true,externalRequests:0,notifications:0};
+const result={ok:true,scenarios,singleFlight:true,manualPauseResumesPendingReports:true,batchRequestBudget:true,retriesRequireReservation:true,retryAfterSecondsAndDate:true,defaultAndFinal429Cooldown:true,quotaPausesUnrequestedReports:true,quotaRecovery:true,overloadRetry:true,nonJsonHttpDiagnostics:true,oversizedWaitPauses:true,sourceJobAndActiveRechecked:true,aiConfigurationChangesPause:true,strictEvidenceRetry:true,externalRequests:0,notifications:0};
 await writeFile(path.join(root,'result.json'),JSON.stringify(result,null,2));console.log(JSON.stringify(result));console.log('Synthetic artifacts retained:',root);

@@ -23,9 +23,10 @@ await new Promise(resolve=>server.listen(0,'127.0.0.1',resolve));
 const base='http://127.0.0.1:'+server.address().port;
 let state=null,running=false,busyOnNextPost=false,failOnNextPost=false,browser;
 let scoringStartMonth;
+let pauseConfig={dailyAiRequestLimit:64};
 let nextCollection={nextCheckAt:'2026-11-06T12:05:00Z',nextCheckKind:'deadline'};
 const posts=[],errors=[],unexpected=[];
-const snapshot=(values={})=>({mode:'rescore',targetMonth:'2026-10',rowCount:4,analyzed:0,failed:0,cached:1,remaining:3,active:0,phase:'queued',running:true,...values});
+const snapshot=(values={})=>({mode:'rescore',targetMonth:'2026-10',rowCount:4,analyzed:0,failed:0,cached:1,remaining:3,active:0,aiRequestBudget:6,aiRequests:0,phase:'queued',running:true,...values});
 try{
  browser=await chromium.launch({channel:'chrome',headless:true});
  const context=await browser.newContext({viewport:{width:1440,height:1100}});
@@ -33,7 +34,7 @@ try{
  await context.route('**/*',async route=>{
   const url=new URL(route.request().url());if(url.origin!==base){unexpected.push(url.origin);return route.abort();}
   if(!url.pathname.startsWith('/api/'))return route.continue();
-  if(url.pathname==='/api/system-settings/report-automation'&&route.request().method()==='GET')return route.fulfill({status:200,json:{config:{enabled:true,scoringStartMonth},lastAttemptAt:null,...nextCollection,running}});
+  if(url.pathname==='/api/system-settings/report-automation'&&route.request().method()==='GET')return route.fulfill({status:200,json:{config:{enabled:true,scoringStartMonth,...pauseConfig},aiRequestsToday:72,lastAttemptAt:null,...nextCollection,running}});
   if(url.pathname==='/api/lark-report-sync'){
    if(route.request().method()==='GET')return route.fulfill({status:200,json:{ok:true,status:state,processRunning:running}});
    const payload=route.request().postDataJSON();posts.push(payload);assert.deepEqual(Object.keys(payload).sort(),['mode','targetMonth']);assert.equal(payload.mode,'rescore');
@@ -49,6 +50,8 @@ try{
  await automation.getByText(/2026\/11\/6 20:05:00（截止后收集）/).waitFor();
  assert(await automation.getByText(/下一个工作日 09:00 补拉迟交和更新的周报/).isVisible());
  assert.equal(await automation.getByLabel('周报自动收集间隔').count(),0);
+ assert.equal(await automation.getByLabel('每日 AI 评分请求上限').count(),0);
+ assert(await automation.getByText('今日评分请求 72 次',{exact:true}).isVisible());
  nextCollection={nextCheckAt:'2026-11-09T01:00:00Z',nextCheckKind:'followup'};
  await automation.getByRole('button',{name:'刷新收集状态'}).click();
  await automation.getByText(/2026\/11\/9 09:00:00（工作日补拉）/).waitFor();
@@ -60,8 +63,9 @@ try{
  assert(await panel.getByText('尚无2026年10月的补跑记录。选择月份后点击补跑，已成功的记录不会重复评分。',{exact:true}).isVisible());
  await start.click();await panel.getByText('正在补跑评分',{exact:true}).waitFor();assert.equal(posts.length,1);assert.deepEqual(posts[0],{mode:'rescore',targetMonth:'2026-10'});assert(await start.isDisabled());
  assert(await panel.getByText('重评时，旧评分依据可供回看。月度候选分只汇总已完成分析的有效周报，最终分由管理人员确认。',{exact:true}).isVisible());
- state=snapshot({phase:'analysis',analyzed:1,failed:1,remaining:1,active:1,diagnostics:[{reportId:'fixture-report',weekEnd:'2026-10-16',moduleId:'results',criterionId:'evidence',code:'quote_not_found',path:'modules.results.criteria.evidence.evidence',attempt:2,providerResponse:'PRIVATE_PROVIDER_RESPONSE_MUST_NOT_RENDER'}]});
+ state=snapshot({phase:'analysis',analyzed:1,failed:1,remaining:1,active:1,aiRequests:3,diagnostics:[{reportId:'fixture-report',weekEnd:'2026-10-16',moduleId:'results',criterionId:'evidence',code:'quote_not_found',path:'modules.results.criteria.evidence.evidence',attempt:2,providerResponse:'PRIVATE_PROVIDER_RESPONSE_MUST_NOT_RENDER'}]});
  await refresh.click();await panel.getByText('原文证据未通过校验 · 第2次尝试',{exact:true}).waitFor();
+ assert(await panel.getByText('本批 AI 请求 3 次，按待评分周报最多安排 6 次。',{exact:true}).isVisible());
  assert((await panel.innerText()).includes('quote_not_found · modules.results.criteria.evidence.evidence'));
  assert(!(await panel.innerText()).includes('PRIVATE_PROVIDER_RESPONSE'));
  assert.equal(await panel.locator('.report-rescore-progress dd').nth(1).innerText(),'1');assert.equal(await panel.locator('.report-rescore-progress dd').nth(3).innerText(),'1');
@@ -97,6 +101,16 @@ try{
  assert.equal(await monthInput.inputValue(),'2026-11','default month respects the saved scoring cutoff');
  await monthInput.fill('2026-10');
  assert(await start.isDisabled(),'the manual rescore UI excludes older months');
+ await monthInput.fill('2026-11');
+ pauseConfig={scoringPaused:true,dailyAiRequestLimit:64};
+ await automation.getByRole('button',{name:'刷新收集状态'}).click();
+ await panel.getByText('周报评分已暂停',{exact:true}).waitFor();
+ assert(await start.isDisabled(),'the canonical pause flag disables manual scoring');
+ assert(await automation.getByRole('checkbox',{name:'暂停周报 AI 评分'}).isChecked());
+ pauseConfig={scoringPaused:false,dailyAiRequestLimit:0};
+ await automation.getByRole('button',{name:'刷新收集状态'}).click();
+ await page.waitForFunction(()=>!document.querySelector('.report-rescore button[type="submit"]').disabled);
+ assert(!(await automation.getByRole('checkbox',{name:'暂停周报 AI 评分'}).isChecked()));
  assert.equal(posts.length,3);
  assert.equal(await page.getByRole('button',{name:/确认质量分|审核通过/}).count(),0);assert.deepEqual(errors,[]);assert.deepEqual(unexpected,[]);
  const result={ok:true,previousMonthDefault:true,explicitMonthScopedPosts:true,openingAndRefreshReadOnly:true,cachedAndFailedProgressVisible:true,safeDiagnosticsVisible:true,rateLimitWaitVisible:true,quotaPauseKeepsRemaining:true,excessiveRetryDelayPauses:true,oldScorePreservationExplained:true,busy409NoDuplicateStart:true,failedStartKeepsMonth:true,completedProgressVisible:true,interruptedTaskRetryAvailable:true,noHumanApproval:true,mobileNoOverflow:true,providerRequests:0,businessDataWrites:0,artifacts:dir};

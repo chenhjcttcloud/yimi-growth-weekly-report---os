@@ -46,7 +46,7 @@ interface WeeklyQualityReport {
 
 const reviewErrors: Record<string, string> = {
   ai_not_configured: '尚未配置 AI 服务，当前无法发起重新分析。',
-  ai_scoring_paused: 'AI 评分已暂停，恢复评分额度后可发起重新分析。',
+  ai_scoring_paused: 'AI 评分已暂停，在系统设置取消暂停后可发起重新分析。',
   report_rescore_not_supported: '该周报来源暂不支持自动重新分析。',
   report_sync_running: '周报正在同步，请稍后再发起重新分析。',
   quality_candidate_changed: '周报评分已更新，请刷新后再复核。',

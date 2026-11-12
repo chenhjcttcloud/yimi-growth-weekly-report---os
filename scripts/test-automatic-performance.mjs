@@ -59,7 +59,15 @@ try{
  await page.screenshot({path:dir+'/confirmed-management.png',fullPage:true});
  await browser.addCookies([{name:'wos_session',value:cookie('staff'),url:base}]);await page.goto(base+'/?page=growth');await page.getByText('2026 年 10 月周报质量最终分',{exact:true}).waitFor();await page.screenshot({path:dir+'/confirmed-personal.png',fullPage:true});assert.deepEqual(errors,[]);
  await page.getByRole('combobox',{name:'选择个人月份'}).click();await page.getByRole('option',{name:'2026 年 9 月',exact:true}).click();await page.getByText('2026-09-24 20:00 截止（假前调整）',{exact:false}).waitFor();await page.screenshot({path:dir+'/holiday-deadline-personal.png',fullPage:true});
- await browser.addCookies([{name:'wos_session',value:cookie('admin'),url:base}]);await page.goto(base+'/?page=settings&settingsTab=integrations');const automation=page.getByRole('article',{name:'周报自动收集与AI评分'});await automation.getByRole('button',{name:'保存自动收集设置'}).waitFor();assert.equal(await automation.getByLabel('周报自动收集间隔').count(),0);await automation.getByLabel('每日 AI 评分请求上限').fill('10');await automation.getByRole('button',{name:'保存自动收集设置'}).click();await automation.getByText(/自动收集已关闭，仍可手动同步周报。/).waitFor();assert.equal((await call('/api/system-settings/report-automation','admin')).body.config.dailyAiRequestLimit,10);await page.screenshot({path:dir+'/report-automation-settings.png',fullPage:true});assert.deepEqual(errors,[]);
+ await browser.addCookies([{name:'wos_session',value:cookie('admin'),url:base}]);await page.goto(base+'/?page=settings&settingsTab=integrations');
+ const automation=page.getByRole('article',{name:'周报自动收集与AI评分'}),saveAutomation=automation.getByRole('button',{name:'保存自动收集设置'}),pauseScoring=automation.getByRole('checkbox',{name:'暂停周报 AI 评分'});
+ await saveAutomation.waitFor();assert.equal(await automation.getByLabel('周报自动收集间隔').count(),0);assert.equal(await automation.getByLabel('每日 AI 评分请求上限').count(),0);
+ await pauseScoring.check();await saveAutomation.click();await automation.getByText('周报 AI 评分已暂停。自动收集已关闭，仍可手动同步周报。',{exact:true}).waitFor();
+ assert.equal((await call('/api/system-settings/report-automation','admin')).body.config.scoringPaused,true);
+ assert(await automation.getByRole('button',{name:'补跑本月未完成评分',exact:true}).isDisabled());
+ await pauseScoring.uncheck();await saveAutomation.click();await automation.getByText('自动收集已关闭，仍可手动同步周报。',{exact:true}).waitFor();
+ assert.equal((await call('/api/system-settings/report-automation','admin')).body.config.scoringPaused,false);
+ await page.screenshot({path:dir+'/report-automation-settings.png',fullPage:true});assert.deepEqual(errors,[]);
  assert.equal(run('PRAGMA integrity_check;').length,0);
  console.log(JSON.stringify({ok:true,automaticCandidate:true,automaticStatistics:true,managementConfirmation:true,partialAverage:true,timeCorrection:true,historyRetained:true,departmentAggregation:true,weightedRatingGate:true,privacy:true,browserVerified:true,artifacts:dir}));
 }catch(e){console.error(logs);throw e;}

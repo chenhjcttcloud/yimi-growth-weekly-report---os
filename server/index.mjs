@@ -356,7 +356,7 @@ async function route(req, res) {
         else if(url.pathname==='/api/system-settings/features')await systemSettings.saveFeatures(body,userForPolicy);
         else return sendJson(res,404,{ok:false,error:'not_found'});
         return sendJson(res,200,{ok:true});
-      }catch(error){return sendJson(res,400,{ok:false,error:['invalid_event_config','event_credentials_required','invalid_integration_features','invalid_report_config','report_secret_required','future_cycle_required','invalid_weights','invalid_deadline','invalid_reminder_hours','policy_version_exists','invalid_ai_url','invalid_ai_model','ai_key_action_required','invalid_ai_key_action','invalid_ai_key','ai_key_host_change_requires_clear','ai_key_service_address_changed','invalid_monthly_reminders','feishu_required','invalid_report_automation','invalid_ai_request_limit','invalid_report_scoring_start_month','ai_required'].includes(error.message)?error.message:'settings_save_failed'});}
+      }catch(error){return sendJson(res,400,{ok:false,error:['invalid_event_config','event_credentials_required','invalid_integration_features','invalid_report_config','report_secret_required','future_cycle_required','invalid_weights','invalid_deadline','invalid_reminder_hours','policy_version_exists','invalid_ai_url','invalid_ai_model','ai_key_action_required','invalid_ai_key_action','invalid_ai_key','ai_key_host_change_requires_clear','ai_key_service_address_changed','invalid_monthly_reminders','feishu_required','invalid_report_automation','invalid_report_scoring_pause','invalid_ai_request_limit','invalid_report_scoring_start_month','ai_required'].includes(error.message)?error.message:'settings_save_failed'});}
     }
     return sendJson(res,404,{ok:false,error:'not_found'});
   }
@@ -648,7 +648,7 @@ async function route(req, res) {
         if(!validId(body.reportId))return sendJson(res,400,{ok:false,error:'invalid_report_id'});
         const automation=await systemSettings.reportAutomationConfig();
         if(!automation.aiConfigured)return sendJson(res,503,{ok:false,error:'ai_not_configured'});
-        if(automation.dailyAiRequestLimit===0)return sendJson(res,409,{ok:false,error:'ai_scoring_paused'});
+        if(automation.scoringPaused)return sendJson(res,409,{ok:false,error:'ai_scoring_paused'});
         if(body.month<automation.scoringStartMonth)return sendJson(res,400,{ok:false,error:'rescore_before_start_month'});
         let review;
         const started=await liveReportSync.start({mode:'rescore',targetMonth:body.month,targetReportId:body.reportId},async()=>{

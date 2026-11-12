@@ -3,8 +3,8 @@ import '../styles/report-rescore.css';
 
 type ProgressCounts={total?:number;completed?:number;failed?:number;cached?:number;remaining?:number;active?:number;retryHeld?:number};
 type Diagnostic={reportId?:string;weekEnd?:string;code?:string;path?:string;moduleId?:string;criterionId?:string;attempt?:number;retryAfterMs?:number;retryAfterExceeded?:boolean};
-type SyncStatus={mode?:string;targetMonth?:string;rowCount?:number;analyzed?:number;failed?:number;cached?:number;remaining?:number;active?:number;retryHeld?:number;phase?:string;running?:boolean;blockedReason?:string;updatedAt?:string;diagnostics?:Diagnostic[];byMonth?:Record<string,ProgressCounts>};
-type SyncOverview={status?:SyncStatus|null;processRunning?:boolean;automation?:{config?:{dailyAiRequestLimit?:number}}};
+type SyncStatus={mode?:string;targetMonth?:string;rowCount?:number;analyzed?:number;failed?:number;cached?:number;remaining?:number;active?:number;retryHeld?:number;aiRequestBudget?:number;aiRequests?:number;phase?:string;running?:boolean;blockedReason?:string;updatedAt?:string;diagnostics?:Diagnostic[];byMonth?:Record<string,ProgressCounts>};
+type SyncOverview={status?:SyncStatus|null;processRunning?:boolean;automation?:{config?:{scoringPaused?:boolean;dailyAiRequestLimit?:number}}};
 
 const chinaMonth=()=>new Intl.DateTimeFormat('sv-SE',{timeZone:'Asia/Shanghai'}).format(new Date()).slice(0,7);
 function previousMonth(){const date=new Date(chinaMonth()+'-01T00:00:00Z');date.setUTCMonth(date.getUTCMonth()-1);return date.toISOString().slice(0,7);}
@@ -13,11 +13,11 @@ const count=(value:unknown)=>typeof value==='number'&&Number.isFinite(value)&&va
 const safePath=(value?:string)=>typeof value==='string'&&/^[A-Za-z0-9_.\[\]-]{1,180}$/.test(value)?value:'';
 const safeCode=(value?:string)=>typeof value==='string'&&/^[a-zA-Z0-9_.:-]{1,100}$/.test(value)?value:'';
 const moduleNames:Record<string,string>={results:'本周成果',problems:'问题与挑战',nextPlan:'下周计划',reflection:'思考与复盘'};
-const dailyLimitMessage='评分任务因达到每日 AI 评分请求上限而暂停。每日北京时间 0 点重置，未处理的周报保留待评分。';
-const scoringPausedMessage='周报 AI 评分已暂停。将每日 AI 评分请求上限设为正数后可继续。';
+const legacyDailyLimitMessage='上次任务触及旧版每日请求上限，未处理的周报可继续补跑。';
+const scoringPausedMessage='周报 AI 评分已暂停。在上方取消暂停后可继续。';
 const pauseMessages:Record<string,string>={
  ai_scoring_paused:scoringPausedMessage,
- daily_ai_request_limit:dailyLimitMessage,
+ daily_ai_request_limit:legacyDailyLimitMessage,
  ai_request_budget_unavailable:'暂时无法读取或记录 AI 评分请求次数，本次任务已暂停。恢复后可继续评分。',
  ai_model_changed:'本次任务运行期间 AI 服务配置已更改，评分已暂停。后续可按新的配置继续评分。',
  upstream_quota_exhausted:'AI 服务额度不足，已暂停本次任务。请检查服务账户后继续补跑；尚未请求的周报仍保留在待处理队列。',
@@ -27,7 +27,7 @@ function diagnosticLabel(value:Diagnostic){
  const code=safeCode(value.code);
  const wait=typeof value.retryAfterMs==='number'&&Number.isFinite(value.retryAfterMs)&&value.retryAfterMs>=0&&value.retryAfterMs<=86400000?`，重试等待至少 ${Math.ceil(value.retryAfterMs/1000)} 秒`:'';
  if(value.retryAfterExceeded)return 'AI 服务要求长时间等待，本次补跑已暂停，未处理项保留待续跑';
- if(code==='daily_ai_request_limit')return '已达到每日 AI 评分请求上限';
+ if(code==='daily_ai_request_limit')return '已达到旧版每日请求上限';
  if(code==='ai_scoring_paused'||code==='ai_request_budget_unavailable'||code==='ai_model_changed')return pauseMessages[code];
  if(code==='upstream_quota_exhausted')return 'AI 服务额度不足，本次补跑已暂停，请检查服务账户后继续';
  if(code==='upstream_rate_limit')return 'AI 服务请求限流，后续请求会排队'+wait;
@@ -61,8 +61,9 @@ export function ReportRescorePanel({scoringPaused,scoringStartMonth=''}: {scorin
  const validMonth=/^\d{4}-(0[1-9]|1[0-2])$/.test(month)&&month>=scoringStartMonth&&month<=chinaMonth();
  const matches=status?.targetMonth===month;
  const blockedReason=status?.blockedReason||'';
- const savedLimit=overview?.automation?.config?.dailyAiRequestLimit;
- const scoringDisabled=scoringPaused??(savedLimit===undefined?blockedReason==='ai_scoring_paused':savedLimit===0);
+ const savedConfig=overview?.automation?.config;
+ const savedLimit=savedConfig?.dailyAiRequestLimit;
+ const scoringDisabled=scoringPaused??savedConfig?.scoringPaused??(savedLimit===undefined?blockedReason==='ai_scoring_paused':savedLimit===0);
  const paused=scoringDisabled||status?.phase==='paused'&&blockedReason!=='ai_scoring_paused'&&(matches||['daily_ai_request_limit','ai_request_budget_unavailable','ai_model_changed'].includes(blockedReason));
  const counts:ProgressCounts|undefined=status?.byMonth?.[month]||(matches?{total:status.rowCount,completed:status.analyzed,failed:status.failed,cached:status.cached,remaining:status.remaining,active:status.active}:undefined);
  const monthRetryHeld=counts?.retryHeld??(matches?status?.retryHeld:undefined);
@@ -98,6 +99,7 @@ export function ReportRescorePanel({scoringPaused,scoringStartMonth=''}: {scorin
   {counts?<dl className="report-rescore-progress" aria-label={`${monthLabel(month)}评分进度`}>
    {([['范围内周报',counts.total],['本次新完成',counts.completed],['已完成复用',counts.cached],['失败',counts.failed],['正在分析',interrupted?0:counts.active],['剩余',counts.remaining]] as const).map(([name,value])=><div key={name}><dt>{name}</dt><dd>{count(value)}</dd></div>)}
   </dl>:<p className="report-rescore-note">尚无{validMonth?monthLabel(month):'所选月份'}的补跑记录。{!scoringDisabled&&'选择月份后点击补跑，已成功的记录不会重复评分。'}</p>}
+  {counts&&typeof status?.aiRequestBudget==='number'&&typeof status.aiRequests==='number'&&<p className="report-rescore-note">本批 AI 请求 {count(status.aiRequests)} 次，按待评分周报最多安排 {count(status.aiRequestBudget)} 次。</p>}
   {counts&&phaseLabel&&<p className="report-rescore-note">当前阶段：{interrupted?'待续跑':phaseLabel}</p>}
   {!!diagnostics.length&&<details className="report-rescore-diagnostics" open><summary>失败原因与自动修正记录（{diagnostics.length}项）</summary><ul>{diagnostics.map((item,index)=><li key={`${item.reportId||''}:${safePath(item.path)}:${index}`}><strong>{/^\d{4}-\d{2}-\d{2}$/.test(item.weekEnd||'')?item.weekEnd:'所选月份'} · {moduleNames[item.moduleId||'']||'周报评分'}</strong><p>{diagnosticLabel(item)}{Number.isInteger(item.attempt)&&Number(item.attempt)>0?` · 第${item.attempt}次尝试`:''}</p>{(safeCode(item.code)||safePath(item.path))&&<small>{safeCode(item.code)}{safePath(item.path)?` · ${safePath(item.path)}`:''}</small>}</li>)}</ul><p>系统会带着具体校验问题自动修正；失败不会覆盖旧分，后续补跑会继续处理未完成项。</p></details>}
  </section>;
