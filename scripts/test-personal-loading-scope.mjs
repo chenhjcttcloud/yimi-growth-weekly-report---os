@@ -91,13 +91,21 @@ if(baselinePerformance&&baselineWorkspace){const baseline=harness(initialDb,base
 const db=path.join(directory,'scoped.sqlite');await copyFile(initialDb,db);
 const current=harness(db);
 const full=await current.performance.overview();
-if(globalBefore)assert.deepEqual(full,globalBefore,'default global/full response must remain byte-for-byte structurally compatible');
+// The historical version treated automatic quality as a final result. Compare
+// the unaffected data on both sides and test the new quality contract below.
+function unaffectedOverview({monthly,results,...view}){
+ return {...view,monthly:monthly.map(({quality,qualityCandidate,reports,...row})=>({...row,reports:reports.map(({aiCandidate,qualityExcluded,qualityReanalysisPending,qualityReviewVersion,qualityReviews,...report})=>report)})),results:results.filter(r=>r.kind!=='quality'||r.scoring_rule==='legacy').map(({month,employee_user_id,employee_name,kind,result,scoring_rule})=>({month,employee_user_id,employee_name,kind,result,scoring_rule}))};
+}
+function unaffectedWorkspace({history,rollingQuality,rollingMonths,weeks,...workspace}){
+ return {...workspace,weeks:weeks.map(({qualityCandidate,...week})=>week),history:history.map(({quality,qualityStatus,monthlyQuality,...row})=>row)};
+}
+if(globalBefore)assert.deepEqual(unaffectedOverview(full),unaffectedOverview(globalBefore),'the global overview preserves fields outside quality publication');
 current.reset();assert.deepEqual(await current.performance.overview(),full,'default global/full remains stable on repeated reads');
 assert.equal(current.log.writes.length,0,'unchanged global results must not acquire a write transaction');
 current.reset();
 const afterWorkspace=await current.workspace.workspace(user,'2026-10','oct-first');
 const after=counts(current.log);
-if(beforeWorkspace)assert.deepEqual(afterWorkspace,beforeWorkspace,'the complete personal workspace response must match the deployed behavior');
+if(beforeWorkspace)assert.deepEqual(unaffectedWorkspace(afterWorkspace),unaffectedWorkspace(beforeWorkspace),'the personal workspace preserves fields outside quality publication');
 assert.equal(after.prototypeReads,1);assert.equal(after.insightReads,1);assert.equal(after.reportBodyQueries,1);assert.equal(after.reportBodiesReturned,ends.a.length);
 if(before)assert(after.reportBodiesReturned<before.reportBodiesReturned);
 assert.equal(after.writeTransactions,0,'unchanged personal results must not acquire a write transaction');
@@ -105,7 +113,14 @@ assert.equal(new Set(current.log.policies).size,current.log.policies.length,'eac
 assert.equal(afterWorkspace.weeks.find(w=>w.id==='oct-first').closure.previousWeek,'2026-09-04');
 assert.equal(afterWorkspace.weeks.find(w=>w.id==='oct-first').closure.previousPlan,'a下期计划 2026-09-04','the selected month must not truncate the previous plan');
 assert.equal(afterWorkspace.history.find(r=>r.month==='2026-04').quality,77,'all personal history is retained');
-assert.equal(afterWorkspace.rollingMonths,3);
+assert.equal(afterWorkspace.rollingMonths,1,'only management-confirmed quality contributes to the rolling result');
+assert.equal(afterWorkspace.rollingQuality,77);
+const octoberQuality=afterWorkspace.history.find(r=>r.month==='2026-10');
+assert.equal(octoberQuality.quality,null);
+assert.equal(octoberQuality.qualityStatus,'pending_confirmation');
+assert.equal(octoberQuality.monthlyQuality.candidateScore,69);
+assert.equal(octoberQuality.monthlyQuality.canConfirm,false);
+assert(!Object.hasOwn(octoberQuality.monthlyQuality,'version'),'confirmation version is manager-only');
 assert(!JSON.stringify(afterWorkspace).includes('B_PRIVATE'));assert(!JSON.stringify(afterWorkspace).includes('AMBIGUOUS_PRIVATE'));
 for(const entry of current.log.queries){
  const q=entry.statement;
@@ -115,7 +130,7 @@ for(const entry of current.log.queries){
  // calculation and weeks lookup must both use exact employee employment rows.
  if(q.startsWith('SELECT * FROM employee_employment_periods WHERE'))assert(q.includes("employee_user_id='a'"));
  if(q.startsWith('SELECT a.*,r.score'))assert(q.includes("a.evaluee_user_id='a'"));
- if(q.includes("'legacy' AS scoring_rule")){
+ if(q.includes('AS scoring_rule')&&q.includes('FROM performance_results')){
   if(q.includes('ORDER BY month DESC'))for(const alias of ['p','w','a'])assert(q.includes(`${alias}.employee_user_id='a'`));
   else {assert.equal((q.match(/WHERE employee_user_id='a'/g)||[]).length,2);assert(q.includes("a.employee_user_id='a'"));}
  }
@@ -128,8 +143,30 @@ assert.deepEqual(scoped.monthly,full.monthly.filter(r=>r.userId==='a'));
 for(const cycle of scoped.collaborations){const original=full.collaborations.find(c=>c.id===cycle.id);assert.equal(cycle.expected,original.expected);assert.equal(cycle.submitted,original.submitted);assert.deepEqual(cycle.pending,original.pending);assert(cycle.assignments.every(a=>a.evaluee_user_id==='a'));}
 assert.equal(scoped.collaborations.find(c=>c.id==='2026-10').expected,4,'whole-cycle progress must not become single-person totals');
 assert(scoped.collaborations.find(c=>c.id==='2026-10').pending.includes('负责人'),'Unicode-only comments are still incomplete');
-const historyFrom=view=>{const rows=view.results.filter(r=>r.employee_user_id==='a'),months=[...new Set(rows.map(r=>r.month))].sort().reverse();const history=months.map(month=>{const get=kind=>rows.find(r=>r.month===month&&r.kind===kind)?.result;return {month,quality:get('quality')?.score??null,qualityStatus:get('quality')?.status||null,timeliness:get('timeliness')??null,collaboration:get('collaboration')?.score??null,collaborationRule:rows.find(r=>r.month===month&&r.kind==='collaboration')?.scoring_rule||null};});const scores=history.filter(r=>r.quality!==null).slice(0,3).map(r=>r.quality);return {history,ratingProgress:view.monthly.filter(r=>r.userId==='a').map(r=>({month:r.month,peerComplete:r.peerComplete,managerKind:r.managerProgress.kind,managerExpected:r.managerProgress.expected,managerSubmitted:r.managerProgress.submitted,managerComplete:r.managerProgress.complete})),rollingQuality:scores.length?Math.round(scores.reduce((a,b)=>a+b,0)/scores.length*10)/10:null,rollingMonths:scores.length};};
-assert.deepEqual(await current.performance.personal(user.name,'a'),historyFrom(full),'global and scoped personal results are identical');
+function assertHistoryMatchesOverview(personal,view){
+ const rows=view.results.filter(row=>row.employee_user_id==='a');
+ const monthly=view.monthly.filter(row=>row.userId==='a');
+ const months=new Set([...rows.map(row=>row.month),...monthly.filter(row=>row.quality.status!=='no_reports').map(row=>row.month)]);
+ assert.deepEqual(personal.history.map(row=>row.month),[...months].sort().reverse());
+ for(const entry of personal.history){
+  const result=kind=>rows.find(row=>row.month===entry.month&&row.kind===kind);
+  assert.equal(entry.quality,result('quality')?.result.score??null);
+  assert.deepEqual(entry.timeliness,result('timeliness')?.result??null);
+  assert.equal(entry.collaboration,result('collaboration')?.result.score??null);
+  assert.equal(entry.collaborationRule,result('collaboration')?.scoring_rule??null);
+  const quality=monthly.find(row=>row.month===entry.month)?.quality;
+  if(quality){
+   const {version,...summary}=quality;
+   assert.deepEqual(entry.monthlyQuality,{...summary,canConfirm:false});
+   assert.equal(entry.qualityStatus,summary.status);
+  }
+ }
+ assert.deepEqual(personal.ratingProgress,monthly.map(row=>({month:row.month,peerComplete:row.peerComplete,managerKind:row.managerProgress.kind,managerExpected:row.managerProgress.expected,managerSubmitted:row.managerProgress.submitted,managerComplete:row.managerProgress.complete})));
+ const scores=personal.history.map(row=>row.quality).filter(score=>score!==null).slice(0,3);
+ assert.equal(personal.rollingMonths,scores.length);
+ assert.equal(personal.rollingQuality,scores.length?Math.round(scores.reduce((sum,score)=>sum+score,0)/scores.length*10)/10:null);
+}
+assertHistoryMatchesOverview(await current.performance.personal(user.name,'a'),full);
 const august=await current.workspace.workspace(user,'2026-08','aug-first');
 assert.equal(august.weeks.find(w=>w.end==='2026-08-21').status,'不在职');
 assert.equal(august.weeks.find(w=>w.end==='2026-08-28').status,'不在职');
@@ -151,12 +188,12 @@ const pretender=await current.workspace.workspace({name:user.name,userId:'not-in
 const versions=()=>run(db,"SELECT COUNT(*) AS n FROM automatic_performance_results WHERE employee_user_id='a';",true)[0].n;
 const versionA=versions();weights=[100,0,0,0];current.reset();
 const changed=await current.performance.personal(user.name,'a');
-assert.equal(changed.history.find(r=>r.month==='2026-10').quality,90);assert(versions()>versionA);
+assert.equal(changed.history.find(r=>r.month==='2026-10').monthlyQuality.candidateScore,90);assert(versions()>versionA);
 assert.deepEqual(changed.history.find(r=>r.month==='2026-10').collaboration,83.5,'published collaboration remains immutable');
 assert.equal(changed.history.find(r=>r.month==='2026-04').quality,77,'legacy human results remain authoritative');
 const versionB=versions();await current.performance.personal(user.name,'a');assert.equal(versions(),versionB,'same inputs must not append a revision');
 weights=[30,25,25,20];await current.performance.personal(user.name,'a');assert(versions()>versionB,'A -> B -> A must append the restored revision');
-assert.deepEqual(await current.performance.personal(user.name,'a'),historyFrom(await current.performance.overview()),'global/scoped equality also holds after rule revisions');
+assertHistoryMatchesOverview(await current.performance.personal(user.name,'a'),await current.performance.overview());
 
 // Week selection, personal comments/reactions, task draft edits and disabled
 // external task creation retain the existing ownership checks and stable IDs.
@@ -173,5 +210,5 @@ current.reset();const upcoming=await current.workspace.workspace(user,'2026-10',
 assert.equal(run(db,'SELECT COUNT(*) AS n FROM feishu_tasks;',true)[0].n,0);
 assert.equal(run(db,'SELECT COUNT(*) AS n FROM personal_coach_messages;',true)[0].n,0);
 assert.equal(raw.weekly_scores[0]['源记录ID'],'prototype-a','frozen source snapshots remain intact');
-const result={ok:true,artifacts:directory,baselineRef,baselineAvailable:Boolean(before),baseline:before,scoped:after,globalFullResponseEqual:globalBefore?true:'baseline-unavailable',personalWorkspaceResponseEqual:beforeWorkspace?true:'baseline-unavailable',globalAndScopedPersonalEqual:true,sameNameIsolation:true,onlyOwnReportBodiesRead:true,contextOwnerVerified:true,freshPolicies:true,latestHashAvoidsUnchangedWrites:true,restoredPolicyRevisionRetained:true,employmentStopRestore:true,allHistoryAndPreviousPlanRetained:true,wholeCycleProgressRetained:true,taskCommentWeekFlowsRetained:true,realProviderRequests:0,messagesSent:0,productionWrites:0};
+const result={ok:true,artifacts:directory,baselineRef,baselineAvailable:Boolean(before),baseline:before,scoped:after,globalUnaffectedFieldsEqual:globalBefore?true:'baseline-unavailable',personalUnaffectedFieldsEqual:beforeWorkspace?true:'baseline-unavailable',globalAndScopedPersonalEqual:true,sameNameIsolation:true,onlyOwnReportBodiesRead:true,contextOwnerVerified:true,freshPolicies:true,latestHashAvoidsUnchangedWrites:true,restoredPolicyRevisionRetained:true,employmentStopRestore:true,allHistoryAndPreviousPlanRetained:true,wholeCycleProgressRetained:true,taskCommentWeekFlowsRetained:true,realProviderRequests:0,messagesSent:0,productionWrites:0};
 await writeFile(path.join(directory,'result.json'),JSON.stringify(result,null,2));console.log(JSON.stringify(result));

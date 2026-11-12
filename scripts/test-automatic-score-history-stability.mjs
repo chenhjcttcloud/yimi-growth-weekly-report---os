@@ -42,17 +42,18 @@ async function read(label,delta={quality:0,timeliness:0}){
  for(const kind of ['quality','timeliness'])assert.equal(after[kind]-before[kind],delta[kind],label+': '+kind+' history increment');
  retainAndCheck();checks.push({label,delta});return view;
 }
-const quality=view=>view.results.find(row=>row.kind==='quality').result;
+const quality=()=>JSON.parse(saved().filter(row=>row.kind==='quality').at(-1).result_json);
 retainAndCheck();
-let view=await read('first semantic baseline',{quality:1,timeliness:1});assert.equal(quality(view).status,'ready');
+let view=await read('first semantic baseline',{quality:1,timeliness:1});assert.equal(quality().status,'pending_confirmation');
+assert(!view.results.some(row=>row.kind==='quality'),'historical automatic snapshots do not appear as final results');
 for(let attempt=2;attempt<=8;attempt++){
  content={...content,aiGeneratedAt:`2026-10-10T10:00:0${attempt}Z`,qualityRefresh:{...content.qualityRefresh,attempts:attempt,jobId:'retry-job-'+attempt,updatedAt:`2026-10-10T11:00:0${attempt}Z`,diagnostic:{code:'fixture-retry'}},aiAnalysisAttempts:[...content.aiAnalysisAttempts,{attempt,at:'runtime-'+attempt,jobId:'retry-job-'+attempt}],aiAnalysisHistory:[{ai:{scores:[10,10,10,10],summary:'诊断保留旧分析'},generatedAt:'runtime-'+attempt}]};
  writeContent();await read('ready retry diagnostics '+attempt);
 }
 content=Object.fromEntries(Object.entries(content).reverse());writeContent();await read('object serialization order is not a revision');
-const sameScore=quality(view).score;
+const sameScore=quality().candidateScore;
 content.ai={...content.ai,modules:content.ai.modules.map((module,index)=>index?module:{...module,reason:module.reason+'（补充业务评分依据）'})};writeContent();
-view=await read('changed reason at same score',{quality:1,timeliness:0});assert.equal(quality(view).score,sameScore);
+view=await read('changed reason at same score',{quality:1,timeliness:0});assert.equal(quality().candidateScore,sameScore);
 let latest=saved().filter(row=>row.kind==='quality').at(-1);assert(JSON.parse(decodeAutomaticEvidence(latest.evidence_json)).reports[0].content.aiAnalysisAttempts.length>=7,'Real revisions retain complete evidence and retry diagnostics');
 content.ai=analysis(facts,[90,80,70,60]);writeContent();await read('changed AI score only',{quality:1,timeliness:0});
 const revisedFacts={...facts,results:facts.results+'新增一项已验收交付。'};
@@ -63,23 +64,24 @@ await read('submission becomes late',{quality:1,timeliness:1});
 run("UPDATE weekly_reports SET submitted_at='2026-10-09T10:00:00Z' WHERE id='fixture-report';");
 await read('A to B to A restores prior business basis',{quality:1,timeliness:1});
 const hashes=run("SELECT calculation_hash,COUNT(*) AS n FROM automatic_performance_results WHERE kind='timeliness' GROUP BY calculation_hash HAVING COUNT(*)>1;",true);assert(hashes.length,'A→B→A must create a new row even when its hash occurred before');
-weights=[100,0,0,0];await read('quality weights change',{quality:1,timeliness:0});
+weights=[100,0,0,0];await read('legacy policy weights do not affect the current rubric');
 deadlineTime='19:00';await read('submission deadline policy changes',{quality:1,timeliness:1});
 const previous=previousQualitySnapshot(content,content.sourceHash,weights);
 content={...content,previousQuality:previous,ai:undefined,qualityRefresh:{state:'queued',targetVersion:REPORT_QUALITY_VERSION,attempts:0,jobId:'rescore-entry',updatedAt:'2026-10-31T10:00:00Z'}};writeContent();
-view=await read('enter quality rescore',{quality:1,timeliness:0});assert.equal(quality(view).status,'rescoring');
+view=await read('enter quality rescore',{quality:1,timeliness:0});assert.equal(quality().status,'pending_ai');
 for(let attempt=1;attempt<=6;attempt++){
  content={...content,qualityRefresh:{...content.qualityRefresh,state:attempt%2?'analyzing':'queued',attempts:attempt,jobId:'runtime-'+attempt,updatedAt:'runtime-'+attempt,diagnostic:{code:'fixture-only'}},aiAnalysisAttempts:[...content.aiAnalysisAttempts,{attempt,at:'runtime-'+attempt}]};writeContent();
  await read('pending rescore retry diagnostics '+attempt);
 }
 content.qualityRefresh={...content.qualityRefresh,state:'failed',updatedAt:'failed-at'};writeContent();
-view=await read('rescore failure is meaningful',{quality:1,timeliness:0});assert.equal(quality(view).status,'rescore_failed');
+view=await read('rescore failure is meaningful',{quality:1,timeliness:0});assert.equal(quality().status,'pending_ai');
+assert.equal(JSON.parse(decodeAutomaticEvidence(saved().filter(row=>row.kind==='quality').at(-1).evidence_json)).reports[0].qualityRefresh.state,'failed');
 for(let attempt=7;attempt<=12;attempt++){
  content.qualityRefresh={...content.qualityRefresh,attempts:attempt,updatedAt:'later-runtime-'+attempt,jobId:'later-job-'+attempt};content.aiAnalysisAttempts.push({attempt,at:'later-runtime-'+attempt});writeContent();await read('same failed state diagnostics '+attempt);
 }
 content={...content,ai:analysis(revisedFacts,[100,80,60,40]),qualityRefresh:{...content.qualityRefresh,state:'ready'},aiGeneratedAt:'2026-11-01T11:00:00Z'};writeContent();
-view=await read('rescore completion is meaningful',{quality:1,timeliness:0});assert.equal(quality(view).status,'ready');
-content.ai=analysis(revisedFacts,[0,0,0,0]);writeContent();view=await read('valid zero score remains a real revision',{quality:1,timeliness:0});assert.equal(quality(view).score,0);
+view=await read('rescore completion is meaningful',{quality:1,timeliness:0});assert.equal(quality().status,'pending_confirmation');
+content.ai=analysis(revisedFacts,[0,0,0,0]);writeContent();view=await read('valid zero score remains a real revision',{quality:1,timeliness:0});assert.equal(quality().candidateScore,0);
 content.aiModel='fixture-other-model';writeContent();await read('analysis model basis changes',{quality:1,timeliness:0});
 await read('stable final read');
 assert.equal(run('PRAGMA integrity_check;'),'ok');assert.deepEqual(run('PRAGMA foreign_key_check;',true),[]);

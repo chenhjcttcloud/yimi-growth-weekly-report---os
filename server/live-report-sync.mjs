@@ -2,7 +2,7 @@ import {createHash,randomUUID} from 'node:crypto';
 import {readFile,writeFile,rename,mkdir} from 'node:fs/promises';
 import path from 'node:path';
 import {weeklyReportSchedule,fridayOfWeek} from './weekly-report-schedule.mjs';
-import {REPORT_QUALITY_VERSION,REPORT_QUALITY_PROMPT_VERSION,buildReportQualityPrompt,validateReportQualityAnalysis,qualityAnalysisDiagnostic,isReportQualityValidationFailure} from './report-quality-scoring.mjs';
+import {REPORT_QUALITY_VERSION,REPORT_QUALITY_PROMPT_VERSION,REPORT_QUALITY_WEIGHTS,buildReportQualityPrompt,reportQualityTotal,validateReportQualityAnalysis,qualityAnalysisDiagnostic,isReportQualityValidationFailure} from './report-quality-scoring.mjs';
 import {reportFacts,previousQualitySnapshot,currentQualityCached,archivedQuality,legacyReportScore} from './report-rescore-state.mjs';
 const digest=v=>createHash('sha256').update(JSON.stringify(v)).digest('hex');
 const date=d=>new Intl.DateTimeFormat('sv-SE',{timeZone:'Asia/Shanghai'}).format(d);
@@ -102,7 +102,7 @@ export function createLiveReportSync({query,exec,sql,config,settings,refreshDire
    if(await onAttempt(attempt,null)===false)return null;
    if(aiConfigurationChanged(batch)){batch.blockedReason='ai_model_changed';return ANALYSIS_DEFERRED;}
    try{
-    const messages=[{role:'system',content:buildReportQualityPrompt()},{role:'user',content:JSON.stringify({week:report.end,report:report.facts,previousPlan})}];
+    const messages=[{role:'system',content:buildReportQualityPrompt()},{role:'user',content:JSON.stringify({week:report.end,report:report.facts,department:report.department,previousPlan})}];
     if(feedback){
      if(lastOutput)messages.push({role:'assistant',content:lastOutput.slice(0,100000)});
      messages.push({role:'user',content:JSON.stringify({validationFeedback:feedback,instruction:'上一份结果未通过程序校验。请针对指定字段修正，保持原评分细则和原文证据要求，重新输出完整JSON；不得编造引文。'})});
@@ -112,10 +112,9 @@ export function createLiveReportSync({query,exec,sql,config,settings,refreshDire
     lastOutput=value.choices?.[0]?.message?.content||'';
     if(value.choices?.[0]?.finish_reason==='length')throw Object.assign(Error('response_truncated'),{code:'response_truncated'});
     const ai=validateAnalysis(JSON.parse(lastOutput.replace(/^```(?:json)?\s*|\s*```$/g,'')),report.facts);
-    const total=scores=>Math.round(scores.reduce((sum,score,index)=>sum+score*weights[index]/100,0)*10)/10;
     const flags=ai.modules.flatMap(module=>!report.facts[module.id]?.trim()?[`${module.module}缺失，自动记0分`]:module.confidence!==null&&module.confidence<0.6?[`${module.module}模型自评置信度较低，仅作提示`]:[]);
-    if(total(ai.scores)<60)flags.push('内容质量分低于60分，仅作改进提示');
-    if(previousContent.ai?.version===REPORT_QUALITY_VERSION&&previousContent.aiModel===batch.model&&Array.isArray(previousContent.ai.scores)&&previousContent.ai.scores.length===4&&previousContent.ai.scores.every(Number.isFinite)&&Math.abs(total(ai.scores)-total(previousContent.ai.scores))>=15)flags.push('内容质量分较上期变化达到15分，仅作趋势提示');
+    if(ai.totalScore<60)flags.push('内容质量分低于60分，仅作改进提示');
+    if(previousContent.ai?.version===REPORT_QUALITY_VERSION&&previousContent.aiModel===batch.model&&Array.isArray(previousContent.ai.scores)&&previousContent.ai.scores.length===4&&previousContent.ai.scores.every(Number.isFinite)&&Math.abs(ai.totalScore-reportQualityTotal(previousContent.ai.scores,weights))>=15)flags.push('内容质量分较上期变化达到15分，仅作趋势提示');
     ai.anomalies=[...new Set([...flags,...ai.anomalies])].slice(0,10);
     const sources=Object.values(report.facts).filter(Boolean);
     for(const task of ai.tasks)if(!task.evidence||!sources.some(source=>source.includes(task.evidence)))task.evidence=report.facts.problems||report.facts.nextPlan||report.facts.results||report.facts.reflection;
@@ -140,8 +139,8 @@ export function createLiveReportSync({query,exec,sql,config,settings,refreshDire
    const c=JSON.parse(r.content_json),legacy=c.source?.provider==='legacy-reportos';
    if(!legacy&&c.source?.provider!=='feishu-report')continue;
    const a=legacy?null:c.ai;
-   const weights=a?(await settings.policyFor(r.week_end.slice(0,7))).weights||[30,25,25,20]:[];
-   const score=legacy?legacyReportScore(c):a?Math.round(a.scores.reduce((v,s,i)=>v+s*weights[i]/100,0)*10)/10:null;
+   const weights=a?.version===REPORT_QUALITY_VERSION?REPORT_QUALITY_WEIGHTS:a?c.scoringWeights||(await settings.policyFor(r.week_end.slice(0,7))).weights||REPORT_QUALITY_WEIGHTS:REPORT_QUALITY_WEIGHTS;
+   const score=legacy?legacyReportScore(c):a?reportQualityTotal(a.scores,weights):null;
    const p={id:c['周期ID']||'period-'+r.week_end,label:r.week_label,start:r.week_start,end:r.week_end,range:r.week_start+' — '+r.week_end,exempt_people:[],status:'历史'};
    periods.set(p.end,p);
    rows.push({...c,user_id:r.employee_user_id,'姓名':r.employee_name,'部门':r.department,'源记录ID':r.id,'周次':r.week_label,'开始日期':r.week_start,'结束日期':r.week_end,'提交时间':r.submitted_at,'状态':r.status,'总分':score});
@@ -165,6 +164,7 @@ export function createLiveReportSync({query,exec,sql,config,settings,refreshDire
  function validateOptions(options){
   if(options.mode!==undefined&&options.mode!=='sync'&&options.mode!=='rescore')throw Error('invalid_sync_mode');
   if(options.mode==='rescore'&&(!/^\d{4}-(0[1-9]|1[0-2])$/.test(options.targetMonth||'')||options.targetMonth>date(new Date()).slice(0,7)))throw Error('invalid_rescore_month');
+  if(options.targetReportId!==undefined&&(options.mode!=='rescore'||typeof options.targetReportId!=='string'||!options.targetReportId||options.targetReportId.length>200||options.targetReportId.trim()!==options.targetReportId))throw Error('invalid_report_id');
  }
  async function run(options={}){
   validateOptions(options);
@@ -185,7 +185,8 @@ export function createLiveReportSync({query,exec,sql,config,settings,refreshDire
   await emit(stat);
   const reports=new Map();
   if(rescore){
-   const stored=await query(`SELECT w.* FROM weekly_reports w JOIN employees e ON e.user_id=w.employee_user_id WHERE substr(w.week_end,1,7)=${sql(options.targetMonth)} AND e.is_active=1 AND w.status<>'未交' ORDER BY w.employee_user_id,w.week_end;`);
+   const target=options.targetReportId?` AND w.id=${sql(options.targetReportId)} AND NOT EXISTS(SELECT 1 FROM weekly_reports newer WHERE newer.employee_user_id=w.employee_user_id AND newer.week_end=w.week_end AND newer.rowid>w.rowid)`:'';
+   const stored=await query(`SELECT w.* FROM weekly_reports w JOIN employees e ON e.user_id=w.employee_user_id WHERE substr(w.week_end,1,7)=${sql(options.targetMonth)} AND e.is_active=1 AND COALESCE(w.status,'')<>'未交'${target} ORDER BY w.employee_user_id,w.week_end,w.rowid;`);
    for(const row of stored){
     const content=JSON.parse(row.content_json);
     if(content.source?.provider==='legacy-reportos')continue;
@@ -240,15 +241,15 @@ export function createLiveReportSync({query,exec,sql,config,settings,refreshDire
    const old=report.stored||(await query(`SELECT content_json,source_hash FROM weekly_reports WHERE employee_user_id=${sql(report.userId)} AND week_end=${sql(report.end)};`))[0];
    const previous=old?JSON.parse(old.content_json):{};
    if(previous.source?.provider==='legacy-reportos')continue;
-   const policy=await settings.policyFor(report.end.slice(0,7)),weights=policy.weights||[30,25,25,20];
+   const policy=await settings.policyFor(report.end.slice(0,7)),weights=REPORT_QUALITY_WEIGHTS;
    // Legacy rows may predate sourceHash in their JSON; SQL remains authoritative.
    const prior={...previous,sourceHash:previous.sourceHash||old?.source_hash||''};
    let ai=null;
-   if(old?.source_hash===report.sourceHash&&currentQualityCached(prior,report.sourceHash,analysisBatch.model))try{ai=validateAnalysis(previous.ai,report.facts);ai.promptVersion=previous.ai.promptVersion||previous.aiPromptVersion;}catch{}
+   if(!options.targetReportId&&old?.source_hash===report.sourceHash&&currentQualityCached(prior,report.sourceHash,analysisBatch.model))try{ai=validateAnalysis(previous.ai,report.facts);ai.promptVersion=previous.ai.promptVersion||previous.aiPromptVersion;}catch{}
    const cell=monthCell(report);cell.total++;stat.rowCount++;
    if(historicalInactive)stat.historicalInactiveReports++;
    if(rescore&&ai){stat.cached++;cell.cached++;continue;}
-   const snapshot=previousQualitySnapshot(prior,old?.source_hash||'',weights),history=ai?previous.aiAnalysisHistory||[]:archivedQuality(prior,old?.source_hash||'',weights);
+   const snapshot=previousQualitySnapshot(prior,old?.source_hash||'',policy.weights||weights),history=ai?previous.aiAnalysisHistory||[]:archivedQuality(prior,old?.source_hash||'',policy.weights||weights);
    const schedule=weeklyReportSchedule(report.end,calendar(),policy.deadlineTime),late=!schedule.exempt&&!schedule.calendarPending&&Date.parse(report.submittedAt)>Date.parse(schedule.dueAt||'');
    const attempts=Array.isArray(previous.aiAnalysisAttempts)?previous.aiAnalysisAttempts:[];
    // Older diagnostic entries lacked a model. Keep the original attribution through later model changes.
@@ -258,7 +259,7 @@ export function createLiveReportSync({query,exec,sql,config,settings,refreshDire
    const content={...report.facts,'周期ID':report.weekId,'本周成果摘要':report.facts.results,'问题摘要':report.facts.problems,'下周计划摘要':report.facts.nextPlan,'思考与复盘摘要':report.facts.reflection,source:report.source,sourceHash:report.sourceHash,scoringWeights:weights,submissionSchedule:schedule,...(history.length?{aiAnalysisHistory:history}:{}),...(snapshot?{previousQuality:snapshot}:{}),...(attempts.length?{aiAnalysisAttempts:attempts}:{}),...(attempts.some(attempt=>attempt&&!attempt.model)?{aiLegacyAttemptsModel:legacyModel}:{}),qualityRefresh:{state:ai?'ready':retryHeld?'failed':'queued',targetVersion:REPORT_QUALITY_VERSION,model:analysisBatch.model,sourceHash:report.sourceHash,jobId,attempts:retryHeld?automaticFailures:0,updatedAt:new Date().toISOString(),...(retryHeld?{retryHeld:true}:{})},...(ai?{ai,aiModel:previous.aiModel,aiPromptVersion:previous.aiPromptVersion,aiGeneratedAt:previous.aiGeneratedAt,...Object.fromEntries(['成果分','问题分','计划分','复盘分'].map((key,index)=>[key,ai.scores[index]]))}:{})};
    if(rescore){
     const sourceGuard=old.source_hash==null?'source_hash IS NULL':`source_hash=${sql(old.source_hash)}`;
-    await exec(`UPDATE weekly_reports SET content_json=${sql(JSON.stringify(content))},source_hash=${sql(report.sourceHash)},updated_at=datetime('now') WHERE employee_user_id=${sql(report.userId)} AND week_end=${sql(report.end)} AND ${sourceGuard};`);
+    await exec(`UPDATE weekly_reports SET content_json=${sql(JSON.stringify(content))},source_hash=${sql(report.sourceHash)},updated_at=datetime('now') WHERE id=${sql(old.id)} AND ${sourceGuard} AND content_json=${sql(old.content_json)};`);
    }else{
     if(!batch){batch=randomUUID();await exec(`INSERT INTO import_batches(id,source_type,source_name,record_count) VALUES(${sql(batch)},'feishu-report',${sql(report.source?.ruleName||'周报')},0);`);}
     await exec(`BEGIN; INSERT INTO employees(user_id,name,department) VALUES(${sql(report.userId)},${sql(report.name)},${sql(report.department)}) ON CONFLICT(user_id) DO NOTHING; INSERT INTO weekly_reports(id,employee_user_id,employee_name,department,week_label,week_start,week_end,status,content_json,source_batch_id,source_hash,is_late,submitted_at) VALUES(${sql(report.id)},${sql(report.userId)},${sql(report.name)},${sql(report.department)},${sql(report.label)},${sql(report.start)},${sql(report.end)},${sql(schedule.exempt?'免交':schedule.calendarPending?'等待日历':late?'迟交':'准时')},${sql(JSON.stringify(content))},${sql(batch)},${sql(report.sourceHash)},${late?1:0},${sql(report.submittedAt)}) ON CONFLICT(employee_user_id,week_label) DO UPDATE SET employee_name=excluded.employee_name,department=excluded.department,week_start=excluded.week_start,week_end=excluded.week_end,status=excluded.status,content_json=excluded.content_json,source_hash=excluded.source_hash,submitted_at=excluded.submitted_at,is_late=excluded.is_late,updated_at=datetime('now'); COMMIT;`);
@@ -274,8 +275,9 @@ export function createLiveReportSync({query,exec,sql,config,settings,refreshDire
   const notify=()=>{projection=projection.catch(()=>{}).then(async()=>{await project();await refreshDirectory();await onComplete();stat.publicationPending=false;}).catch(()=>{stat.publicationPending=true;stat.publicationFailures=(stat.publicationFailures||0)+1;stat.diagnostics=[...stat.diagnostics,{code:'publication_update_failed',path:'publication',retryable:true}].slice(-50);});return projection;};
   stat.phase='analysis';await notify();await emit({...stat});let index=0;
   async function persist(report,content){
-   await exec(`UPDATE weekly_reports SET content_json=${sql(JSON.stringify(content))},updated_at=datetime('now') WHERE employee_user_id=${sql(report.userId)} AND week_end=${sql(report.end)} AND source_hash=${sql(report.sourceHash)} AND json_extract(content_json,'$.qualityRefresh.jobId')=${sql(jobId)};`);
-   const stored=(await query(`SELECT content_json,source_hash FROM weekly_reports WHERE employee_user_id=${sql(report.userId)} AND week_end=${sql(report.end)};`))[0];
+   const target=report.stored?`id=${sql(report.stored.id)}`:`employee_user_id=${sql(report.userId)} AND week_end=${sql(report.end)}`;
+   await exec(`UPDATE weekly_reports SET content_json=${sql(JSON.stringify(content))},updated_at=datetime('now') WHERE ${target} AND source_hash=${sql(report.sourceHash)} AND json_extract(content_json,'$.qualityRefresh.jobId')=${sql(jobId)};`);
+   const stored=(await query(`SELECT content_json,source_hash FROM weekly_reports WHERE ${target};`))[0];
    return stored?.source_hash===report.sourceHash&&JSON.parse(stored.content_json).qualityRefresh?.jobId===jobId;
   }
   await Promise.all(Array.from({length:Math.min(3,work.length)},async()=>{
@@ -322,9 +324,9 @@ export function createLiveReportSync({query,exec,sql,config,settings,refreshDire
   const partial=Boolean(stat.failed||stat.retryHeld||stat.publicationPending);
   await emit({...stat,ok:!partial&&!analysisBatch.blockedReason,running:false,phase:analysisBatch.blockedReason?'paused':partial?'partial':'done',...(analysisBatch.blockedReason?{blockedReason:analysisBatch.blockedReason}:{}),finishedAt:new Date().toISOString()});
  }
- async function start(options={}){
+ async function start(options={},beforeStart){
   validateOptions(options);if(running)return false;running=true;
-  try{await emit({ok:true,running:true,phase:'queued',mode:options.mode||'sync',...(options.targetMonth?{targetMonth:options.targetMonth}:{}),message:'同步已开始'});}catch(error){running=false;throw error;}
+  try{await beforeStart?.();await emit({ok:true,running:true,phase:'queued',mode:options.mode||'sync',...(options.targetMonth?{targetMonth:options.targetMonth}:{}),message:'同步已开始'});}catch(error){running=false;throw error;}
   void run(options).catch(async(error)=>{await emit({ok:false,running:false,phase:'failed',mode:options.mode||'sync',targetMonth:options.targetMonth,message:'任务失败，请检查评分诊断、日期或服务配置后重试',diagnostics:[analysisDiagnostic(error)]});}).finally(()=>{running=false;});
   return true;
  }

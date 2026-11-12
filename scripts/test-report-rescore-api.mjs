@@ -34,7 +34,9 @@ store('empty-placeholder','b','2026-10-23',{results:'',problems:'',nextPlan:'',r
 const record=id=>run('SELECT * FROM weekly_reports WHERE id='+quote(id)+';',true)[0];
 const untouchedIds=['outside-september','inactive-october','not-submitted','empty-placeholder','cached-v1','cached-v2'];
 const retained=Object.fromEntries(untouchedIds.map(id=>[id,record(id)]));
-const humanTables=['scoring360_responses','monthly_manager_scores','department_leader_scores','department_person_scores','performance_results'];
+run(`INSERT INTO performance_results(month,employee_user_id,employee_name,kind,result_json,evidence_json,confirmed_by,confirmed_at)
+ VALUES('2026-09','a','虚构测试员工甲','quality','{"score":76}','{}','虚构测试主管','2026-10-01T09:00:00Z');`);
+const humanTables=['scoring360_responses','monthly_manager_scores','department_leader_scores','department_person_scores','performance_results','weekly_quality_reviews'];
 const humanBefore=JSON.stringify(humanTables.map(table=>[table,run('SELECT * FROM '+table+' ORDER BY rowid;',true)]));
 for(const name of ['prototypeData','scoring360','kimiInsights','kimiInsightsByPeriod','monthlyMeetingInsights'])await writeFile(data+'/'+name+'.json',JSON.stringify(name==='prototypeData'?{meta:{collectionStartDate:'2026-09-01',periods:[]},employee_summary:[],weekly_scores:[]}:name==='scoring360'?{cycles:[],assignments:[],responses:[]}:{}));
 const callsFile=dir+'/upstream-calls.log',modelsCallsFile=dir+'/upstream-models.log',releaseGate=dir+'/release-ai.flag';
@@ -128,14 +130,14 @@ try{
  const diagnostic=await until(async()=>{const state=(await call('GET')).body.status;return state?.diagnostics?.some(item=>item.code==='evidence_not_in_source')?state:null;},'corrective_diagnostic_missing');
  const quoteDiagnostic=diagnostic.diagnostics.find(item=>item.code==='evidence_not_in_source');assert.equal(quoteDiagnostic.moduleId,'results');assert.equal(quoteDiagnostic.criterionId,'result');assert(quoteDiagnostic.path.endsWith('.quote'));assert(!JSON.stringify(diagnostic.diagnostics).includes('PRIVATE_UNTRUSTED_MODEL_QUOTE'),'status exposes only safe diagnostics, never raw provider reply');
  const finished=await until(async()=>{const response=(await call('GET')).body;return !response.processRunning&&response.status?.finishedAt?response.status:null;},'rescore_did_not_complete');
- assert.equal(finished.phase,'done');assert(!finished.publicationPending,'valid legacy records in other months must not break targeted publication');assert.equal(finished.rowCount,3);assert.equal(finished.analyzed,1);assert.equal(finished.cached,2);assert.equal(finished.failed,0);assert.equal(finished.remaining,0);assert.equal(finished.active,0);
+ assert.equal(finished.phase,'done');assert(!finished.publicationPending,'valid records in other months must not break candidate projection');assert.equal(finished.rowCount,3);assert.equal(finished.analyzed,1);assert.equal(finished.cached,2);assert.equal(finished.failed,0);assert.equal(finished.remaining,0);assert.equal(finished.active,0);
  const refreshed=JSON.parse(record('stale-october').content_json);assert.equal(refreshed.ai.version,REPORT_QUALITY_VERSION);assert.equal(refreshed.aiPromptVersion,REPORT_QUALITY_PROMPT_VERSION);assert.equal(refreshed.qualityRefresh.state,'ready');assert.equal(refreshed.qualityRefresh.attempts,2);assert(refreshed.aiAnalysisHistory.some(entry=>entry.ai.scores[0]===80));
  for(const id of untouchedIds)assert.deepEqual(record(id),retained[id],'outside scope, unsubmitted, inactive and valid cached rows remain byte-for-byte intact: '+id);
  const calls=await providerCalls();assert.equal(calls.length,2);assert(calls.every(row=>row.kind==='ai'&&row.week==='2026-10-09'&&row.marker==='retry-first'));assert.equal(calls[1].feedback.code,'evidence_not_in_source');assert(calls[1].feedback.path.endsWith('.quote'));
  const beforeRepeat=record('stale-october');assert.equal((await call('POST',{mode:'rescore',targetMonth:'2026-10'})).status,202);
  const repeated=await until(async()=>{const response=(await call('GET')).body;return !response.processRunning&&response.status?.finishedAt?response.status:null;},'repeat_did_not_complete');
  assert.equal(repeated.cached,3);assert.equal(repeated.analyzed,0);assert.equal(repeated.remaining,0);assert.equal((await providerCalls()).length,2,'a second run resumes from cache without repeating successful model calls');assert.deepEqual(record('stale-october'),beforeRepeat);
- assert.equal(JSON.stringify(humanTables.map(table=>[table,run('SELECT * FROM '+table+' ORDER BY rowid;',true)])),humanBefore,'rescore API does not submit human ratings or legacy results');
+ assert.equal(JSON.stringify(humanTables.map(table=>[table,run('SELECT * FROM '+table+' ORDER BY rowid;',true)])),humanBefore,'rescore API preserves human ratings, review history and historical final results and does not confirm the current month');
  for(const table of ['weekly_reminder_sends','scoring360_reminder_sends','monthly_score_reminder_deliveries'])assert.equal(run('SELECT count(*) AS n FROM '+table+';',true)[0].n,0);
  assert.equal(run('SELECT count(*) AS n FROM import_batches;',true)[0].n,0,'stored-only rescore creates no Feishu import batch');assert.equal(run('PRAGMA integrity_check;'),'ok');
  const summaryRequest={periodId:'period-2026-10-09'};

@@ -127,6 +127,7 @@ CREATE TABLE IF NOT EXISTS weekly_reports (
 
 CREATE INDEX IF NOT EXISTS idx_weekly_reports_employee ON weekly_reports(employee_user_id);
 CREATE INDEX IF NOT EXISTS idx_weekly_reports_week ON weekly_reports(week_start, week_end);
+CREATE INDEX IF NOT EXISTS idx_weekly_reports_month_scope ON weekly_reports(week_end, employee_user_id, week_start);
 
 CREATE TABLE IF NOT EXISTS analysis_runs (
   id TEXT PRIMARY KEY,
@@ -496,8 +497,8 @@ CREATE TABLE IF NOT EXISTS performance_results (
 CREATE TRIGGER IF NOT EXISTS performance_results_no_update BEFORE UPDATE ON performance_results BEGIN SELECT RAISE(ABORT, 'result_locked'); END;
 CREATE TRIGGER IF NOT EXISTS performance_results_no_delete BEFORE DELETE ON performance_results BEGIN SELECT RAISE(ABORT, 'result_locked'); END;
 
--- Automatic quality/statistics revisions are append-only so monthly totals can evolve.
--- Existing manually published history remains authoritative and is never overwritten.
+-- Automatic quality candidates and timeliness revisions are append-only.
+-- Management-confirmed quality is stored in performance_results.
 CREATE TABLE IF NOT EXISTS automatic_performance_results (
   id TEXT PRIMARY KEY,
   month TEXT NOT NULL,
@@ -512,6 +513,23 @@ CREATE TABLE IF NOT EXISTS automatic_performance_results (
 CREATE INDEX IF NOT EXISTS idx_automatic_performance_latest ON automatic_performance_results(month,employee_user_id,kind);
 CREATE TRIGGER IF NOT EXISTS automatic_performance_no_update BEFORE UPDATE ON automatic_performance_results BEGIN SELECT RAISE(ABORT,'automatic_history_locked'); END;
 CREATE TRIGGER IF NOT EXISTS automatic_performance_no_delete BEFORE DELETE ON automatic_performance_results BEGIN SELECT RAISE(ABORT,'automatic_history_locked'); END;
+
+CREATE TABLE IF NOT EXISTS weekly_quality_reviews (
+  id TEXT PRIMARY KEY,
+  month TEXT NOT NULL,
+  employee_user_id TEXT NOT NULL,
+  report_id TEXT NOT NULL,
+  analysis_version TEXT NOT NULL,
+  action TEXT NOT NULL CHECK(action IN ('adjust_score','validate_evidence','mark_not_applicable','exclude_report','restore_report','reanalyze')),
+  reason TEXT NOT NULL CHECK(length(trim(reason))>0),
+  details_json TEXT NOT NULL,
+  reviewer_user_id TEXT NOT NULL,
+  reviewer_name TEXT NOT NULL,
+  created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_weekly_quality_reviews_scope ON weekly_quality_reviews(employee_user_id,month,report_id);
+CREATE TRIGGER IF NOT EXISTS weekly_quality_reviews_no_update BEFORE UPDATE ON weekly_quality_reviews BEGIN SELECT RAISE(ABORT,'quality_review_locked'); END;
+CREATE TRIGGER IF NOT EXISTS weekly_quality_reviews_no_delete BEFORE DELETE ON weekly_quality_reviews BEGIN SELECT RAISE(ABORT,'quality_review_locked'); END;
 
 BEGIN;
 CREATE TRIGGER IF NOT EXISTS scoring360_responses_published_insert BEFORE INSERT ON scoring360_responses

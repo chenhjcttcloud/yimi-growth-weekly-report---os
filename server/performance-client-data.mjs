@@ -20,6 +20,10 @@ export function performanceClientOverview(view, {reportMode='details'}={}) {
       return {...summary,detailsDeferred:true};
     }) : view.collaborations,
     results: view.results.map(record => {
+      if(view.scopeMonth!==undefined&&record.month!==view.scopeMonth){
+        const {month,employee_user_id,kind,result}=record;
+        return {month,employee_user_id,kind,result:{score:result.score??null}};
+      }
       const {evidence_json, ...summary} = record;
       let evidence = {};
       try {

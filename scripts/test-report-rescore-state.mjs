@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import {REPORT_QUALITY_VERSION,REPORT_QUALITY_PROMPT_VERSION,validateReportQualityAnalysis} from '../server/report-quality-scoring.mjs';
+import {LEGACY_REPORT_QUALITY_VERSION,REPORT_QUALITY_VERSION,REPORT_QUALITY_PROMPT_VERSION,validateReportQualityAnalysis} from '../server/report-quality-scoring.mjs';
 import {reportFacts,usableQuality,previousQualitySnapshot,currentQualityCached,archivedQuality} from '../server/report-rescore-state.mjs';
 import {makeReportQualityAnalysis} from './report-quality-test-fixtures.mjs';
 
@@ -21,6 +21,13 @@ assert(usableQuality(ai,facts));
 const forged=structuredClone(ready);forged.ai.modules[0].criteria[0].evidence[0].quote='伪造原文，不属于任何本模块正文';
 assert.equal(currentQualityCached(forged,sourceHash,model),false,'forged stored citation cannot be reused');
 assert.equal(previousQualitySnapshot(forged),null,'forged current-rule citation cannot masquerade as a published fallback');
+const structuredHistory={...ready,ai:{...structuredClone(ai),version:LEGACY_REPORT_QUALITY_VERSION}};
+for(const module of structuredHistory.ai.modules) {
+ for(const criterion of module.criteria) criterion.evidence=criterion.evidence.map(({quote,type})=>({quote,type}));
+}
+assert(previousQualitySnapshot(structuredHistory),'valid historical structured citations remain displayable');
+structuredHistory.ai.modules[0].criteria[0].evidence[0].quote='伪造旧版引文';
+assert.equal(previousQualitySnapshot(structuredHistory),null,'historical structured citations still require exact original text');
 const old={scores:[73,74,75,76],summary:'旧版虚构评分，没有逐项证据。'};
 const history=[{ai:old,model:'old-model',promptVersion:'legacy',generatedAt:'2026-10-31T00:00:00Z',sourceHash:'old-source',facts,scoringWeights:weights}];
 const deployedPending={...facts,sourceHash,aiAnalysisHistory:history};

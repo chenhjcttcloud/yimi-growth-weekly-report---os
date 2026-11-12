@@ -36,7 +36,7 @@
     "test:dev-views": "node scripts/test-dev-views.mjs",
     "test:personal": "node scripts/test-personal-workspace.mjs",
     "test:live-sync": "node scripts/test-live-report-sync.mjs",
-    "test:report-quality": "node scripts/test-report-quality-scoring.mjs && node scripts/test-report-quality-publication.mjs && node scripts/test-pending-quality-aggregates.mjs && node scripts/test-live-report-sync.mjs && node scripts/test-report-quality-ui.mjs",
+    "test:report-quality": "node scripts/test-report-quality-scoring.mjs && node scripts/test-report-quality-publication.mjs && node scripts/test-weekly-quality-confirmation-api.mjs && node scripts/test-pending-quality-aggregates.mjs && node scripts/test-live-report-sync.mjs && node scripts/test-report-quality-ui.mjs",
     "test:report-rescore": "node scripts/test-report-rescore-state.mjs && node scripts/test-report-rescore.mjs && node scripts/test-report-rate-limit.mjs && node scripts/test-report-rescore-api.mjs && node scripts/test-rescore-display.mjs && node scripts/test-report-rescore-ui.mjs",
     "test:scoring-history": "node scripts/test-historical-scoring.mjs",
     "test:boss-scoring": "node scripts/test-boss-leader-scoring-ui.mjs",

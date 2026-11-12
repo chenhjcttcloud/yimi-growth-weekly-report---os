@@ -15,6 +15,7 @@ const DashboardPage=lazy(()=>import('./pages/DashboardPage').then(module=>({defa
 const MonthlyMeetingPage=lazy(()=>import('./pages/MonthlyMeetingPage').then(module=>({default:module.MonthlyMeetingPage})));
 const TasksPage=lazy(()=>import('./pages/TasksPage').then(module=>({default:module.TasksPage})));
 const TrendsPage=lazy(()=>import('./pages/TrendsPage').then(module=>({default:module.TrendsPage})));
+const SupervisorQualityPage=lazy(()=>import('./pages/SupervisorQualityPage').then(module=>({default:module.SupervisorQualityPage})));
 
 const fallbackAccess: UserAccess = {
   role: "member",
@@ -23,6 +24,7 @@ const fallbackAccess: UserAccess = {
   canViewBossDashboard: false,
   canViewSettings: false,
   canManageScoring360: false,
+  canReviewWeeklyQuality: false,
   canManagePersonnel: false,
   currentEmployee: null,
   visibilityMode: "self_only",
@@ -168,9 +170,10 @@ export function App() {
     if (activePage === "quality-scores" || activePage === "collaboration-scores") {
       if (!canOpenPage(activePage)) return null;
       const scoreFocus = activePage === "quality-scores" ? "quality" : "collaboration";
-      return currentAccess.canManageScoring360
-        ? <PerformanceResults key={activePage} scoreFocus={scoreFocus}/>
-        : <FinalResultsPage key={`${activePage}:${previewEmployeeId||currentAccess.currentEmployee?.userId||'self'}`} scoreFocus={scoreFocus} previewEmployeeId={previewEmployeeId} employeeContextId={previewEmployeeId||currentAccess.currentEmployee?.userId||'self'} onOpenModule={setActivePage}/>;
+      if (currentAccess.canManageScoring360) return <PerformanceResults key={activePage} scoreFocus={scoreFocus}/>;
+      const employeeId=previewEmployeeId||currentAccess.currentEmployee?.userId||'self';
+      const personal=<FinalResultsPage key={`${activePage}:${employeeId}`} scoreFocus={scoreFocus} previewEmployeeId={previewEmployeeId} employeeContextId={employeeId} onOpenModule={setActivePage}/>;
+      return scoreFocus==='quality'&&currentAccess.canReviewWeeklyQuality ? <SupervisorQualityPage personal={personal}/> : personal;
     }
 
     if (activePage === "scores") {
@@ -262,6 +265,7 @@ function normalizeAccess(value: unknown, user: any): UserAccess {
     externalView: Boolean(record.externalView || user?.role === "external_boss_view"),
     canViewBossDashboard: Boolean(record.canViewBossDashboard || record.bossView || user?.bossView || user?.role === "external_boss_view"),
     canManageScoring360: Boolean(record.canManageScoring360 || record.bossView || user?.bossView),
+    canReviewWeeklyQuality: Boolean(record.canReviewWeeklyQuality),
     canManagePersonnel: Boolean(record.canManagePersonnel || record.canManageScoring360 || record.bossView || user?.bossView),
     canViewSettings: Boolean(record.canViewSettings || record.canManageScoring360 || record.bossView || user?.bossView),
     currentEmployee: record.currentEmployee || null,

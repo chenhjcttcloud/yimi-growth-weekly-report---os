@@ -74,7 +74,7 @@ export function createManagerReviews({query,exec,sql,organization,reports,isBoss
  const frozenIds=(state,month)=>[...state.frozen.keys()].map(k=>JSON.parse(k)).filter(([m])=>m===month).map(([,id])=>id);
  async function tasks(user,month){
   month=validMonth(month||monthNow());const state=await snapshot(),mine=[...new Set([...state.plans.keys(),...frozenIds(state,month)])].map(id=>planFor(state,month,id)).filter(p=>p?.kind==='manager'&&p.expectedIds.includes(user.userId)&&state.people.get(user.userId)?.active&&(p.employee.active||state.scores.some(s=>s.month===month&&s.employee_user_id===p.employee.userId&&s.evaluator_user_id===user.userId)));
-  const ids=new Set(mine.map(p=>p.employee.userId)),evidence=ids.size&&reports?await reports():[];
+  const evidence=mine.length&&reports?await reports({month}):[];
   const published=await query(`SELECT employee_user_id FROM all_monthly_weighted_results WHERE month=${sql(month)} UNION SELECT employee_user_id FROM performance_results WHERE month=${sql(month)} AND kind='collaboration';`);
   return {month,canReview:mine.length>0,hasResponsibilities:state.handoffs.some(h=>h.to_user_id===user.userId)||[...state.plans.values(),...state.frozen.values()].some(p=>p.kind==='manager'&&p.expectedIds.includes(user.userId)),weights:{manager:30,peers:70},tasks:mine.map(p=>{const saved=state.scores.find(s=>s.month===month&&s.employee_user_id===p.employee.userId&&s.evaluator_user_id===user.userId);return {employeeUserId:p.employee.userId,name:p.employee.name,department:p.employee.department,score:saved?.score??null,comment:saved?.comment||'',submitted:Boolean(saved),locked:Boolean(saved)||published.some(r=>r.employee_user_id===p.employee.userId),frozen:Boolean(p.frozenAt),reports:evidence.filter(r=>r.employeeUserId===p.employee.userId&&r.month===month).map(r=>({id:r.id,start:r.start,end:r.end,facts:r.evidence,aiReference:r.candidate,status:r.status}))};})};
  }
@@ -155,5 +155,29 @@ export function createManagerReviews({query,exec,sql,organization,reports,isBoss
   })};
  }
  async function bossTarget(month,id){return (await bossTargets(month)).scoreTargets.find(t=>t.departmentId===id);}
- return {snapshot,progress,tasks,submit,handoffOverview,handoff,freezeBossPlan,bossTargets,bossTarget,leaderScoreTarget};
+ async function qualityReviewEmployees(reviewerId){
+  const eligible=(await query(`SELECT 1 FROM employees reviewer WHERE reviewer.user_id=${sql(reviewerId)} AND reviewer.is_active=1 AND (
+   EXISTS(SELECT 1 FROM employees employee WHERE employee.manager_user_id=reviewer.user_id AND employee.user_id<>reviewer.user_id)
+   OR EXISTS(SELECT 1 FROM organization_departments department WHERE department.leader_user_id=reviewer.user_id)) LIMIT 1;`)).length>0;
+  if(!eligible)return [];
+  const data=await organization();
+  if(!data.employees.some(employee=>employee.userId===reviewerId&&employee.active))return [];
+  const departments=new Map(data.departments.filter(department=>Number(department.is_active)!==0).map(department=>[department.id,department]));
+  return data.employees.filter(employee=>{
+   if(employee.userId===reviewerId)return false;
+   if(employee.managerUserId&&employee.managerUserId!==employee.userId)return employee.managerUserId===reviewerId;
+   return (employee.directDepartmentIds||[]).some(id=>{
+    const visited=new Set();
+    while(id&&!visited.has(id)){
+     visited.add(id);
+     const department=departments.get(id);
+     if(!department)return false;
+     if(department.leader_user_id&&department.leader_user_id!==employee.userId)return department.leader_user_id===reviewerId;
+     id=department.parent_id;
+    }
+    return false;
+   });
+  }).map(({userId,name,department})=>({userId,name,department}));
+ }
+ return {snapshot,progress,tasks,submit,handoffOverview,handoff,freezeBossPlan,bossTargets,bossTarget,leaderScoreTarget,qualityReviewEmployees};
 }

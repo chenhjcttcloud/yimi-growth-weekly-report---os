@@ -1,4 +1,4 @@
-import {REPORT_QUALITY_VERSION,REPORT_QUALITY_PROMPT_VERSION,validateReportQualityAnalysis} from './report-quality-scoring.mjs';
+import {LEGACY_REPORT_QUALITY_VERSION,REPORT_QUALITY_VERSION,REPORT_QUALITY_PROMPT_VERSION,reportQualityAssessment,validateReportQualityAnalysis} from './report-quality-scoring.mjs';
 
 export const reportFacts = content => ({
  results:content?.results||content?.['本周成果摘要']||'',
@@ -15,6 +15,7 @@ export function legacyReportScore(content){
 const scoresValid = ai => Array.isArray(ai?.scores)&&ai.scores.length===4&&ai.scores.every(score=>typeof score==='number'&&Number.isFinite(score)&&score>=0&&score<=100)&&typeof ai.summary==='string'&&Boolean(ai.summary.trim());
 export function usableQuality(ai,facts){
  if(!scoresValid(ai))return false;
+ if(ai.version===LEGACY_REPORT_QUALITY_VERSION)return reportQualityAssessment({...facts,ai})!==null;
  if(ai.version===REPORT_QUALITY_VERSION){try{validateReportQualityAnalysis(ai,facts);}catch{return false;}}
  return true;
 }

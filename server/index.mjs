@@ -195,10 +195,10 @@ const feishuDepartmentSync=createFeishuDepartmentSync({query:querySqlRows,exec:e
 const directorySync=createDirectorySync({query:querySqlRows,exec:execSql,sql:sqlValue,config,lifecycle:employeeLifecycle,registerIdentity:employeeIdentity.register});
 const departments=createDepartments({query:querySqlRows,exec:execSql,sql:sqlValue,employees:()=>loadManagedEmployees(),beforeScore:(month,id)=>managerReviews.freezeBossPlan(month,id),resolveScoreTarget:(month,id)=>managerReviews.bossTarget(month,id),resolveLeaderScoreTarget:(month,id)=>managerReviews.leaderScoreTarget(month,id)});
 let organizationMutationRunning=false;
-const managerReviews=createManagerReviews({query:querySqlRows,exec:execSql,sql:sqlValue,organization:departments.overview,reports:()=>performance.reports(),isBossUserId:id=>bossAccessState.userIds.has(id)||(config.authMode==='mock'&&id==='mock_owner')});
+const managerReviews=createManagerReviews({query:querySqlRows,exec:execSql,sql:sqlValue,organization:departments.overview,reports:options=>performance.reports(options),isBossUserId:id=>bossAccessState.userIds.has(id)||(config.authMode==='mock'&&id==='mock_owner')});
 const performance = createPerformance({managerReviews,calendar:()=>chinaWorkCalendar,policyFor:systemSettings.policyFor,query: querySqlRows, exec: execSql, sql: sqlValue, readData:readSourceReadonly});
 const productManagementScores=createProductManagementScoreApi({query:querySqlRows,sql:sqlValue,sendJson,token:process.env.PRODUCT_MANAGEMENT_SCORE_API_TOKEN||''});
-const reportAutomation=createReportAutomation({query:querySqlRows,exec:execSql,sql:sqlValue,getConfig:systemSettings.reportAutomationConfig,getAiRequestsToday:systemSettings.reportAiRequestsToday,isRunning:()=>liveReportSync.isRunning(),start:options=>liveReportSync.start(options)});
+const reportAutomation=createReportAutomation({query:querySqlRows,exec:execSql,sql:sqlValue,getConfig:systemSettings.reportAutomationConfig,getAiRequestsToday:systemSettings.reportAiRequestsToday,calendar:()=>chinaWorkCalendar,policyFor:systemSettings.policyFor,isRunning:()=>liveReportSync.isRunning(),start:options=>liveReportSync.start(options)});
 const scoringSetup=createScoringSetup({query:querySqlRows,exec:execSql,sql:sqlValue,isBoss:id=>bossAccessState.userIds.has(id)||(config.authMode==='mock'&&id==='mock_owner')});
 const scoringWorkbench=createScoringWorkbench({query:querySqlRows,exec:execSql,sql:sqlValue,setup:scoringSetup,managerReviews,bossMembers:()=>[...bossAccessState.userIds].map(userId=>({userId,name:bossAccessState.members.find(m=>m.userId===userId)?.name||'老板'}))});
 const scoringRecurrence=createScoringRecurrence({query:querySqlRows,exec:execSql,sql:sqlValue,setup:scoringSetup,managerReviews,bossMembers:()=>[...bossAccessState.userIds].map(userId=>({userId,name:bossAccessState.members.find(m=>m.userId===userId)?.name||'老板'}))});
@@ -560,11 +560,27 @@ async function route(req, res) {
   if (url.pathname.startsWith('/api/performance') || url.pathname === '/api/management-data') {
     if (!userForPolicy) return sendJson(res, 401, {ok:false,error:'unauthorized'});
     res.setHeader('cache-control', 'no-store');
+    const validMonth=value=>typeof value==='string'&&/^\d{4}-(0[1-9]|1[0-2])$/.test(value);
+    const validId=value=>typeof value==='string'&&value.length>0&&value.length<=200&&value.trim()===value;
+    let supervisorScope;
+    const getSupervisorScope=()=>supervisorScope??=managerReviews.qualityReviewEmployees(userForPolicy.userId);
+    const canReviewQuality=async employeeId=>managerForPolicy||(await getSupervisorScope()).some(employee=>employee.userId===employeeId);
     if (url.pathname === '/api/performance/me' && req.method === 'GET') {
+      if(url.searchParams.has('employeeId')&&url.searchParams.get('employeeId')!==userForPolicy.userId)return sendJson(res,403,{ok:false,error:'self_only'});
       const identity=employeeDirectory.find(e=>e.userId===userForPolicy.userId);
       return sendJson(res,200,{ok:true,...await performance.personal(identity?.name||normalizeUserName(userForPolicy.name),identity?.userId||userForPolicy.userId)});
     }
-    if (!managerForPolicy) return sendJson(res,403,{ok:false,error:'manager_only'});
+    const qualityRoutes=['/api/performance/quality-scope','/api/performance/employee-month','/api/performance/report','/api/performance/result-evidence','/api/performance/confirm','/api/performance/quality-review'];
+    if(!managerForPolicy&&(!qualityRoutes.includes(url.pathname)||!(await getSupervisorScope()).length))return sendJson(res,403,{ok:false,error:'manager_only'});
+    if(url.pathname==='/api/performance/quality-scope'&&req.method==='GET'){
+      const month=url.searchParams.get('month'),currentMonth=new Intl.DateTimeFormat('sv-SE',{timeZone:'Asia/Shanghai'}).format(new Date()).slice(0,7);
+      if(month!==null&&(!validMonth(month)||month>currentMonth))return sendJson(res,400,{ok:false,error:'invalid_month'});
+      const employees=managerForPolicy?(await loadManagedEmployees()).map(({userId,name,department})=>({userId,name,department})):await getSupervisorScope();
+      const ids=employees.map(employee=>sqlValue(employee.userId)).join(',');
+      const stored=ids?await querySqlRows(`SELECT DISTINCT substr(week_end,1,7) AS month FROM weekly_reports WHERE employee_user_id IN (${ids}) UNION SELECT month FROM performance_results WHERE kind='quality' AND employee_user_id IN (${ids});`):[];
+      const months=[...new Set([currentMonth,...stored.map(row=>row.month),...(readSourceReadonly('prototypeData').meta?.periods||[]).map(period=>String(period.end||'').slice(0,7))])].filter(value=>validMonth(value)&&value<=currentMonth).sort().reverse();
+      return sendJson(res,200,{ok:true,employees,months});
+    }
     if (url.pathname === '/api/management-data' && req.method === 'GET') {
       const view=['bootstrap','client'].includes(url.searchParams.get('view'))?url.searchParams.get('view'):'full';
       const snapshot=sourceDataCache.snapshot(view==='bootstrap'?['prototypeData']:managementSourceNames);
@@ -578,38 +594,80 @@ async function route(req, res) {
     }
     if (url.pathname === '/api/performance/manage' && req.method === 'GET') {
       const requestedView=url.searchParams.get('view');
-      const view=await performance.overview({clientSummary:['summary','overview'].includes(requestedView)});
+      const month=requestedView==='overview'?(url.searchParams.get('month')??undefined):undefined;
+      if(month!==undefined&&month!=='latest'&&!/^\d{4}-(0[1-9]|1[0-2])$/.test(month))return sendJson(res,400,{ok:false,error:'invalid_month'});
+      const view=await performance.overview({clientSummary:['summary','overview'].includes(requestedView),month,includeTrendResults:month!==undefined});
       return sendJson(res,200,{ok:true,...(requestedView==='overview'?performanceClientOverview(view,{reportMode:'headers'}):requestedView==='summary'?performanceClientOverview(view):view)});
     }
     if (url.pathname === '/api/performance/employee-month' && req.method === 'GET') {
       const employeeId=url.searchParams.get('employeeId'),month=url.searchParams.get('month');
-      if(!employeeId||employeeId.trim()!==employeeId||employeeId.length>200||!/^\d{4}-(0[1-9]|1[0-2])$/.test(month||''))return sendJson(res,400,{ok:false,error:'invalid_employee_month'});
-      const view=await performance.overview({employeeUserId:employeeId,clientSummary:true});
+      if(!validId(employeeId)||!validMonth(month))return sendJson(res,400,{ok:false,error:'invalid_employee_month'});
+      if(!await canReviewQuality(employeeId))return sendJson(res,403,{ok:false,error:'quality_scope_forbidden'});
+      const view=await performance.overview({employeeUserId:employeeId,clientSummary:true,month});
       const detail=performanceClientEmployeeMonth(view,employeeId,month);
-      return detail.monthly?sendJson(res,200,{ok:true,...detail}):sendJson(res,404,{ok:false,error:'employee_month_not_found'});
+      if(!detail.monthly)return sendJson(res,404,{ok:false,error:'employee_month_not_found'});
+      if(managerForPolicy)return sendJson(res,200,{ok:true,...detail});
+      const {userId,name,department,quality,reports}=detail.monthly;
+      return sendJson(res,200,{ok:true,monthly:{userId,name,department,month,quality,reports},collaborations:[],results:detail.results.filter(record=>record.kind==='quality')});
     }
     if (url.pathname === '/api/performance/report' && req.method === 'GET') {
       const id=url.searchParams.get('id'),version=url.searchParams.get('version');
-      if(!id||id.length>200||version&&!/^[a-f0-9]{64}$/.test(version))return sendJson(res,400,{ok:false,error:'invalid_report_id'});
-      const report=(await performance.reports()).find(item=>item.id===id);
-      if(report&&version&&createHash('sha256').update(JSON.stringify(report.content)).digest('hex')!==version)return sendJson(res,409,{ok:false,error:'report_changed'});
-      return report?sendJson(res,200,{ok:true,detail:report.content}):sendJson(res,404,{ok:false,error:'report_not_found'});
+      if(!validId(id)||version&&!/^[a-f0-9]{64}$/.test(version))return sendJson(res,400,{ok:false,error:'invalid_report_id'});
+      const report=await performance.reportById(id);
+      if(!report||!await canReviewQuality(report.employeeUserId))return sendJson(res,404,{ok:false,error:'report_not_found'});
+      if(version&&createHash('sha256').update(JSON.stringify(report.content)).digest('hex')!==version)return sendJson(res,409,{ok:false,error:'report_changed'});
+      return sendJson(res,200,{ok:true,detail:report.content});
     }
     if (url.pathname === '/api/performance/result-evidence' && req.method === 'GET') {
       const month=url.searchParams.get('month'),employeeId=url.searchParams.get('employeeId'),kind=url.searchParams.get('kind');
       const confirmedAt=url.searchParams.get('confirmedAt'),rule=url.searchParams.get('rule');
-      if(!/^\d{4}-(0[1-9]|1[0-2])$/.test(month||'')||!employeeId||employeeId.length>200||!['quality','timeliness','collaboration'].includes(kind)||confirmedAt&&confirmedAt.length>64||rule&&!['legacy','weighted_30_70','automatic_report'].includes(rule))return sendJson(res,400,{ok:false,error:'invalid_result_identity'});
+      if(!validMonth(month)||!validId(employeeId)||!['quality','timeliness','collaboration'].includes(kind)||confirmedAt&&confirmedAt.length>64||rule&&!['legacy','weighted_30_70','automatic_report','management_confirmed'].includes(rule))return sendJson(res,400,{ok:false,error:'invalid_result_identity'});
+      if(!managerForPolicy&&(kind!=='quality'||!await canReviewQuality(employeeId)))return sendJson(res,403,{ok:false,error:'quality_scope_forbidden'});
       const where=`month=${sqlValue(month)} AND employee_user_id=${sqlValue(employeeId)} AND kind=${sqlValue(kind)}`;
       const fixed=confirmedAt?` AND confirmed_at=${sqlValue(confirmedAt)}`:'',automatic=confirmedAt?` AND calculated_at=${sqlValue(confirmedAt)}`:` AND a.rowid=(SELECT MAX(b.rowid) FROM automatic_performance_results b WHERE b.month=a.month AND b.employee_user_id=a.employee_user_id AND b.kind=a.kind)`;
+      const manualMode=`json_extract(CASE WHEN json_valid(result_json) THEN result_json ELSE '{}' END,'$.publicationMode')`;
+      const manualRule=rule==='management_confirmed'?` AND ${manualMode}='management_confirmation'`:rule==='legacy'?` AND COALESCE(${manualMode},'')<>'management_confirmation'`:rule?' AND 0':'';
       const records=await querySqlRows(`SELECT evidence_json FROM (
-        SELECT evidence_json,0 AS priority,0 AS sequence FROM performance_results WHERE ${where}${fixed}${rule&&rule!=='legacy'?' AND 0':''}
+        SELECT evidence_json,0 AS priority,0 AS sequence FROM performance_results WHERE ${where}${fixed}${manualRule}
         UNION ALL SELECT evidence_json,1 AS priority,0 AS sequence FROM all_monthly_weighted_results WHERE ${where}${fixed}${rule&&rule!=='weighted_30_70'?' AND 0':''}
         UNION ALL SELECT evidence_json,2 AS priority,a.rowid AS sequence FROM automatic_performance_results a WHERE ${where}${automatic}${rule&&rule!=='automatic_report'?' AND 0':''}
       ) ORDER BY priority,sequence DESC LIMIT 1;`);
       return records.length?sendJson(res,200,{ok:true,detail:JSON.parse(decodeAutomaticEvidence(records[0].evidence_json))}):sendJson(res,404,{ok:false,error:'result_not_found'});
     }
-    if (url.pathname === '/api/performance/confirm' && req.method === 'POST') {
-      return sendJson(res,409,{ok:false,error:'results_auto_published'});
+    if(req.method==='POST'&&['/api/performance/confirm','/api/performance/quality-review'].includes(url.pathname)){
+      const confirm=url.pathname==='/api/performance/confirm';
+      if(String(req.headers['content-type']||'').split(';')[0].trim().toLowerCase()!=='application/json')return sendJson(res,415,{ok:false,error:'json_required'});
+      try{
+        const body=await readJsonBody(req,{limitBytes:18000});
+        if(!body||typeof body!=='object'||Array.isArray(body))return sendJson(res,400,{ok:false,error:'invalid_quality_request'});
+        if(confirm&&body.kind!=='quality')return sendJson(res,managerForPolicy?409:403,{ok:false,error:managerForPolicy?'results_auto_published':'quality_scope_forbidden'});
+        if(!validId(body.userId)||!validMonth(body.month))return sendJson(res,400,{ok:false,error:'invalid_employee_month'});
+        if(!await canReviewQuality(body.userId))return sendJson(res,403,{ok:false,error:'quality_scope_forbidden'});
+        if(confirm)return sendJson(res,200,{ok:true,...await performance.confirm(body,userForPolicy)});
+        if(body.action!=='reanalyze')return sendJson(res,200,{ok:true,...await performance.reviewQuality(body,userForPolicy)});
+        if(!validId(body.reportId))return sendJson(res,400,{ok:false,error:'invalid_report_id'});
+        const automation=await systemSettings.reportAutomationConfig();
+        if(!automation.aiConfigured)return sendJson(res,503,{ok:false,error:'ai_not_configured'});
+        if(automation.dailyAiRequestLimit===0)return sendJson(res,409,{ok:false,error:'ai_scoring_paused'});
+        if(body.month<automation.scoringStartMonth)return sendJson(res,400,{ok:false,error:'rescore_before_start_month'});
+        let review;
+        const started=await liveReportSync.start({mode:'rescore',targetMonth:body.month,targetReportId:body.reportId},async()=>{
+          const row=(await querySqlRows(`SELECT w.content_json FROM weekly_reports w JOIN employees e ON e.user_id=w.employee_user_id
+            WHERE w.id=${sqlValue(body.reportId)} AND w.employee_user_id=${sqlValue(body.userId)} AND substr(w.week_end,1,7)=${sqlValue(body.month)} AND e.is_active=1;`))[0];
+          if(!row||JSON.parse(row.content_json).source?.provider==='legacy-reportos')throw Error('report_rescore_not_supported');
+          review=await performance.reviewQuality(body,userForPolicy);
+        });
+        return started?sendJson(res,202,{ok:true,...review}):sendJson(res,409,{ok:false,error:'report_sync_running'});
+      }catch(error){
+        if(error instanceof SyntaxError)return sendJson(res,400,{ok:false,error:'invalid_quality_request'});
+        const code=error.message;
+        if(code==='request_body_too_large')return sendJson(res,413,{ok:false,error:code});
+        if(code==='quality_report_not_found')return sendJson(res,404,{ok:false,error:code});
+        if(error.status)return sendJson(res,error.status,{ok:false,error:code});
+        if(['quality_candidate_changed','quality_not_ready','quality_review_changed','result_locked','report_changed','report_rescore_not_supported'].includes(code))return sendJson(res,409,{ok:false,error:code});
+        if(/^(invalid_|quality_|report_|rescore_)[a-z_]+$/.test(code))return sendJson(res,400,{ok:false,error:code});
+        throw error;
+      }
     }
     return sendJson(res,404,{ok:false,error:'not_found'});
   }
@@ -630,7 +688,7 @@ async function route(req, res) {
       {name:'登录与身份',ready:true,label:config.authMode==='mock'?'开发演示':'飞书认证',description:config.authMode==='mock'?'使用开发身份，可切换老板、管理员与员工视角。':'使用已配置的飞书身份认证。'},
       {name:'本地数据与存储',ready:true,label:'运行中',description:demoData?'虚构开发数据已载入；数据库与上传文件持久化保存。':'SQLite 数据库已连接，运行数据持久化保存。'},
       {name:'飞书服务',ready:feishuReady,label:feishuReady?'已配置':'未配置',description:feishuReady?'已提供应用凭据；实际可用范围以应用授权为准。':'尚未提供飞书应用凭据，本地人员、评分和审核功能可以继续使用。'},
-      {name:'AI 分析服务',ready:aiReady,label:aiReady?'已配置':'未配置',description:aiReady?'已提供模型服务凭据；周报分析成功后自动汇总质量分。':'尚未配置模型凭据；不会执行实时 AI 分析。'},
+      {name:'AI 分析服务',ready:aiReady,label:aiReady?'已配置':'未配置',description:aiReady?'已提供模型服务凭据。周报分析后汇总候选分，由管理人员确认月度最终分。':'尚未配置模型凭据；不会执行实时 AI 分析。'},
       {name:'月末评分提醒',ready:reminders.enabled,label:future?'已预约':reminders.enabled?'已启用':'未开启',description:reminders.enabled?`${reminders.startMonth?reminders.startMonth+' 起，':''}每月最后两个工作日 ${reminders.time}（北京时间）提醒未评分人员。`:'在周期与提醒中配置，周报提醒独立控制。'},
       {name:'备份与告警',ready:backupSettings.backupEnabled,label:backupSettings.backupEnabled?'自动备份已开启':'待配置',description:`备份保存在本服务器；告警${backupSettings.alertsEnabled?'已开启':'未开启'}，可在备份与告警中设置接收人。`},
     ]});
@@ -665,6 +723,7 @@ async function route(req, res) {
       });
     }
     const access = buildAccessProfile(session, user);
+    access.canReviewWeeklyQuality=managerForPolicy||(await managerReviews.qualityReviewEmployees(user.userId)).length>0;
     sendJson(res, 200, {
       ok: true,
       authenticated: true,

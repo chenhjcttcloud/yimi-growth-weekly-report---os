@@ -20,6 +20,7 @@
 .quality-module-body { padding:16px; }
 .quality-module-reason strong,.quality-module-evidence>strong { font-size:11px; font-weight:600; color:var(--v2-ink); }
 .quality-module-reason p { margin:7px 0 0; font-size:12px; line-height:1.9; white-space:pre-wrap; overflow-wrap:anywhere; }
+.quality-module-reason ul { margin:6px 0 10px; padding-left:18px; font-size:11px; line-height:1.8; overflow-wrap:anywhere; }
 .quality-confidence { margin:8px 0 0!important; font-size:10px; line-height:1.8; color:var(--v2-ink-3); }
 .quality-module-evidence { margin-top:14px; }
 .quality-evidence-quotes { display:grid; gap:8px; margin-top:9px; }
@@ -46,8 +47,15 @@
 .quality-version dl { margin:12px 0 0; }
 .quality-version dl>div { display:grid; grid-template-columns:85px minmax(0,1fr); gap:12px; margin-top:8px; line-height:1.8; }
 .quality-version dd { margin:0; overflow-wrap:anywhere; color:var(--v2-ink-2); }
+.quality-review-form .quality-adjust-toggle { flex-direction:row; align-items:center; }
+.quality-review-form .quality-adjust-toggle input { width:auto; }
+.quality-review-records { list-style:none; margin:8px 0; padding:0; }
+.quality-review-records li { padding:10px 0; border-top:1px solid var(--v2-line-soft); overflow-wrap:anywhere; }
+.quality-review-records p,.quality-review-records blockquote { margin:5px 0; color:var(--v2-ink-2); white-space:pre-wrap; }
+.quality-review-records blockquote { padding-left:9px; border-left:2px solid var(--v2-line); }
 .quality-assessment summary:focus-visible { outline:2px solid var(--v2-brand); outline-offset:-2px; }
 @media(max-width:600px) {
+  .quality-review-form { grid-template-columns:minmax(0,1fr); }
   .quality-assessment { padding:13px; }
   .quality-assessment-heading { align-items:flex-start; flex-wrap:wrap; gap:8px; }
   .quality-module>summary { display:grid; grid-template-columns:minmax(0,1fr) auto 15px; gap:7px 10px; padding:12px; }

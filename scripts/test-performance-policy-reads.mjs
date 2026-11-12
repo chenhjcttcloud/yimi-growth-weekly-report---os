@@ -14,16 +14,17 @@ const data={meta:{collectionStartDate:'2026-08-01',periods:months.map(m=>({start
 const freeze=value=>{if(value&&typeof value==='object'){Object.values(value).forEach(freeze);Object.freeze(value);}return value;};freeze(data);
 const periods=employees.map(e=>({employee_user_id:e.user_id,start_date:'2026-01-01',end_date:''}));
 let policyReads=[],confirmedReads=0,weights=[30,25,25,20],writes=0,fixtureQueries=[];
-const published=employees.map(e=>({month:'2026-08',employee_user_id:e.user_id,employee_name:e.name,kind:'quality',result_json:JSON.stringify({score:e.user_id==='a'?34:55}),scoring_rule:'automatic_report'}));
+const published=employees.map(e=>({month:'2026-08',employee_user_id:e.user_id,employee_name:e.name,kind:'quality',result_json:JSON.stringify({score:e.user_id==='a'?34:55}),scoring_rule:'legacy'}));
 const query=async statement=>{
  fixtureQueries.push(statement);
  const scopes=[...statement.matchAll(/\b(?:[a-z]+\.)?(?:employee_user_id|user_id|evaluee_user_id)='([^']*)'/g)].map(match=>match[1]);
  const userId=scopes[0];if(userId)assert(scopes.every(id=>id===userId),'every scoped union arm must use the same exact identity');
  const own=rows=>userId?rows.filter(row=>(row.employee_user_id||row.user_id)===userId):rows;
  if(/^SELECT \* FROM weekly_reports(?: WHERE employee_user_id='[ab]')?;$/.test(statement))return [];
+ if(statement.startsWith('SELECT rowid AS review_rowid,* FROM weekly_quality_reviews'))return [];
  if(statement==='SELECT employee_user_id,week_start,week_end FROM weekly_reports;')return [];
  if(statement==='SELECT month FROM performance_results UNION SELECT month FROM all_monthly_weighted_results UNION SELECT month FROM automatic_performance_results;')return published.map(({month})=>({month}));
- if(statement.includes("SELECT month,employee_user_id,kind,'legacy' AS scoring_rule"))return own(published).map(({month,employee_user_id,kind,scoring_rule})=>({month,employee_user_id,kind,scoring_rule}));
+ if(statement.includes('NULL AS calculation_hash FROM performance_results p'))return own(published).map(({month,employee_user_id,kind,scoring_rule})=>({month,employee_user_id,kind,scoring_rule}));
  if(statement.includes('ORDER BY month DESC, employee_name;')){confirmedReads++;return own(published);}
  if(statement==='SELECT * FROM scoring360_cycles ORDER BY start_date DESC;')return [];
  if(/^SELECT user_id,name,department,is_active FROM employees(?: WHERE user_id='[ab]')?;$/.test(statement))return own(employees);
@@ -36,12 +37,12 @@ weights=[100,0,0,0];policyReads=[];
 const second=await performance.overview();assert.deepEqual(policyReads.sort(),months);assert(second.monthly.every(r=>r.reports[0].candidate===90),'next request must read the changed policy');assert(first.monthly.every(r=>r.reports[0].candidate===34),'previous request snapshot must remain unchanged');
 policyReads=[];await performance.reports();assert.deepEqual(policyReads.sort(),months);policyReads=[];await performance.reports();assert.deepEqual(policyReads.sort(),months,'standalone report requests must have independent readers');
 confirmedReads=0;policyReads=[];fixtureQueries=[];
-const personal=await performance.personal('同事甲','a');assert.equal(confirmedReads,1,'personal must only read the final full publication snapshot once');assert.equal(personal.history.length,1);assert.equal(personal.history[0].quality,34);assert(!JSON.stringify(personal).includes('55'),'personal must still filter the requested employee');assert.deepEqual(policyReads.sort(),months);
+const personal=await performance.personal('同事甲','a');assert.equal(confirmedReads,1,'personal must only read the final full publication snapshot once');assert.equal(personal.history.length,2);assert.equal(personal.history.find(row=>row.month==='2026-08').quality,34);assert.equal(personal.history.find(row=>row.month==='2026-09').monthlyQuality.candidateScore,90);assert(!JSON.stringify(personal).includes('55'),'personal must still filter the requested employee');assert.deepEqual(policyReads.sort(),months);
 assert(fixtureQueries.includes("SELECT * FROM weekly_reports WHERE employee_user_id='a';"));
 assert(!fixtureQueries.includes('SELECT * FROM weekly_reports;'),'personal must not load global report bodies');
 assert(fixtureQueries.includes("SELECT user_id,name,department,is_active FROM employees WHERE user_id='a';"));
 assert(fixtureQueries.includes("SELECT * FROM employee_employment_periods WHERE employee_user_id='a';"));
-for(const statement of fixtureQueries.filter(q=>q.includes("'legacy' AS scoring_rule")))for(const alias of ['p','w','a'])if(statement.includes('ORDER BY month DESC'))assert(statement.includes(`${alias}.employee_user_id='a'`),'final publication union arms must remain scoped');
+for(const statement of fixtureQueries.filter(q=>q.includes('ORDER BY month DESC')))for(const alias of ['p','w','a'])assert(statement.includes(`${alias}.employee_user_id='a'`),'final publication union arms must remain scoped');
 // Exercise SQLite's JSON projection itself, including explicit null/missing
 // fields, false/zero, composite values and pre-existing malformed evidence.
 const db=directory+'/projection.sqlite',quoted=value=>value==null?'NULL':"'"+String(value).replaceAll("'","''")+"'";

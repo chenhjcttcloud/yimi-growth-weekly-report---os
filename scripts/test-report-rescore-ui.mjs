@@ -23,6 +23,7 @@ await new Promise(resolve=>server.listen(0,'127.0.0.1',resolve));
 const base='http://127.0.0.1:'+server.address().port;
 let state=null,running=false,busyOnNextPost=false,failOnNextPost=false,browser;
 let scoringStartMonth;
+let nextCollection={nextCheckAt:'2026-11-06T12:05:00Z',nextCheckKind:'deadline'};
 const posts=[],errors=[],unexpected=[];
 const snapshot=(values={})=>({mode:'rescore',targetMonth:'2026-10',rowCount:4,analyzed:0,failed:0,cached:1,remaining:3,active:0,phase:'queued',running:true,...values});
 try{
@@ -32,7 +33,7 @@ try{
  await context.route('**/*',async route=>{
   const url=new URL(route.request().url());if(url.origin!==base){unexpected.push(url.origin);return route.abort();}
   if(!url.pathname.startsWith('/api/'))return route.continue();
-  if(url.pathname==='/api/system-settings/report-automation'&&route.request().method()==='GET')return route.fulfill({status:200,json:{config:{enabled:true,intervalMinutes:15,feishuConfigured:true,aiConfigured:true,scoringStartMonth},lastAttemptAt:null,nextCheckAt:null,running,lastStatus:'idle'}});
+  if(url.pathname==='/api/system-settings/report-automation'&&route.request().method()==='GET')return route.fulfill({status:200,json:{config:{enabled:true,scoringStartMonth},lastAttemptAt:null,...nextCollection,running}});
   if(url.pathname==='/api/lark-report-sync'){
    if(route.request().method()==='GET')return route.fulfill({status:200,json:{ok:true,status:state,processRunning:running}});
    const payload=route.request().postDataJSON();posts.push(payload);assert.deepEqual(Object.keys(payload).sort(),['mode','targetMonth']);assert.equal(payload.mode,'rescore');
@@ -44,6 +45,13 @@ try{
  });
  const page=await context.newPage();page.on('pageerror',error=>errors.push(error.message));
  await page.goto(base);
+ const automation=page.getByRole('article',{name:'周报自动收集与AI评分'});
+ await automation.getByText(/2026\/11\/6 20:05:00（截止后收集）/).waitFor();
+ assert(await automation.getByText(/下一个工作日 09:00 补拉迟交和更新的周报/).isVisible());
+ assert.equal(await automation.getByLabel('周报自动收集间隔').count(),0);
+ nextCollection={nextCheckAt:'2026-11-09T01:00:00Z',nextCheckKind:'followup'};
+ await automation.getByRole('button',{name:'刷新收集状态'}).click();
+ await automation.getByText(/2026\/11\/9 09:00:00（工作日补拉）/).waitFor();
  const panel=page.getByRole('region',{name:'按月补跑周报评分'});
  const monthInput=panel.getByLabel('补跑评分月份'),start=panel.getByRole('button',{name:'补跑本月未完成评分',exact:true}),refresh=panel.getByRole('button',{name:'刷新评分进度',exact:true});
  await start.waitFor();await page.waitForFunction(()=>!document.querySelector('.report-rescore button[type="submit"]').disabled);
@@ -51,7 +59,7 @@ try{
  assert.equal(posts.length,0,'opening settings never starts scoring or changes automation settings');
  assert(await panel.getByText('尚无2026年10月的补跑记录。选择月份后点击补跑，已成功的记录不会重复评分。',{exact:true}).isVisible());
  await start.click();await panel.getByText('正在补跑评分',{exact:true}).waitFor();assert.equal(posts.length,1);assert.deepEqual(posts[0],{mode:'rescore',targetMonth:'2026-10'});assert(await start.isDisabled());
- assert(await panel.getByText('旧版分数继续展示并标记重评状态；每位员工当月评分全部通过后自动更新月分。原本没有分数的记录保持待分析，无需人工审核。',{exact:true}).isVisible());
+ assert(await panel.getByText('重评时，旧评分依据可供回看。月度候选分只汇总已完成分析的有效周报，最终分由管理人员确认。',{exact:true}).isVisible());
  state=snapshot({phase:'analysis',analyzed:1,failed:1,remaining:1,active:1,diagnostics:[{reportId:'fixture-report',weekEnd:'2026-10-16',moduleId:'results',criterionId:'evidence',code:'quote_not_found',path:'modules.results.criteria.evidence.evidence',attempt:2,providerResponse:'PRIVATE_PROVIDER_RESPONSE_MUST_NOT_RENDER'}]});
  await refresh.click();await panel.getByText('原文证据未通过校验 · 第2次尝试',{exact:true}).waitFor();
  assert((await panel.innerText()).includes('quote_not_found · modules.results.criteria.evidence.evidence'));

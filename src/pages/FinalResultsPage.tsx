@@ -4,6 +4,7 @@ import { CalendarDays, CheckCheck, Clock3, FileCheck2, Sprout, UsersRound } from
 import type { PersonalModule } from '../lib/types';
 import { PersonalMonthWorkspace } from '../components/PersonalMonthWorkspace';
 import { monthText, ResultEmpty, ResultMetric, ResultStatus, scoreText, SubmissionCounts } from '../components/PerformanceUI';
+import { monthlyQualityView, qualityDate, qualityReviewNotice, type MonthlyQualitySummary } from '../components/MonthlyQuality';
 import {locationValue,rememberLocation} from '../lib/navigation';
 
 export function FinalResultsPage({ module, onOpenModule, previewEmployeeId,employeeContextId,scoreFocus }: { scoreFocus?:'quality'|'collaboration'; previewEmployeeId?:string; employeeContextId?:string; module?: PersonalModule; onOpenModule: (module: PersonalModule) => void }) {
@@ -31,18 +32,20 @@ export function FinalResultsPage({ module, onOpenModule, previewEmployeeId,emplo
   },[selectedMonth,weekId,revision,previewEmployeeId]);
   if (!data || data.month!==selectedMonth || owner!=='self'&&data.employee?.userId!==owner) return <section className="v2-card pf-page"><ResultEmpty title={error ? '暂时无法加载结果' : '正在整理你的月度结果'} description={error ? '请刷新页面后重试。' : '已确认的成长记录即将呈现。'}/></section>;
   const current = data.history.find((r:any) => r.month === selectedMonth);
+  const quality = monthlyQualityView(current?.monthlyQuality, selectedMonth);
   const relevantHistory=data.history.filter((r:any)=>r.month<=selectedMonth);
-  const rolling=relevantHistory.filter((r:any)=>r.quality!=null).slice(0,3);
-  const rollingQuality=rolling.length?rolling.reduce((sum:number,r:any)=>sum+r.quality,0)/rolling.length:null;
+  const confirmedHistory = relevantHistory.filter((row: {monthlyQuality?: MonthlyQualitySummary}) => monthlyQualityView(row.monthlyQuality).confirmed);
+  const rolling=confirmedHistory.slice(0,3);
+  const rollingQuality=rolling.length?rolling.reduce((sum:number,r:any)=>sum+r.monthlyQuality.finalScore,0)/rolling.length:null;
   return <div className="v2-page v2-page-wide pf-page">
     <section className="pf-intro">
       <div><span className="v2-eyebrow"><Sprout size={14}/>我的成长记录</span><h2>{scoreFocus==='quality'?'周报质量':scoreFocus==='collaboration'?'360 协同得分':module ? {reports:"周报与互动",coach:"AI 教练",actions:"行动任务",timeline:"成长轨迹"}[module] : "每一份投入，都成为成长的刻度。"}</h2><p>{scoreFocus==='quality'?'查看自己的月度质量分和每周四模块评分依据。':scoreFocus==='collaboration'?'查看自己的月度协同最终分与评分完成进度。':module ? "选择月份与周次，查看并推进自己的成长记录。" : "在这里，回看自己的月度成果与长期变化。"}</p></div>
       <label className="pf-month pf-month-select"><CalendarDays size={15}/><AppSelect aria-label="选择个人月份" value={selectedMonth} onValueChange={value=>{setMonth(value);setWeekId('');setReminderMessage('');}}>{data.months.map((m:string)=><option key={m} value={m}>{monthText(m)}</option>)}</AppSelect></label>
     </section>
-    {!module && <><div className="pf-notice"><CheckCheck size={16}/><span>{scoreFocus==='quality'?'周报质量由 AI 自动分析，月分取当月已提交周报质量分的平均值；提交及时率单独统计。':scoreFocus==='collaboration'?'协同最终分由负责人或老板评分30%＋同事互评70%合成，全部完成后自动发布。':'周报质量与提交统计自动计算，无需人工确认；月度综合评分按负责人或老板30%＋同事70%，全部完成后自动发布。每周周报、AI 建议和行动任务用于回看与推进。'}</span></div>
+    {!module && <><div className="pf-notice"><CheckCheck size={16}/><span>{scoreFocus==='collaboration'?'协同最终分由负责人或老板评分30%＋同事互评70%合成，全部完成后自动发布。':qualityReviewNotice}</span></div>
     <section className={`pf-metrics ${scoreFocus?'pf-metrics-focused':''}`}>
-      {scoreFocus!=='collaboration'&&<ResultMetric icon={FileCheck2} label="周报质量分" value={scoreText(current?.quality)} unit="分" description={current?.qualityStatus==='rescoring'||current?.qualityStatus==='rescore_failed'?`旧版分数 · ${current.qualityStatus==='rescore_failed'?'重评失败，等待处理':'重评中'}；尚有 ${current.qualityRefresh?.pendingAnalysis||0} 份待完成`:current?.quality == null ? current?.qualityRefresh?`所选月份尚有 ${current.qualityRefresh.pendingAnalysis||0} 份待完成，${current.qualityRefresh.failedAnalysis||0} 份失败，系统将自动重试`:'所选月份周报分析尚未完成' : '所选月份自动汇总的周报质量分'}>
-        <span className="pf-caption">近 {rolling.length} 个月份滚动均分</span><strong className="pf-inline-number">{scoreText(rollingQuality)}<small> 分</small></strong>
+      {scoreFocus!=='collaboration'&&<ResultMetric icon={FileCheck2} label={quality.label} value={scoreText(quality.value)} unit="分" description={quality.note}>
+        {rolling.length>0&&<span className="pf-caption">近 {rolling.length} 个已确认月份均分 <b>{scoreText(rollingQuality)} 分</b></span>}<ResultStatus confirmed={quality.confirmed} label={quality.status}/>
       </ResultMetric>}
       {scoreFocus!=='collaboration'&&<ResultMetric icon={Clock3} label="周报提交及时率" value={scoreText(current?.timeliness?.rate)} unit="%" description={current?.timeliness?.pendingCalendar ? '工作日日历待更新，系统将自动重算' : current?.timeliness?.pendingTimestamp ? '原始提交时间待补齐，系统将自动重算' : current?.timeliness ? '所选月份准时提交 / 应提交次数' : '所选月份提交统计尚未发布'}><SubmissionCounts stats={current?.timeliness}/></ResultMetric>}
       {scoreFocus!=='quality'&&<ResultMetric icon={UsersRound} label="月度综合最终分" value={scoreText(current?.collaboration)} unit="分" description={current?.collaboration == null ? '所选月份结果尚未发布' : current?.collaborationRule==='legacy'?'历史已发布结果，保留原评分口径':'负责人或老板30%＋同事互评70%'}><span className="pf-caption">负责人或老板评分及同事互评全部完成后发布</span><ResultStatus confirmed={current?.collaboration != null} label={current?.collaboration!=null?'已发布':'等待评分完成'}/></ResultMetric>}
@@ -51,7 +54,9 @@ export function FinalResultsPage({ module, onOpenModule, previewEmployeeId,emplo
     {scoreFocus!=='quality'&&data.collaborationProgress?.pending>0&&<section className="v2-card personal-rating-progress"><div><h3>月度评分进度 {data.collaborationProgress.submitted} / {data.collaborationProgress.expected}</h3><p>还有 {data.collaborationProgress.pending} 项评分未完成，负责人或老板30%与同事互评70%全部完成后才会合成最终分，无需人工确认。</p><p className="pf-caption">评分任务发起满 {data.collaborationProgress.waitHours} 小时后可提醒；同一评分人 {data.collaborationProgress.cooldownHours} 小时内最多提醒一次。{!data.collaborationProgress.reminderEnabled&&'当前飞书发送未开启，可先预览提醒。'}{!data.collaborationProgress.canRemind&&(data.collaborationProgress.reason==='uncertain'?' 上次提醒发送结果待核实，冷却期间不重复发送。':data.collaborationProgress.reason==='handoff'?' 评分责任待管理员交接，暂不向停用人员催评。':data.collaborationProgress.reason==='cooldown'?' 当前仍在提醒冷却期。':data.collaborationProgress.reason==='missing_identity'?' 部分评分人飞书身份缺失，请联系管理员。':' 尚未达到提醒时间或评分周期未开放。')}</p></div><button className="primary-button" disabled={Boolean(previewEmployeeId)||reminderBusy||!data.collaborationProgress.canRemind} onClick={()=>void remind()}>{reminderBusy?'处理中…':data.collaborationProgress.reminderEnabled?'提醒未评分人员':'预览评分提醒'}</button></section>}
     {scoreFocus!=='quality'&&reminderMessage&&<p role="status" className="pf-notice">{reminderMessage}</p>}
     </>}
+    {module==='reports'&&<p className="pf-notice">{qualityReviewNotice}</p>}
     {scoreFocus!=='collaboration'&&<div id="personal-week-workspace"><PersonalMonthWorkspace readOnly={Boolean(previewEmployeeId)} module={scoreFocus==='quality'?'reports':module} onOpenModule={onOpenModule} key={data.selectedWeekId||data.month} data={data} onSelectWeek={setWeekId} onRefresh={()=>setRevision(v=>v+1)}/></div>}
+    {scoreFocus==='quality'&&<section className="v2-card pf-table-card"><div className="v2-card-head"><h3 className="v2-card-title">历史周报质量最终分</h3></div>{confirmedHistory.length>0?<div className="pf-table-scroll"><table className="pf-table"><thead><tr><th>月份</th><th>质量最终分</th><th>确认人</th><th>确认时间</th></tr></thead><tbody>{confirmedHistory.map((row:{month:string;monthlyQuality:MonthlyQualitySummary})=><tr key={row.month}><td>{monthText(row.month)}</td><td className="pf-tabular">{scoreText(row.monthlyQuality.finalScore)} 分</td><td>{row.monthlyQuality.confirmedBy||'—'}</td><td>{qualityDate(row.monthlyQuality.confirmedAt)}</td></tr>)}</tbody></table></div>:<ResultEmpty title="暂无已确认的质量分" description="管理人员确认后，月度最终分会显示在这里。"/>}</section>}
     {scoreFocus==='collaboration'&&<section className="v2-card pf-table-card"><div className="v2-card-head"><div><h3 className="v2-card-title">历史协同得分</h3><p className="v2-card-sub">仅展示本人的最终结果与发布状态。</p></div></div><div className="pf-table-scroll"><table className="pf-table"><thead><tr><th>月份</th><th>协同最终分</th><th>状态</th></tr></thead><tbody>{relevantHistory.map((row:any)=><tr key={row.month}><td>{monthText(row.month)}</td><td className="pf-tabular">{scoreText(row.collaboration)}{row.collaboration!=null?' 分':''}</td><td>{row.collaboration!=null?'已发布':'等待评分完成'}</td></tr>)}</tbody></table></div>{!relevantHistory.length&&<ResultEmpty title="暂无历史协同结果" description="评分全部完成后，最终分会自动显示在这里。"/>}</section>}
 
   </div>;

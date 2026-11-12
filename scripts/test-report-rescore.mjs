@@ -8,7 +8,7 @@ import {createPerformance} from '../server/performance.mjs';
 import {REPORT_QUALITY_VERSION,REPORT_QUALITY_PROMPT_VERSION,validateReportQualityAnalysis} from '../server/report-quality-scoring.mjs';
 import {makeReportQualityAnalysis} from './report-quality-test-fixtures.mjs';
 
-// Entire engine + real monthly publication, with synthetic retained SQLite and
+// Entire engine + monthly candidate projection, with synthetic retained SQLite and
 // mocked providers only. No Feishu credential, real AI, employee data or cleanup.
 await mkdir('outputs/tests',{recursive:true});
 const dir=await mkdtemp(path.resolve('outputs/tests/report-rescore-')),db=dir+'/test.sqlite';
@@ -36,12 +36,15 @@ function store(id,userId,end,score,{current=false,status='准时',unhashed=false
  sources.set(id,{facts,hash});
 }
 store('A1','A','2026-10-09',60);store('A2','A','2026-10-16',60);store('B1','B','2026-10-09',80);store('C1','C','2026-10-09',90,{current:true});store('SEP','A','2026-09-25',55);store('STOP','inactive','2026-10-09',70);store('MISSING','A','2026-10-23',0,{status:'未交'});
+run(`INSERT INTO performance_results(month,employee_user_id,employee_name,kind,result_json,evidence_json,confirmed_by,confirmed_at)
+ VALUES('2026-09','A','虚构甲','quality','{"score":55}','{}','虚构主管','2026-10-01T09:00:00Z');`);
 const stored=id=>run(`SELECT * FROM weekly_reports WHERE id=${sql(id)};`,true)[0];
 const content=id=>JSON.parse(stored(id).content_json);
 const untouched=new Map(['SEP','STOP','MISSING','C1'].map(id=>[id,stored(id)]));
 const initialView=await performance.overview();
-const monthly=(view,userId)=>view.results.find(row=>row.month==='2026-10'&&row.employee_user_id===userId&&row.kind==='quality').result;
-assert.equal(monthly(initialView,'A').score,60);assert.equal(monthly(initialView,'B').score,80);
+const october=(view,userId)=>view.monthly.find(row=>row.month==='2026-10'&&row.userId===userId);
+const monthly=(view,userId)=>october(view,userId).quality;
+assert.equal(monthly(initialView,'A').candidateScore,60);assert.equal(monthly(initialView,'B').candidateScore,80);
 let releaseB;const bGate=new Promise(resolve=>{releaseB=resolve;});
 let phase='first',bNetworkRemaining=0,calls=[],status,observations=[],transientPublicationFailure=true,independentPublication=false;
 const perPhaseCalls=new Map();
@@ -65,17 +68,22 @@ const fetcher=async(url,options)=>{
 const sync=createLiveReportSync({query,exec,sql,config:{dataDir:dir,moonshotApiKey:'synthetic-key',moonshotBaseUrl:'https://fixture.invalid/v1',kimiFollowupModel:model,feishuAppId:'',feishuAppSecret:''},settings:{policyFor,overview:async()=>{throw Error('rescore_must_not_read_feishu_settings');}},refreshDirectory:async()=>{},writeStatus:async value=>{status=structuredClone(value);},pause:async()=>{},fetcher,onComplete:async()=>{
  if(transientPublicationFailure){transientPublicationFailure=false;throw Error('synthetic_temporary_publication_failure');}
  const view=await performance.overview(),a=monthly(view,'A'),b=monthly(view,'B');observations.push({a,b});
- if(phase==='first'&&a.score===95&&a.status==='ready'&&b.score===80&&b.status==='rescoring'){independentPublication=true;releaseB();}
+ const priorB=october(view,'B').reports.find(report=>report.id==='B1');
+ if(phase==='first'&&a.candidateScore===95&&a.status==='pending_confirmation'&&b.currentAverage===null&&b.status==='pending_ai'&&priorB.displayQualityScore===80){independentPublication=true;releaseB();}
 }});
 const options={mode:'rescore',targetMonth:'2026-10'};
 let timer;
 try{
  const firstJob=sync.run(options);
  await Promise.race([firstJob,new Promise((_,reject)=>{timer=setTimeout(()=>{releaseB();reject(Error('one_employee_publication_waited_for_other_employee'));},20000);})]);clearTimeout(timer);
- assert(independentPublication,'A publishes its complete October mean while B is still processing with its prior final visible');
+ assert(independentPublication,'A reaches a complete October candidate while B is still processing with its previous weekly score visible');
  assert.equal(status.ok,true);assert.equal(status.analyzed,3);assert.equal(status.cached,1);assert.equal(status.failed,0);assert.equal(status.rowCount,4);assert.equal(status.remaining,0);
  assert.equal(status.publicationPending,false);assert.equal(status.publicationFailures,1,'transient monthly publication error is recorded and later updates recover');
- assert.equal(monthly(await performance.overview(),'A').score,95);assert.equal(monthly(await performance.overview(),'B').score,85);
+ const firstView=await performance.overview();
+ assert.equal(monthly(firstView,'A').candidateScore,95);assert.equal(monthly(firstView,'B').candidateScore,85);
+ assert(!firstView.results.some(row=>row.month==='2026-10'&&row.kind==='quality'),'AI analysis never creates a monthly final result');
+ const september=firstView.results.find(row=>row.month==='2026-09'&&row.employee_user_id==='A'&&row.kind==='quality');
+ assert.equal(september.result.score,55);assert.equal(september.confirmed_by,'虚构主管');
  assert.equal(perPhaseCalls.get('first:A1'),2);assert.equal(perPhaseCalls.get('first:A2'),1);assert.equal(perPhaseCalls.get('first:B1'),1);
  const corrected=calls.find(call=>call.id==='A1'&&call.messages.some(message=>message.role==='user'&&message.content.includes('validationFeedback')));assert(corrected);
  const feedback=JSON.parse(corrected.messages.at(-1).content).validationFeedback;
@@ -89,11 +97,13 @@ try{
  // Fail only one stale result; already validated employees must not rerun.
  phase='fail';run("UPDATE weekly_reports SET content_json=json_set(content_json,'$.aiModel','stale-B-model') WHERE id='B1';");
  await sync.run(options);assert.equal(status.phase,'partial');assert.equal(status.failed,1);assert.equal(status.cached,3);assert.equal(perPhaseCalls.get('fail:B1'),2);assert.equal(calls.filter(call=>call.phase==='fail').length,2);
- const bFailed=monthly(await performance.overview(),'B');assert.equal(bFailed.score,85);assert.equal(bFailed.status,'rescore_failed');assert.equal(content('B1').qualityRefresh.diagnostic.code,'evidence_not_in_source');
+ const failedView=await performance.overview(),bFailed=monthly(failedView,'B'),bPrevious=october(failedView,'B').reports.find(report=>report.id==='B1');
+ assert.equal(bFailed.currentAverage,null);assert.equal(bFailed.status,'pending_ai');assert.equal(bPrevious.displayQualityScore,85);assert.equal(bPrevious.qualityRefresh.state,'failed');
+ assert.equal(content('B1').qualityRefresh.diagnostic.code,'evidence_not_in_source');
  assert(!JSON.stringify(content('B1').aiAnalysisAttempts).includes('PRIVATE_'),'persisted diagnostics cannot expose provider output');
  const successfulA=stored('A1'),successfulA2=stored('A2');
  phase='retry';bNetworkRemaining=1;await sync.run(options);
- assert.equal(status.ok,true);assert.equal(status.analyzed,1);assert.equal(status.cached,3);assert.equal(calls.filter(call=>call.phase==='retry').length,2);assert.equal(monthly(await performance.overview(),'B').score,88);
+ assert.equal(status.ok,true);assert.equal(status.analyzed,1);assert.equal(status.cached,3);assert.equal(calls.filter(call=>call.phase==='retry').length,2);assert.equal(monthly(await performance.overview(),'B').candidateScore,88);
  assert(content('B1').aiAnalysisAttempts.some(attempt=>attempt.code==='upstream_network_error'));
  assert.deepEqual(stored('A1'),successfulA);assert.deepEqual(stored('A2'),successfulA2);
 
@@ -117,6 +127,6 @@ try{
  assert.equal(calls.length,beforeInvalid);
  assert.equal(run('PRAGMA integrity_check;'),'ok');
  for(const table of ['scoring360_responses','monthly_manager_scores','feishu_tasks','weekly_reminder_sends'])assert.equal(run('SELECT count(*) FROM '+table+';'),'0');
- const result={ok:true,storedMonthOnly:true,noFeishuCredentialsRequired:true,oldPromptCacheReused:true,unsubmittedInactiveAndOtherMonthUntouched:true,correctiveValidationFeedback:true,noDiagnosticPayloadLeaks:true,oldMonthlyFinalRetained:true,individualEmployeePublication:true,transientPublicationRecovery:true,failedOnlyRetry:true,transientNetworkRetry:true,staleSourceResponseDiscarded:true,invalidMonthBeforeModelCall:true,externalRequests:0,realNotifications:0,artifacts:dir};
+ const result={ok:true,storedMonthOnly:true,noFeishuCredentialsRequired:true,oldPromptCacheReused:true,unsubmittedInactiveAndOtherMonthUntouched:true,correctiveValidationFeedback:true,noDiagnosticPayloadLeaks:true,oldMonthlyFinalRetained:true,individualCandidateCompletion:true,transientPublicationRecovery:true,failedOnlyRetry:true,transientNetworkRetry:true,staleSourceResponseDiscarded:true,invalidMonthBeforeModelCall:true,externalRequests:0,realNotifications:0,artifacts:dir};
  await writeFile(dir+'/result.json',JSON.stringify(result,null,2));console.log(JSON.stringify(result));
 }finally{clearTimeout(timer);releaseB();console.log('Artifacts retained:',dir);}

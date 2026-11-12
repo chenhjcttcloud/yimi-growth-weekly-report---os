@@ -116,7 +116,7 @@ try{
     if(preserveContext){const url=new URL(page.url());for(const key of targetKeys)assert.equal(url.searchParams.get(key),entryContext.searchParams.get(key),'leader entry preserves result context '+key);assert.equal(url.hash,entryContext.hash);}
     if(selectedMonth)await locationValue('scoreMonth',selectedMonth);
   }
-  async function results(){await title('评分工作台');await page.getByText('评分完成，结果自动呈现',{exact:true}).waitFor();assert.equal(await selectedTab().innerText(),'得分结果');await locationValue('scoreTab','results');}
+  async function results(){await title('评分工作台');await page.getByText('员工月度结果',{exact:true}).waitFor();assert.equal(await selectedTab().innerText(),'得分结果');await locationValue('scoreTab','results');}
   async function setup(){await title('评分工作台');await page.getByRole('region',{name:'月度配评工作台',exact:true}).waitFor();assert.equal(await selectedTab().innerText(),'月度配评');await locationValue('scoreTab','setup');}
   async function clickWorkbench(){entryContext=new URL(page.url());await nav().getByRole('button',{name:'评分工作台',exact:true}).click();}
   function record(name){cases.push(name);}

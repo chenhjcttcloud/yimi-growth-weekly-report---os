@@ -40,7 +40,7 @@ function workspace(person,month,weekId){const w=week(month);return {
   ok:true,employee:person,months,month,selectedWeekId:weekId||w.id,monthSummary:{...timing,upcoming:0},
   weeks:[{...w,status:'准时',submitted:true,submittedAt:w.end+'T09:00:00Z',dueAt:w.end+'T20:00:00+08:00',schedule:{},
     facts:{results:person.name+'的虚构周报证据',problems:'虚构问题',plan:'虚构下周计划',reflection:'虚构复盘'},qualityReference:82,scoringWeights:[30,25,25,20],radar:[],closure:{}}],
-  history:months.map(value=>({month:value,quality:82,timeliness:timing,collaboration:90.7,collaborationRule:'weighted_30_70'})),
+  history:months.map(value=>({month:value,quality:null,monthlyQuality:{status:'pending_confirmation',currentAverage:82,candidateScore:82,finalScore:null,pendingAnalysis:0,analyzedCount:1,expectedCount:1},timeliness:timing,collaboration:90.7,collaborationRule:'weighted_30_70'})),
   ratingProgress:{peerComplete:true,managerComplete:true,managerKind:'manager'},tasks:[],comments:[],messages:[],analysis:null,likeCount:0,liked:false,aiConfigured:false,taskCreateEnabled:false,
 };}
 const types={'.html':'text/html','.js':'text/javascript','.css':'text/css','.svg':'image/svg+xml','.png':'image/png','.woff2':'font/woff2'};
@@ -133,12 +133,12 @@ try{
   role='member';const memberManageStart=manageRequests.length;
   await page.goto(base+'/?page=quality-scores');await title('周报质量');await page.locator('.personal-workspace').waitFor();
   assert.equal(workspaceRequests.at(-1).userId,employees[0].userId);
-  assert.equal(await page.locator('.pf-metric-label').filter({hasText:'周报质量分'}).count(),1);
+  assert.equal(await page.locator('.pf-metric-label').filter({hasText:'月度质量候选分'}).count(),1);
   assert.equal(await page.locator('.pf-metric-label').filter({hasText:'月度综合最终分'}).count(),0);
   await chooseMonth('选择个人月份',historical);await urlValue('personalMonth',historical);await page.reload();await title('周报质量');await page.locator('.personal-workspace').waitFor();await urlValue('personalMonth',historical);
   await nav().getByRole('button',{name:'360 协同得分',exact:true}).click();await title('360 协同得分');await page.locator('.pf-metrics').waitFor();
   assert.equal(await page.locator('.personal-workspace').count(),0);
-  assert.equal(await page.locator('.pf-metric-label').filter({hasText:'周报质量分'}).count(),0);
+  assert.equal(await page.locator('.pf-metric-label').filter({hasText:'月度质量候选分'}).count(),0);
   assert.equal(await page.getByText('虚构评分人',{exact:true}).count(),0);
   assert.equal(manageRequests.length,memberManageStart,'member views must never request company result APIs');
   await page.screenshot({path:dir+'/collaboration-personal.png',fullPage:true,animations:'disabled'});

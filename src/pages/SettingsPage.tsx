@@ -656,7 +656,7 @@ export function SettingsPage({ access,onOpenScoringSetup }: SettingsPageProps) {
       <div className="settings-content">
       {settingsTab==='handoffs'&&canManageScoring360&&<MonthlyReviewHandoffs/>}
       {settingsTab==='operations'&&bossView&&<OperationsSettings/>}
-      {settingsTab==='overview'&&<div className="settings-overview"><section className="settings-quick-actions" aria-label="常用设置">{[{id:'organization',title:'管理组织',text:'设置部门与负责人',icon:UsersRound},{id:'rules',title:'调整评分规则',text:'配置下个周期的权重',icon:CheckCheck},{id:'ai',title:'接入 AI',text:'配置模型与服务密钥',icon:Database}].map(({id,title,text,icon:Icon})=><button key={id} type="button" onClick={()=>setSettingsTab(id)}><span className="settings-quick-icon"><Icon size={20}/></span><strong>{title}</strong><small>{text}</small><span className="settings-quick-arrow">↗</span></button>)}</section>
+      {settingsTab==='overview'&&<div className="settings-overview"><section className="settings-quick-actions" aria-label="常用设置">{[{id:'organization',title:'管理组织',text:'设置部门与负责人',icon:UsersRound},{id:'rules',title:'调整评分规则',text:'查看质量权重与周期规则',icon:CheckCheck},{id:'ai',title:'接入 AI',text:'配置模型与服务密钥',icon:Database}].map(({id,title,text,icon:Icon})=><button key={id} type="button" onClick={()=>setSettingsTab(id)}><span className="settings-quick-icon"><Icon size={20}/></span><strong>{title}</strong><small>{text}</small><span className="settings-quick-arrow">↗</span></button>)}</section>
         <section className="settings-summary-grid">{[
           ['在职员工',managedEmployees.filter(e=>e.active).length,'员工管理','people'],
           ['协作评分关系',scoring360Config?.assignments.length??'—','管理评分任务','scoring'],
@@ -665,7 +665,7 @@ export function SettingsPage({ access,onOpenScoringSetup }: SettingsPageProps) {
         <section className="v2-card"><div className="v2-card-head"><div><span className="v2-eyebrow"><Database size={14}/>当前环境</span><h3 className="v2-card-title">运行状态与服务连接</h3><p className="v2-card-sub">展示真实配置状态。未接入的服务会明确标记，不会伪造连接或发送记录。</p></div><button type="button" className="secondary-button" onClick={()=>void loadRuntimeStatus()}>刷新状态</button></div>
         {runtimeError?<div className="pf-error" role="alert">{runtimeError}</div>:runtimeStatus?<><div className="settings-status-list">{runtimeStatus.services.map((service:any)=><div key={service.name}><span className={`settings-status-dot ${service.ready?'is-ready':''}`}/><div><strong>{service.name}</strong><p>{service.description}</p></div><span className={`pf-status ${service.ready?'is-confirmed':''}`}>{service.label}</span></div>)}</div><p className="settings-environment-note">{runtimeStatus.demoData?'当前为虚构开发数据，可切换老板、管理员和员工视角验证流程。':'当前使用已配置的数据源。'} 负责人或老板30%与同事互评70%全部完成后自动发布；周报及时率独立统计。</p></>:<ResultEmpty title="正在读取运行状态" description="服务连接与当前数据来源将在这里显示。"/>}
         </section>
-        <section className="v2-card settings-guide"><h3 className="v2-card-title">从这里开始</h3><div><p><strong>01 · 确认团队</strong><span>在「组织与部门」同步飞书负责人，在「员工管理」检查在职人员。</span></p><p><strong>02 · 检查评分关系</strong><span>在「协作评分关系」配置谁给谁评分，并查看未完成任务。</span></p><p><strong>03 · 查看结果</strong><span>负责人或老板30%与同事互评70%全部完成后自动发布；周报质量与及时性异常在评分工作台核实。</span></p></div></section>
+        <section className="v2-card settings-guide"><h3 className="v2-card-title">从这里开始</h3><div><p><strong>01 · 确认团队</strong><span>在「组织与部门」同步飞书负责人，在「员工管理」检查在职人员。</span></p><p><strong>02 · 检查评分关系</strong><span>在「协作评分关系」配置谁给谁评分，并查看未完成任务。</span></p><p><strong>03 · 查看结果</strong><span>负责人或老板30%与同事互评70%全部完成后自动发布；在评分工作台核实周报证据并确认月度质量最终分。</span></p></div></section>
       </div>}
       <section className="settings-grid" data-settings-tab={settingsTab}>
       {["rules","ai","cycles","logs"].includes(settingsTab)&&<SystemConfiguration section={settingsTab as "rules"|"ai"|"cycles"|"logs"}/>}
@@ -907,7 +907,7 @@ export function SettingsPage({ access,onOpenScoringSetup }: SettingsPageProps) {
         </div>
         <div className="sync-flow-copy">
           <strong>完整流程：读取飞书汇报 → 保存原文 → Kimi 评分 → 自动更新月度结果</strong>
-          <span>自动收集频率由上方设置管理，也可以立即手动同步。首次手动同步按配置日期读取；未填写则读取本月。未变化的 AI 分析会复用，多次未通过引文或格式校验的周报可手动补跑。</span>
+          <span>自动收集跟随周报截止时间，也可以立即手动同步。首次手动同步按配置日期读取，留空时读取本月。未变化的 AI 分析会复用，多次未通过引文或格式校验的周报可手动补跑。</span>
         </div>
         <div className="sync-status-box">
           <div>

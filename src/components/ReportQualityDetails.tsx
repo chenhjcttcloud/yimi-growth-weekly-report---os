@@ -2,10 +2,12 @@ import { ChevronDown, FileCheck2, Quote } from 'lucide-react';
 import '../styles/report-quality.css';
 
 type EvidenceType = 'reported_fact' | 'plan' | 'judgment';
+type EvidenceLevel = 'A' | 'B' | 'C' | 'D';
 
 interface QualityEvidence {
   quote: string;
   type: EvidenceType;
+  level?: EvidenceLevel | null;
   start?: number;
   end?: number;
 }
@@ -20,6 +22,9 @@ interface QualityCriterion {
   reason: string;
   missing: string[];
   evidence: QualityEvidence[];
+  applicable?: boolean;
+  notApplicableReason?: string | null;
+  evidenceLevel?: EvidenceLevel | null;
 }
 
 interface QualityModule {
@@ -32,6 +37,10 @@ interface QualityModule {
   confidence: number | null;
   evidence: QualityEvidence[];
   criteria: QualityCriterion[];
+  evidenceLevel?: EvidenceLevel | null;
+  strengths?: string[];
+  deductions?: string[];
+  applicableMaxScore?: number;
 }
 
 export interface QualityAssessment {
@@ -41,6 +50,11 @@ export interface QualityAssessment {
   generatedAt?: string;
   sourceHash?: string;
   anomalies?: string[];
+  totalScore?: number;
+  evidenceLevel?: EvidenceLevel | null;
+  confidence?: number | null;
+  factConflict?: boolean;
+  recommendHumanReview?: boolean;
   modules: QualityModule[];
 }
 
@@ -51,6 +65,12 @@ const evidenceLabels: Record<EvidenceType, string> = {
   plan: '计划',
   judgment: '判断',
 };
+const levelLabels: Record<EvidenceLevel, string> = {
+  A: 'A 级 · 硬证据',
+  B: 'B 级 · 内部可核验事实',
+  C: 'C 级 · 明确员工自述',
+  D: 'D 级 · 空泛描述',
+};
 const numberText = (value: number) => Number.isFinite(value) ? value.toFixed(1).replace(/\.0$/, '') : '—';
 const timeText = (value?: string) => {
   if (!value) return '未记录';
@@ -60,13 +80,17 @@ const timeText = (value?: string) => {
 
 function EvidenceQuotes({ evidence }: { evidence: QualityEvidence[] }) {
   return <div className="quality-evidence-quotes">{evidence.map((item, index) => <blockquote key={`${index}:${item.quote}`}>
-    <span><Quote size={12} aria-hidden="true"/>{evidenceLabels[item.type] || '原文引用'}</span>
+    <span><Quote size={12} aria-hidden="true"/>{item.level ? levelLabels[item.level] : evidenceLabels[item.type] || '原文引用'}</span>
     <p>{item.quote}</p>
   </blockquote>)}</div>;
 }
 
 function MissingEvidence({ missing }: { missing: string[] }) {
   return missing.length ? <div className="quality-missing"><strong>缺失证据</strong><ul>{missing.map((item, index) => <li key={index}>{item}</li>)}</ul></div> : null;
+}
+
+function ScoringReasons({ label, items }: { label: string; items?: string[] }) {
+  return !!items?.length && <div className="quality-module-reason"><strong>{label}</strong><ul>{items.map((item, index) => <li key={index}>{item}</li>)}</ul></div>;
 }
 
 export function ReportQualityDetails({ assessment, weights = defaultWeights, pending = false, previous = false, refresh }: {
@@ -90,37 +114,50 @@ export function ReportQualityDetails({ assessment, weights = defaultWeights, pen
   };
 
   return <section className="quality-assessment" aria-label="四模块评分依据">
-    <div className="quality-assessment-heading"><h4><FileCheck2 size={15} aria-hidden="true"/>四模块评分依据</h4><span className={`pf-status ${previous?'is-warning':'is-confirmed'}`}>{previous?`旧版分数 · ${refreshLabel||'历史评分'}`:'自动评分发布'}</span></div>
-    {previous&&<p className="quality-missing">以下为旧版本评分依据，引文对应该次评分的原文版本。当前正文的新评分完成后自动切换，无需人工审核。</p>}
-    <p className="quality-assessment-caption">各模块标准化为 100 分后加权；及时率独立统计。异常只作提示，无需人工审核。</p>
-    {!!assessment.anomalies?.length && <div className="quality-missing quality-anomalies"><strong>异常提示</strong><ul>{assessment.anomalies.map((item, index) => <li key={index}>{item}</li>)}</ul><p>异常仅作提示，评分自动发布，不额外扣分。</p></div>}
+    <div className="quality-assessment-heading"><h4><FileCheck2 size={15} aria-hidden="true"/>四模块评分依据</h4><span className="pf-status is-warning">{previous?`旧版分数 · ${refreshLabel||'历史评分'}`:'AI 候选'}</span></div>
+    {previous&&<p className="quality-missing">以下引文来自旧评分对应的周报版本。新评分完成后会更新候选分。</p>}
+    <p className="quality-assessment-caption">各模块按适用子项折算为 100 分后加权。月度最终分由管理人员确认。</p>
+    {(assessment.evidenceLevel || assessment.confidence != null || assessment.totalScore != null) && <p className="quality-confidence">{[
+      assessment.totalScore != null && `AI 候选分 ${assessment.totalScore.toFixed(1)} 分`,
+      assessment.evidenceLevel && levelLabels[assessment.evidenceLevel],
+      assessment.confidence != null && `整体置信度（模型自评）${numberText(assessment.confidence * 100)}%`,
+    ].filter(Boolean).join(' · ')}</p>}
+    {(assessment.factConflict != null || assessment.recommendHumanReview != null) && <p className="quality-confidence">{[
+      assessment.factConflict != null && (assessment.factConflict ? '发现可能的事实冲突' : '未发现事实冲突'),
+      assessment.recommendHumanReview != null && (assessment.recommendHumanReview ? '建议重点人工复核' : '常规人工确认'),
+    ].filter(Boolean).join(' · ')}</p>}
+    {!!assessment.anomalies?.length && <div className="quality-missing quality-anomalies"><strong>异常提示</strong><ul>{assessment.anomalies.map((item, index) => <li key={index}>{item}</li>)}</ul></div>}
     <div className="quality-module-list">{modules.map((module, index) => {
       const weight = weightFor(module, index);
       const criteria = Array.isArray(module.criteria) ? module.criteria : [];
-      const criterionScore = criteria.reduce((total, criterion) => total + criterion.score, 0);
-      const criterionMaximum = criteria.reduce((total, criterion) => total + criterion.maxScore, 0);
+      const applicableCriteria = criteria.filter(criterion => criterion.applicable !== false);
+      const criterionScore = applicableCriteria.reduce((total, criterion) => total + criterion.score, 0);
+      const criterionMaximum = module.applicableMaxScore ?? applicableCriteria.reduce((total, criterion) => total + criterion.maxScore, 0);
       return <details className="quality-module" key={module.id} data-quality-module={module.id} open={index === 0}>
         <summary><span className="quality-module-title">{module.module}<small>权重 {numberText(weight)}%</small></span><span className="quality-module-score"><b>{numberText(module.candidateScore)}</b><small>/ 100 分</small></span><span className="quality-module-contribution">计入总分 <b>{numberText(module.candidateScore * weight / 100)}</b> 分</span><ChevronDown size={15} aria-hidden="true"/></summary>
         <div className="quality-module-body">
           <div className="quality-module-reason"><strong>评分理由</strong><p>{module.reason}</p></div>
-          {!!criteria.length && <p className="quality-confidence">细则合计 {numberText(criterionScore)} / {numberText(criterionMaximum)} 分，折算模块分 {numberText(module.candidateScore)} / 100 分。</p>}
+          {criterionMaximum > 0 && <p className="quality-confidence">适用细则合计 {numberText(criterionScore)} / {numberText(criterionMaximum)} 分，折算模块分 {numberText(module.candidateScore)} / 100 分。</p>}
           {module.confidence != null && <p className="quality-confidence">置信度（模型自评）：{numberText(module.confidence * 100)}%</p>}
+          {module.evidenceLevel && <p className="quality-confidence">证据等级 · {levelLabels[module.evidenceLevel]}</p>}
+          <ScoringReasons label="加分依据" items={module.strengths}/>
+          <ScoringReasons label="扣分依据" items={module.deductions}/>
           <MissingEvidence missing={module.missing || []}/>
           {!!module.evidence?.length && <div className="quality-module-evidence"><strong>模块原文证据</strong><EvidenceQuotes evidence={module.evidence}/></div>}
           <div className="quality-criteria">{criteria.map(criterion => <article key={criterion.id} className="quality-criterion">
-            <div className="quality-criterion-heading"><h5>{criterion.label}</h5><span><b>{numberText(criterion.score)}</b> / {numberText(criterion.maxScore)} 分</span></div>
+            <div className="quality-criterion-heading"><h5>{criterion.label}</h5><span>{criterion.applicable === false ? '不适用' : <><b>{numberText(criterion.score)}</b> / {numberText(criterion.maxScore)} 分</>}</span></div>
             {(criterion.description || criterion.standard) && <p className="quality-criterion-standard">评分标准：{criterion.description || criterion.standard}</p>}
-            <p className="quality-criterion-reason"><strong>理由：</strong>{criterion.reason}</p>
+            <p className="quality-criterion-reason"><strong>{criterion.applicable === false ? '不适用原因：' : '理由：'}</strong>{criterion.notApplicableReason || criterion.reason}</p>
+            {criterion.evidenceLevel && <p className="quality-confidence">证据等级 · {levelLabels[criterion.evidenceLevel]}</p>}
             {!!criterion.evidence?.length && <EvidenceQuotes evidence={criterion.evidence}/>}
             <MissingEvidence missing={criterion.missing || []}/>
           </article>)}</div>
         </div>
       </details>;
     })}</div>
-    <p className="quality-assessment-caption">{previous?'引文来自旧评分保存的原文版本；':'引文来自本份周报；'}“员工自述的事实”表示员工报告的已完成事项，不表示已核实业务结果。</p>
+    <p className="quality-assessment-caption">{previous?'引文来自旧评分保存的原文版本。':'引文来自本份周报。'}员工自述的事项可结合内部记录复核。</p>
     <details className="quality-version"><summary>评分版本与时间</summary><dl>
       <div><dt>评分规则</dt><dd>{assessment.version}</dd></div>
-      <div><dt>提示词版本</dt><dd>{assessment.promptVersion || assessment.version}</dd></div>
       <div><dt>AI 模型</dt><dd>{assessment.model || '未记录'}</dd></div>
       <div><dt>评分时间</dt><dd>{timeText(assessment.generatedAt)}（北京时间）</dd></div>
       {assessment.sourceHash && <div><dt>原文版本</dt><dd>{assessment.sourceHash}</dd></div>}

@@ -48,8 +48,9 @@ function resultScore(row,month,userId){
  const value=score(result.score);
  if(row.source!=='automatic_report')return value===null?output:{...output,score:value,status:'published',isFinal:true};
  const metadata={reportCount:count(result.reportCount),pendingAnalysis:count(result.pendingAnalysis),failedAnalysis:count(result.failedAnalysis),previousResultAt:timestamp(result.previousResultAt)};
- if(result.status==='ready')return value===null?{...output,...metadata}:{...output,...metadata,score:value,status:'published',isFinal:true};
- if(['rescoring','rescore_failed'].includes(result.status))return {...output,...metadata,status:result.status,previousScore:value};
+ if(result.status==='ready'&&value===null)return {...output,...metadata};
+ if(['ready','pending_confirmation','candidate'].includes(result.status))return {...output,...metadata,status:'pending_confirmation'};
+ if(['rescoring','rescore_failed'].includes(result.status))return {...output,...metadata,status:result.status};
  if(['pending_ai','no_reports'].includes(result.status))return {...output,...metadata,status:result.status};
  return {...output,...metadata};
 }
@@ -73,7 +74,9 @@ export function createProductManagementScoreApi({query,sql,sendJson,token='',now
   const rows=await query(`WITH selected AS (
  SELECT user_id,name,department,is_active FROM employees WHERE user_id IN (${ids})
 ), candidates AS (
- SELECT p.employee_user_id,p.kind,p.result_json,p.confirmed_at AS updated_at,'legacy' AS source,p.confirmed_at AS version_id,0 AS priority
+ SELECT p.employee_user_id,p.kind,p.result_json,p.confirmed_at AS updated_at,
+ CASE WHEN p.kind='quality' AND json_extract(CASE WHEN json_valid(p.result_json) THEN p.result_json ELSE '{}' END,'$.publicationMode')='management_confirmation' THEN 'management_confirmed' ELSE 'legacy' END AS source,
+ p.confirmed_at AS version_id,0 AS priority
  FROM performance_results p JOIN selected e ON e.user_id=p.employee_user_id
  WHERE p.month=${sql(month)} AND p.kind IN ('quality','collaboration')
  UNION ALL SELECT p.employee_user_id,p.kind,p.result_json,p.confirmed_at,'weighted_30_70',p.confirmed_at,1

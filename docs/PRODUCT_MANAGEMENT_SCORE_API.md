@@ -117,7 +117,7 @@ JSON
         "status": "published",
         "isFinal": true,
         "previousScore": null,
-        "source": "automatic_report",
+        "source": "management_confirmed",
         "updatedAt": "2026-10-31T12:00:00.000Z",
         "revision": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
       },
@@ -147,8 +147,8 @@ JSON
 | `collaboration360` | 指定月份已发布的 360 协同最终分，**不是同事互评部分的均分** |
 | `score` | 当前可使用的 0～100 数值或 `null`；0 是有效分数 |
 | `isFinal` | 是否为本接口当前可供业务采用的最终结果 |
-| `previousScore` | 质量重评期间保留的旧分，仅展示参考；360 此字段始终为 `null` |
-| `source` | `legacy` 历史已发布结果、`automatic_report` 自动质量结果或 `weighted_30_70` 月度加权结果；无对应来源时为 `null` |
+| `previousScore` | 兼容字段，当前返回 `null` |
+| `source` | `management_confirmed` 人工确认的周报质量分、`legacy` 历史人工结果、`automatic_report` 自动计算的质量进度或 `weighted_30_70` 月度加权结果 |
 | `updatedAt` | 该结果已保存的更新时间，标准 ISO 8601 UTC 或 `null` |
 | `revision` | 评分摘要的稳定 SHA-256 版本标识，用于发现变更；不能按字符串大小判断先后 |
 
@@ -160,16 +160,17 @@ JSON
 
 ## 5. 分数与状态
 
-周报质量月分采用系统已保存的月度结果：全部已提交周报完成有效分析后，按既有规则汇总；及时性独立统计，不混入质量分。新规则下的 360 协同最终分为负责人或老板部分 30% 加同事互评部分 70%，必需评分完成后发布。`legacy` 历史已发布分数保留原值，不由导出接口重新计算。
+有效周报分析完成后汇总月度候选分，由管理人员确认后供接口同步。及时率单独统计。360 协同最终分为负责人或老板部分 30% 加同事互评部分 70%，必需评分完成后发布。`legacy` 历史人工结果保留原值。
 
 | `status` | `score` / `isFinal` | 调用方处理 |
 | --- | --- | --- |
 | `published` | 有效数值 / `true` | 可同步为该类型的当前最终分 |
 | `not_published` | `null` / `false` | 该类型没有既存结果快照，例如 360 必需评分未完成 |
 | `pending_ai` | `null` / `false` | 周报质量分析尚未形成可用结果 |
+| `pending_confirmation` | `null` / `false` | 已汇总周报质量候选分，等待管理人员确认 |
 | `no_reports` | `null` / `false` | 已保存的质量快照表明该月份没有周报 |
-| `rescoring` | `null` / `false` | 质量重评中；可能有 `previousScore`，不得当成当前分数 |
-| `rescore_failed` | `null` / `false` | 质量重评失败；可能有旧分，仅作参考 |
+| `rescoring` | `null` / `false` | 质量重评中 |
+| `rescore_failed` | `null` / `false` | 质量重评失败 |
 | `identity_mismatch` | `null` / `false` | 人员未找到或姓名核对不符，不得写入分数 |
 | `invalid_result` | `null` / `false` | 已保存数据不符合有效分数要求，不能作为成绩采用 |
 

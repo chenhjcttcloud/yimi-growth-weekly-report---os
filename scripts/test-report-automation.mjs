@@ -11,9 +11,10 @@ import {REPORT_QUALITY_PROMPT_VERSION,REPORT_QUALITY_VERSION} from '../server/re
 import {makeReportQualityAnalysis} from './report-quality-test-fixtures.mjs';
 await mkdir('outputs/tests',{recursive:true});const dir=await mkdtemp(path.resolve('outputs/tests/report-automation-')),db=dir+'/test.sqlite';
 const sql=v=>v==null?'NULL':"'"+String(v).replaceAll("'","''")+"'";
-const run=(input,json=false)=>{const r=spawnSync('sqlite3',['-bail',...(json?['-json']:[]),db],{input,encoding:'utf8'});if(r.status)throw Error(r.stderr);return json?JSON.parse(r.stdout||'[]'):r.stdout;};
-const query=async s=>run(s,true),exec=async s=>run(s);run(await readFile('db/schema.sql','utf8'));
-let now=new Date('2026-10-27T02:00:00Z'),aiCalls=0,queries=0,providerFailure='',invalidQuality=false,lock=false,status,availableRequests=null;
+const run=(input,json=false,database=db)=>{const r=spawnSync('sqlite3',['-bail',...(json?['-json']:[]),database],{input,encoding:'utf8'});if(r.status)throw Error(r.stderr);return json?JSON.parse(r.stdout||'[]'):r.stdout;};
+const schema=await readFile('db/schema.sql','utf8');
+const query=async s=>run(s,true),exec=async s=>run(s);run(schema);
+let now=new Date('2026-10-23T19:59:00+08:00'),aiCalls=0,queries=0,providerFailure='',invalidQuality=false,lock=false,status,availableRequests=null;
 const config={sessionSecret:'test-key',dataDir:dir,feishuAppId:'cli_test',feishuAppSecret:'test-secret',moonshotApiKey:'test-ai-key',moonshotBaseUrl:'https://ai.example.test/v1',kimiFollowupModel:'test-model',larkReportAutoSyncEnabled:false};
 const settings=createSystemSettings({query,exec,sql,config,now:()=>now});
 const item={task_id:'test-task',from_user_id:'test-staff',from_user_name:'测试员工',department_name:'测试部门',rule_id:'test-rule',rule_name:'周报（聚焦结果与协作）',commit_time:Math.floor(Date.parse('2026-10-23T19:00:00+08:00')/1000),form_contents:[{field_name:'本周成果',field_value:'完成3项验收'},{field_name:'问题与挑战',field_value:'接口待确认'},{field_name:'下周工作计划与目标',field_value:'完成接口验证'},{field_name:'思考与复盘',field_value:'提前确认验收口径'}]};
@@ -47,44 +48,95 @@ const reserveAiRequest=async()=>{
 };
 const createSync=()=>createLiveReportSync({query,exec,sql,config,settings,refreshDirectory:async()=>{},writeStatus:async value=>{status=value;},pause:async()=>{},fetcher,reserveAiRequest,onComplete:async()=>{published++;await performance.overview();}});
 let sync=createSync();
-const options={query,exec,sql,getConfig:settings.reportAutomationConfig,getAiRequestsToday:settings.reportAiRequestsToday,isRunning:()=>lock,start:async range=>{await sync.run(range);return true;},now:()=>now};
+const options={query,exec,sql,getConfig:settings.reportAutomationConfig,getAiRequestsToday:settings.reportAiRequestsToday,calendar:()=>({}),policyFor:settings.policyFor,isRunning:()=>lock,start:async range=>{await sync.run(range);return true;},now:()=>now};
 const scheduler=createReportAutomation(options);
+const admin={userId:'admin',name:'管理员'};
+const nextCheck=async(scheduler,date,kind)=>{
+ const overview=await scheduler.overview();
+ assert.equal(overview.nextCheckAt,new Date(date).toISOString());
+ assert.equal(overview.nextCheckKind,kind);
+};
+const tickAt=async date=>{
+ now=new Date(date);
+ return scheduler.tick();
+};
 assert.equal((await scheduler.tick()).skipped,'disabled');assert.equal(aiCalls,0);
 assert.equal((await settings.reportAutomationConfig()).scoringStartMonth,'2026-11');
-await assert.rejects(settings.saveReportAutomation({enabled:true,intervalMinutes:1},{userId:'admin',name:'管理员'}),/invalid_report_automation/);
-await settings.saveReportAutomation({enabled:true,intervalMinutes:5,scoringStartMonth:'2026-10'},{userId:'admin',name:'管理员'});
-const results=await Promise.all([scheduler.tick(),createReportAutomation(options).tick()]);assert.equal(results.filter(r=>r.status==='started').length,1);assert.equal(aiCalls,1);assert.equal(queries,1);assert.equal(published,3,'initial queue, each completed report and final state publish independently');
-let personal=await performance.personal('测试员工','test-staff');assert.equal(personal.history[0].quality,83.3);assert.equal(personal.history[0].timeliness.rate,100);assert.equal(personal.history[0].collaboration,null,'AI must not generate collaboration ratings');
-assert.equal((await createReportAutomation(options).tick()).skipped,'not_due','restart uses persisted interval');
-const generatedAt=JSON.parse(run('SELECT content_json FROM weekly_reports;',true)[0].content_json).aiGeneratedAt;assert(generatedAt);now=new Date('2026-10-27T02:05:00Z');await scheduler.tick();assert.equal(JSON.parse(run('SELECT content_json FROM weekly_reports;',true)[0].content_json).aiGeneratedAt,generatedAt,'cache retains original AI generation time');assert.equal(queries,2);assert.equal(aiCalls,1,'unchanged report content/model reuses analysis');
-item.form_contents[0].field_value='新增验收结果，内容发生变化';now=new Date('2026-10-27T02:10:00Z');providerFailure='rate_limit';await scheduler.tick();assert.equal(status.failed,1);assert.equal(run('SELECT count(*) AS n FROM weekly_reports;',true)[0].n,1,'AI failure retains report source');const duringFailure=(await performance.personal('测试员工','test-staff')).history[0];assert.equal(duringFailure.quality,83.3,'failed reanalysis retains the last published score');assert.equal(duringFailure.qualityStatus,'rescore_failed','retained score is explicitly marked as old, never presented as a new result');
-providerFailure='';now=new Date('2026-10-27T02:15:00Z');await scheduler.tick();assert.equal((await performance.personal('测试员工','test-staff')).history[0].quality,83.3);assert.equal(status.failed,0);
-const before=aiCalls;lock=true;now=new Date('2026-10-27T02:20:00Z');assert.equal((await scheduler.tick()).skipped,'sync_running');assert.equal(aiCalls,before);lock=false;
-// Corrupt/incomplete cached analysis is retried instead of trusted as a complete grade.
-run("UPDATE weekly_reports SET content_json=json_set(content_json,'$.ai.modules',json('[]'));");await scheduler.tick();assert.equal(aiCalls,before+1);
+await assert.rejects(settings.saveReportAutomation({enabled:true,intervalMinutes:1},admin),/invalid_report_automation/);
+await settings.saveReportAutomation({enabled:true,scoringStartMonth:'2026-10'},admin);
+const oldState={lastAttemptAt:'2026-10-23T11:58:00.000Z',status:'started'};
+run(`INSERT INTO app_settings(key,value_json) VALUES('report_automation_state',${sql(JSON.stringify(oldState))});`);
+await nextCheck(scheduler,'2026-10-23T20:05:00+08:00','deadline');
+assert.equal((await tickAt('2026-10-23T20:04:59+08:00')).skipped,'not_due');
+assert.equal(queries,0,'no Feishu query before the deadline collection slot');
+now=new Date('2026-10-23T20:05:00+08:00');
+lock=true;
+assert.equal((await scheduler.tick()).skipped,'sync_running');
+lock=false;
+const results=await Promise.all([scheduler.tick(),createReportAutomation(options).tick()]);assert.equal(results.filter(r=>r.status==='started').length,1);assert.equal(aiCalls,1);assert.equal(queries,1);assert.equal(published,3,'initial queue, each completed report and final sync state project independently');
+const history=async()=>(await performance.personal('测试员工','test-staff')).history[0];
+const personal=await history();
+assert.equal(personal.quality,null);assert.equal(personal.qualityStatus,'pending_confirmation');
+assert.equal(personal.monthlyQuality.candidateScore,83.3);assert.equal(personal.timeliness.rate,100);
+assert.equal(personal.collaboration,null,'AI must not generate collaboration ratings');
+assert.equal((await createReportAutomation(options).tick()).skipped,'not_due','restart preserves the completed slot');
+await nextCheck(scheduler,'2026-10-26T09:00:00+08:00','followup');
+await settings.saveReportAutomation({enabled:true,intervalMinutes:5},admin);
+assert.equal((await tickAt('2026-10-23T20:10:00+08:00')).skipped,'not_due','the old saved polling interval no longer triggers a collection');
+assert.equal((await tickAt('2026-10-25T09:00:00+08:00')).skipped,'not_due','Sunday does not trigger a collection');
+assert.equal((await tickAt('2026-10-26T08:59:00+08:00')).skipped,'not_due');
+assert.equal(queries,1,'only the deadline collection has queried Feishu');
+const reportContent=()=>JSON.parse(run("SELECT content_json FROM weekly_reports WHERE id='lark-report-test-task';",true)[0].content_json);
+const generatedAt=reportContent().aiGeneratedAt;
+assert(generatedAt);
+const lateItem={...item,task_id:'test-late-task',from_user_id:'late-staff',from_user_name:'迟交测试员工',commit_time:Date.parse('2026-10-26T08:58:00+08:00')/1000};
+incoming=[item,lateItem];
+const followup=await tickAt('2026-10-26T09:00:00+08:00');
+assert.equal(followup.status,'started');
+assert.equal(followup.start,'2026-09-12','the existing 45-day lookback still covers earlier late reports');
+assert.equal(followup.end,'2026-10-26','the follow-up covers submissions made after the original deadline');
+assert.equal(reportContent().aiGeneratedAt,generatedAt,'cache retains original AI generation time');
+assert.equal(queries,2);assert.equal(aiCalls,2,'only the newly submitted late report gets scored');
+assert.deepEqual(run("SELECT week_end,is_late FROM weekly_reports WHERE id='lark-report-test-late-task';",true),[{week_end:'2026-10-23',is_late:1}]);
+incoming=[item];
+await nextCheck(scheduler,'2026-10-30T20:05:00+08:00','deadline');
+assert.equal((await tickAt('2026-10-26T09:15:00+08:00')).skipped,'not_due');
+assert.equal(queries,2);
 
-const reportContent=()=>JSON.parse(run('SELECT content_json FROM weekly_reports;',true)[0].content_json);
-const tickAt=async minute=>{
+// Drive repeat sync directly to exercise AI failure and recovery independently of collection slots.
+const octoberRange={start:'2026-10-01',end:'2026-10-27'};
+const syncAt=async minute=>{
  now=new Date(`2026-10-27T02:${minute}:00Z`);
- assert.equal((await createReportAutomation(options).tick()).status,'started');
+ await sync.run(octoberRange);
 };
+item.form_contents[0].field_value='新增验收结果，内容发生变化';providerFailure='rate_limit';await syncAt(10);assert.equal(status.failed,1);assert.equal(run("SELECT count(*) AS n FROM weekly_reports WHERE id='lark-report-test-task';",true)[0].n,1,'AI failure retains report source');
+const duringFailure=await history(),[previousReport]=await performance.reports({employeeUserId:'test-staff',month:'2026-10'});
+assert.equal(duringFailure.quality,null);assert.equal(duringFailure.qualityStatus,'pending_ai');assert.equal(duringFailure.qualityRefresh.status,'rescore_failed');
+assert.equal(duringFailure.monthlyQuality.currentAverage,null,'failed reanalysis does not mix old weekly points into the current mean');
+assert.equal(previousReport.displayQualityScore,83.3);assert.equal(previousReport.qualityDisplaySource,'previous');
+providerFailure='';await syncAt(15);
+const recovered=await history();assert.equal(recovered.quality,null);assert.equal(recovered.monthlyQuality.candidateScore,83.3);assert.equal(status.failed,0);
+const before=aiCalls;
+// Corrupt/incomplete cached analysis is retried instead of trusted as a complete grade.
+run("UPDATE weekly_reports SET content_json=json_set(content_json,'$.ai.modules',json('[]')) WHERE id='lark-report-test-task';");await syncAt(20);assert.equal(aiCalls,before+1);
+
 item.form_contents[0].field_value='更新周报，模拟评分引文失败';
 invalidQuality=true;
 availableRequests=1;
 const beforeValidationFailures=aiCalls;
-await tickAt(25);
+await syncAt(25);
 assert.equal(aiCalls,beforeValidationFailures+1);
 assert.equal(status.blockedReason,'daily_ai_request_limit');
 sync=createSync();
 availableRequests=5;
-await tickAt(30);
+await syncAt(30);
 assert.equal(aiCalls,beforeValidationFailures+2,'only the remaining automatic validation attempt is used after restarting');
 assert.equal(status.retryHeld,1,'the run that reaches two validation failures immediately reports the held item');
 assert.equal(status.failed,0);
 assert.equal(status.remaining,0);
 sync=createSync();
-await tickAt(35);
-assert.equal(aiCalls,beforeValidationFailures+2,'automatic polling holds the same failed report after two total attempts');
+await syncAt(35);
+assert.equal(aiCalls,beforeValidationFailures+2,'sync holds the same failed report after two total attempts');
 assert.equal(status.retryHeld,1);
 assert.equal(status.byMonth['2026-10'].retryHeld,1);
 assert.equal(reportContent().qualityRefresh.state,'failed');
@@ -103,32 +155,31 @@ await sync.run({mode:'rescore',targetMonth:'2026-10'});
 assert.equal(aiCalls,beforeValidationFailures+3);
 assert.equal(status.analyzed,1);
 assert.equal(reportContent().qualityRefresh.state,'ready');
-await tickAt(40);
+await syncAt(40);
 assert.equal(aiCalls,beforeValidationFailures+3);
-assert.equal(status.cached,1,'successful manual recovery is reused by automation');
+assert.equal(status.cached,1,'successful manual recovery is reused by collection');
 
 const {ai, ...legacyReport}=reportContent();
 const legacyDiagnostic={code:'evidence_not_in_source',path:'modules.results.criteria.result.evidence.0.quote',retryable:true};
 // Four failures were possible in the old version and must still block another automatic attempt.
 legacyReport.aiAnalysisAttempts=Array.from({length:4},(_,index)=>({at:`2026-10-27T01:00:0${index}Z`,targetVersion:REPORT_QUALITY_VERSION,promptVersion:REPORT_QUALITY_PROMPT_VERSION,sourceHash:legacyReport.sourceHash,attempt:index+1,...legacyDiagnostic}));
 legacyReport.qualityRefresh={state:'failed',targetVersion:REPORT_QUALITY_VERSION,model:config.kimiFollowupModel,sourceHash:legacyReport.sourceHash,jobId:'old-job',attempts:4,diagnostic:legacyDiagnostic};
-run(`UPDATE weekly_reports SET content_json=${sql(JSON.stringify(legacyReport))};`);
+run(`UPDATE weekly_reports SET content_json=${sql(JSON.stringify(legacyReport))} WHERE id='lark-report-test-task';`);
 sync=createSync();
 availableRequests=1;
-await tickAt(45);
+await syncAt(45);
 assert.equal(aiCalls,beforeValidationFailures+3,'legacy matching validation failures are held without issuing another request');
 assert.equal(status.retryHeld,1);
 item.form_contents[0].field_value='再次更新周报，触发新的评分';
-await tickAt(50);
+await syncAt(50);
 assert.equal(aiCalls,beforeValidationFailures+4,'a different source hash starts a new validation budget');
 assert.equal(status.analyzed,1);
 
-const state=await scheduler.overview();assert.equal(state.config.enabled,true);assert.equal(state.config.intervalMinutes,5);assert(state.lastAttemptAt);assert(state.nextCheckAt);
+const state=await scheduler.overview();assert.equal(state.config.enabled,true);assert.equal(state.lastAttemptAt,'2026-10-26T01:00:00.000Z');assert(state.nextCheckAt);
 
-const admin={userId:'admin',name:'管理员'};
 await assert.rejects(settings.saveReportAutomation({enabled:true,intervalMinutes:5,dailyAiRequestLimit:-1},admin),/invalid_ai_request_limit/);
 await settings.saveReportAutomation({enabled:true,intervalMinutes:5,dailyAiRequestLimit:3},admin);
-await settings.saveReportAutomation({enabled:true,intervalMinutes:10},admin);
+await settings.saveReportAutomation({enabled:true},admin);
 assert.equal((await settings.reportAutomationConfig()).dailyAiRequestLimit,3,'omitting the limit preserves the existing setting');
 assert.equal((await settings.reportAutomationConfig()).scoringStartMonth,'2026-10','omitting the start month preserves the existing setting');
 now=new Date('2026-10-27T15:59:59Z');
@@ -148,7 +199,7 @@ assert.equal((await scheduler.overview()).config.dailyAiRequestLimit,0);
 assert.equal(await restartedSettings.reserveReportAiRequest(),'ai_scoring_paused');
 const beforePause=aiCalls;
 item.form_contents[0].field_value='评分暂停期间提交的新周报内容';
-assert.equal((await scheduler.tick()).status,'started');
+await sync.run(octoberRange);
 assert.equal(reportContent().results,item.form_contents[0].field_value,'collection still stores the source while scoring is paused');
 assert.equal(aiCalls,beforePause);
 assert.equal(status.phase,'paused');
@@ -184,7 +235,7 @@ await assert.rejects(settings.saveReportAutomation({enabled:true,intervalMinutes
 await settings.saveReportAutomation({enabled:true,intervalMinutes:5,scoringStartMonth:'2026-11'},admin);
 now=new Date('2026-11-10T02:00:00Z');
 const beforeNovember=aiCalls;
-assert.equal((await scheduler.tick()).status,'started');
+await sync.run({start:'2026-10-01',end:'2026-11-10'});
 assert.deepEqual(modelWeeks.slice(beforeNovember),['2026-11-06'],'a November submission belonging to October cannot trigger scoring');
 assert.deepEqual(readOctober(),octoberBefore,'the scoring start month preserves all existing October report rows');
 await assert.rejects(sync.run({mode:'rescore',targetMonth:'2026-10'}),/rescore_before_start_month/);
@@ -225,4 +276,86 @@ assert.equal(status.analyzed,1,'the same source can recover after provider permi
 await settings.saveReportAutomation({enabled:false,intervalMinutes:5},admin);assert.equal((await scheduler.tick()).skipped,'disabled');assert.equal((await scheduler.overview()).nextCheckAt,null);
 assert.equal(run('SELECT count(*) AS n FROM scoring360_responses;',true)[0].n,0);assert.equal(run('SELECT count(*) AS n FROM monthly_score_reminder_deliveries;',true)[0].n,0);
 assert.equal(run('PRAGMA integrity_check;').trim(),'ok');
-console.log('Passed: timed collection and AI analysis, November scoring start with October history preserved, cache/retry, persisted validation and network retry hold, provider permission recovery, manual recovery, persisted/restart/concurrent interval and no messages.');console.log('Artifacts retained:',dir);
+
+function scheduleFixture(name,calendar={},deadlineTime='20:00',onStart=()=>true){
+ const database=path.join(dir,name+'.sqlite');
+ run(schema,false,database);
+ let clock;
+ const calls=[];
+ const make=()=>createReportAutomation({
+  query:async statement=>run(statement,true,database),exec:async statement=>run(statement,false,database),sql,
+  getConfig:async()=>({enabled:true,feishuConfigured:true,aiConfigured:true,intervalMinutes:5}),
+  calendar:()=>calendar,policyFor:async()=>({deadlineTime}),isRunning:()=>false,
+  start:async range=>{calls.push(range);return onStart(range);},now:()=>clock,
+ });
+ const collector=make();
+ return {collector,calls,make,at:date=>{clock=new Date(date);}};
+}
+
+const holiday=scheduleFixture('holiday',{year:2026,autoManaged:true,holidayDates:['2026-10-23','2026-10-24','2026-10-25','2026-10-26']});
+holiday.at('2026-10-22T20:04:59+08:00');
+await nextCheck(holiday.collector,'2026-10-22T20:05:00+08:00','deadline');
+assert.equal((await holiday.collector.tick()).skipped,'not_due');
+holiday.at('2026-10-22T20:05:00+08:00');
+assert.equal((await holiday.collector.tick()).status,'started');
+await nextCheck(holiday.collector,'2026-10-27T09:00:00+08:00','followup');
+for(const date of ['2026-10-23T20:05:00+08:00','2026-10-26T09:00:00+08:00','2026-10-27T08:59:59+08:00']){
+ holiday.at(date);
+ assert.equal((await holiday.collector.tick()).skipped,'not_due');
+}
+holiday.at('2026-10-27T09:00:00+08:00');
+assert.equal((await holiday.make().tick()).status,'started','the next workday skips the entire holiday');
+assert.deepEqual(holiday.calls.map(range=>range.end),['2026-10-22','2026-10-27']);
+
+const makeup=scheduleFixture('makeup-workday',{year:2026,autoManaged:true,holidayDates:['2026-10-23'],workdayOverrides:['2026-10-24']});
+makeup.at('2026-10-22T20:05:00+08:00');
+assert.equal((await makeup.collector.tick()).status,'started');
+await nextCheck(makeup.collector,'2026-10-24T09:00:00+08:00','followup');
+makeup.at('2026-10-24T09:00:00+08:00');
+assert.equal((await makeup.collector.tick()).status,'started','a Saturday makeup workday can host the follow-up');
+assert.deepEqual(makeup.calls.map(range=>range.end),['2026-10-22','2026-10-24']);
+
+const exempt=scheduleFixture('exempt-week',{year:2026,autoManaged:true,holidayDates:Array.from({length:7},(_,i)=>`2026-11-0${i+2}`)});
+exempt.at('2026-11-06T20:05:00+08:00');
+assert.equal((await exempt.collector.tick()).skipped,'not_due');
+assert.equal(exempt.calls.length,0,'a week with no workdays has no deadline collection');
+
+const calendarPending=scheduleFixture('unknown-calendar',{year:2025,autoManaged:true});
+calendarPending.at('2026-10-23T20:05:00+08:00');
+assert.equal((await calendarPending.collector.tick()).skipped,'not_due');
+assert.equal((await calendarPending.collector.overview()).nextCheckAt,null);
+assert.equal(calendarPending.calls.length,0,'an unknown work calendar must not fall back to a speculative Friday');
+
+const restarted=scheduleFixture('restart-catchup');
+restarted.at('2026-10-23T22:10:00+08:00');
+assert.equal((await restarted.make().tick()).status,'started','restart after the deadline catches the most recent missed slot');
+assert.equal((await restarted.make().tick()).skipped,'not_due','a second restart does not collect the same slot');
+assert.equal(restarted.calls.length,1);
+
+let readyToStart=false;
+const retry=scheduleFixture('retry-claim',{},'20:00',()=>readyToStart);
+retry.at('2026-10-23T20:05:00+08:00');
+assert.equal((await retry.collector.tick()).status,'sync_running','a concurrent manual sync can win after the scheduler claim');
+readyToStart=true;
+retry.at('2026-10-23T20:09:59+08:00');
+assert.equal((await retry.make().tick()).skipped,'not_due');
+retry.at('2026-10-23T20:10:00+08:00');
+assert.equal((await retry.make().tick()).status,'started','the slot is retried after the manual sync clears');
+assert.equal((await retry.collector.tick()).skipped,'not_due');
+assert.equal(retry.calls.length,2);
+
+const missed=scheduleFixture('expired-slot');
+missed.at('2026-10-24T20:06:00+08:00');
+assert.equal((await missed.collector.tick()).skipped,'not_due','a missed slot older than 24 hours does not trigger a catch-up');
+missed.at('2026-10-26T09:01:00+08:00');
+assert.equal((await missed.collector.tick()).status,'started');
+assert.equal(missed.calls.length,1,'the follow-up collects once without replaying the missed deadline slot');
+
+const custom=scheduleFixture('configured-cutoff',{},'18:30');
+custom.at('2026-10-23T18:34:59+08:00');
+await nextCheck(custom.collector,'2026-10-23T18:35:00+08:00','deadline');
+assert.equal((await custom.collector.tick()).skipped,'not_due');
+custom.at('2026-10-23T18:35:00+08:00');
+assert.equal((await custom.collector.tick()).status,'started');
+
+console.log('Passed: deadline and next-workday collection, holiday and exempt weeks, configured deadlines, persisted and concurrent slot claims, restart catch-up, November scoring start, AI cache/retry/budget, manual recovery and no messages.');console.log('Artifacts retained:',dir);

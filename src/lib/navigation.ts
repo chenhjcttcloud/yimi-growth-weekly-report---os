@@ -39,7 +39,7 @@ export function resolvePage(page:PageKey|undefined,access:UserAccess):PageKey {
 
 export function perspectiveAccess(access:UserAccess,mode:string):UserAccess {
  const personal=access.role==='system_admin'&&(mode==='personal'||(mode.startsWith('employee:')&&access.visibleEmployees.some(e=>e.userId===mode.slice(9))));
- return personal?{...access,role:'member',bossView:false,canViewBossDashboard:false,canViewSettings:false,canManageScoring360:false,canManagePersonnel:false}:access;
+ return personal?{...access,role:'member',bossView:false,canViewBossDashboard:false,canViewSettings:false,canManageScoring360:false,canReviewWeeklyQuality:false,canManagePersonnel:false}:access;
 }
 
 export function locationValue(key:string):string {

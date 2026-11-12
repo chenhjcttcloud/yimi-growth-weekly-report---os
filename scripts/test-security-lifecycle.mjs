@@ -38,7 +38,8 @@ for(const source of eligibleSources){
  const snapshot=readPeriods(id);await lifecycle.observe(id,'2026-09-14');assert.deepEqual(readPeriods(id),snapshot,'later reports do not move the known start forward');
 }
 const august=(await perf.personal('历史回填-first_seen','backfill-first_seen')).history.find(row=>row.month==='2026-08');
-assert.equal(august?.quality,80,'historical report backfill produces the personal August quality result');
+assert.equal(august?.quality,null,'historical report backfill does not confirm the personal result');
+assert.equal(august?.monthlyQuality.candidateScore,80,'historical report backfill produces the personal August quality candidate');
 assert.equal(august.timeliness.submitted,1);assert.equal(august.timeliness.onTime,1);
 const protectedCases=[['verified-manager','manager',null],['verified-feishu','feishu',null],['restored','manager_restore',null],['closed-first','first_seen','2026-10-28'],['closed-sso','sso','2026-10-28'],['closed-report','report','2026-10-28']];
 for(const [id,source,end] of protectedCases){

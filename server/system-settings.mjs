@@ -83,12 +83,12 @@ export function createSystemSettings({query,exec,sql,config,now=()=>new Date(),f
   return (await reportAutomationConfig()).dailyAiRequestLimit===0?'ai_scoring_paused':false;
  }
  async function saveReportAutomation(body,user){
-  if(typeof body.enabled!=='boolean'||!Number.isInteger(body.intervalMinutes)||body.intervalMinutes<5||body.intervalMinutes>1440)throw Error('invalid_report_automation');
+  if(typeof body.enabled!=='boolean'||body.intervalMinutes!==undefined&&(!Number.isInteger(body.intervalMinutes)||body.intervalMinutes<5||body.intervalMinutes>1440))throw Error('invalid_report_automation');
   if(body.dailyAiRequestLimit!==undefined&&(!Number.isInteger(body.dailyAiRequestLimit)||body.dailyAiRequestLimit<0||body.dailyAiRequestLimit>500))throw Error('invalid_ai_request_limit');
   if(body.scoringStartMonth!==undefined&&(typeof body.scoringStartMonth!=='string'||!/^\d{4}-(0[1-9]|1[0-2])$/.test(body.scoringStartMonth)))throw Error('invalid_report_scoring_start_month');
   if(body.enabled&&!(config.feishuAppId&&config.feishuAppSecret))throw Error('feishu_required');
   if(body.enabled&&!config.moonshotApiKey)throw Error('ai_required');
-  const value={enabled:body.enabled,intervalMinutes:body.intervalMinutes,...(body.dailyAiRequestLimit===undefined?{}:{dailyAiRequestLimit:body.dailyAiRequestLimit}),...(body.scoringStartMonth===undefined?{}:{scoringStartMonth:body.scoringStartMonth})};
+  const value={enabled:body.enabled,...(body.intervalMinutes===undefined?{}:{intervalMinutes:body.intervalMinutes}),...(body.dailyAiRequestLimit===undefined?{}:{dailyAiRequestLimit:body.dailyAiRequestLimit}),...(body.scoringStartMonth===undefined?{}:{scoringStartMonth:body.scoringStartMonth})};
   await exec(`INSERT INTO app_settings(key,value_json,updated_at) VALUES('report_automation_config',${sql(JSON.stringify(value))},datetime('now')) ON CONFLICT(key) DO UPDATE SET value_json=json_patch(app_settings.value_json,excluded.value_json),updated_at=excluded.updated_at;`);
   await audit(user,'周报自动收集与AI评分配置已保存',value);
  }
@@ -101,7 +101,7 @@ export function createSystemSettings({query,exec,sql,config,now=()=>new Date(),f
   await exec(`INSERT INTO app_settings(key,value_json,updated_at) VALUES('month_end_score_reminders',${sql(JSON.stringify(value))},datetime('now')) ON CONFLICT(key) DO UPDATE SET value_json=excluded.value_json,updated_at=excluded.updated_at;`);
   await audit(user,'月末评分提醒设置已保存',{...value,schedule:'last_two_workdays',timezone:'Asia/Shanghai'});
  }
- async function overview(){return {events:await eventOverview(),features:await featureSettings(),reportAutomation:await reportAutomationConfig(),monthlyReminders:await monthlyReminderConfig(),report:await reportOverview(),policy:await policyFor(month()),versions:await policies(),ai:{baseUrl:config.moonshotBaseUrl,model:config.kimiFollowupModel,keyConfigured:!!config.moonshotApiKey},currentMonth:month(),publication:{collaboration:'manager_30_peers_70_when_complete',leader:'boss_30_peers_70',quality:'automatic_ai_monthly',timeliness:'automatic_submission_statistics'},integration:{authMode:config.authMode,feishuConfigured:!!(config.feishuAppId&&config.feishuAppSecret),remindersEnabled:await scoringRemindersEnabled()}};}
+ async function overview(){return {events:await eventOverview(),features:await featureSettings(),reportAutomation:await reportAutomationConfig(),monthlyReminders:await monthlyReminderConfig(),report:await reportOverview(),policy:await policyFor(month()),versions:await policies(),ai:{baseUrl:config.moonshotBaseUrl,model:config.kimiFollowupModel,keyConfigured:!!config.moonshotApiKey},currentMonth:month(),publication:{collaboration:'manager_30_peers_70_when_complete',leader:'boss_30_peers_70',quality:'management_confirmed_monthly',timeliness:'automatic_submission_statistics'},integration:{authMode:config.authMode,feishuConfigured:!!(config.feishuAppId&&config.feishuAppSecret),remindersEnabled:await scoringRemindersEnabled()}};}
  async function savePolicy(body,user){
   if(!/^\d{4}-(0[1-9]|1[0-2])$/.test(body.effectiveMonth||'')||body.effectiveMonth<=month())throw Error('future_cycle_required');
   const p=body.policy||{},weights=p.weights;
