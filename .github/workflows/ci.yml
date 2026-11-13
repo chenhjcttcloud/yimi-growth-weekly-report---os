@@ -24,6 +24,7 @@ jobs:
       - run: node scripts/test-report-automation.mjs
       - run: node scripts/test-live-report-sync.mjs
       - run: node scripts/test-report-quality-scoring.mjs
+      - run: node scripts/test-report-evidence-fragments.mjs
       - run: node scripts/test-report-quality-publication.mjs
       - run: node scripts/test-report-rescore-state.mjs
       - run: node scripts/test-report-rescore.mjs

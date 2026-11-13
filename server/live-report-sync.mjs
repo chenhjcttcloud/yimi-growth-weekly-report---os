@@ -3,6 +3,7 @@ import {readFile,writeFile,rename,mkdir} from 'node:fs/promises';
 import path from 'node:path';
 import {weeklyReportSchedule,fridayOfWeek} from './weekly-report-schedule.mjs';
 import {REPORT_QUALITY_VERSION,REPORT_QUALITY_PROMPT_VERSION,REPORT_QUALITY_WEIGHTS,buildReportQualityPrompt,reportQualityTotal,validateReportQualityAnalysis,qualityAnalysisDiagnostic,isReportQualityValidationFailure} from './report-quality-scoring.mjs';
+import {buildReportEvidenceFragments} from './report-evidence-fragments.mjs';
 import {reportFacts,previousQualitySnapshot,currentQualityCached,archivedQuality,legacyReportScore} from './report-rescore-state.mjs';
 const digest=v=>createHash('sha256').update(JSON.stringify(v)).digest('hex');
 const date=d=>new Intl.DateTimeFormat('sv-SE',{timeZone:'Asia/Shanghai'}).format(d);
@@ -48,11 +49,19 @@ export function normalizeLiveReport(item,calendar={}){
  const facts={results:get(/^本周成果/),problems:get(/^问题与挑战/),nextPlan:get(/^下周工作计划|^下周计划/),reflection:get(/^思考与复盘/)};
  return {id:'lark-report-'+item.task_id,userId:item.from_user_id,name:item.from_user_name,department:item.department_name||'',start,end,weekId:'period-'+end,label:`${end.slice(0,4)}年${Number(end.slice(5,7))}月第${Math.ceil(Number(end.slice(8))/7)}周`,submittedAt:new Date(time*1000).toISOString(),facts,sourceHash:digest({task:item.task_id,time,facts}),source:{provider:'feishu-report',taskId:item.task_id,ruleId:item.rule_id,ruleName:item.rule_name,commitTime:time,formContents:fields,weekInference:holidayMonday?'假前最后工作日为周一，归属当前工作周':'提交日期推定；普通周一归属上一工作周，周末按本周周五归档'}};
 }
-export function validateAnalysis(value,facts){
+export function validateAnalysis(value,facts,qualityOptions){
  const a=value;if(!a||typeof a.summary!=='string'||!a.summary.trim())throw Object.assign(Error('invalid_ai_analysis'),{code:'invalid_summary'});
- const quality=facts?validateReportQualityAnalysis(a,facts):{scores:a.scores};
+ const quality=facts?validateReportQualityAnalysis(a,facts,qualityOptions):{scores:a.scores};
  if(!Array.isArray(quality.scores)||quality.scores.length!==4||quality.scores.some(x=>typeof x!=='number'||!Number.isFinite(x)||x<0||x>100))throw Error('invalid_ai_analysis');
- return {...quality,summary:a.summary.slice(0,6000),questions:(Array.isArray(a.questions)?a.questions:[]).filter(x=>typeof x==='string').slice(0,5),anomalies:(Array.isArray(a.anomalies)?a.anomalies:[]).filter(x=>typeof x==='string').slice(0,10),tasks:(Array.isArray(a.tasks)?a.tasks:[]).filter(x=>x&&typeof x.title==='string'&&typeof x.description==='string').slice(0,4).map(x=>({title:x.title.slice(0,240),description:x.description.slice(0,6000),evidence:String(x.evidence||'').slice(0,4000),metric:String(x.metric||'').slice(0,2000),firstStep:String(x.firstStep||'').slice(0,2000),supportNeeded:String(x.supportNeeded||'').slice(0,2000),priority:['P0','P1','P2'].includes(x.priority)?x.priority:'P2'}))};
+ const fragments=qualityOptions?.evidenceFragments;
+ const taskSources=fragments && new Map(Object.values(fragments).flat().map(fragment=>[fragment.id,fragment.text]));
+ const tasks=(Array.isArray(a.tasks)?a.tasks:[]).filter(task=>task&&typeof task.title==='string'&&typeof task.description==='string')
+  .flatMap(task=>{
+   const evidence=taskSources && Object.hasOwn(task,'evidenceRef') ? taskSources.get(task.evidenceRef) : String(task.evidence||'').slice(0,4000);
+   if(taskSources && (!evidence||!Object.values(facts).some(source=>typeof source==='string'&&source.includes(evidence))))return [];
+   return [{title:task.title.slice(0,240),description:task.description.slice(0,6000),evidence,metric:String(task.metric||'').slice(0,2000),firstStep:String(task.firstStep||'').slice(0,2000),supportNeeded:String(task.supportNeeded||'').slice(0,2000),priority:['P0','P1','P2'].includes(task.priority)?task.priority:'P2'}];
+  }).slice(0,4);
+ return {...quality,summary:a.summary.slice(0,6000),questions:(Array.isArray(a.questions)?a.questions:[]).filter(x=>typeof x==='string').slice(0,5),anomalies:(Array.isArray(a.anomalies)?a.anomalies:[]).filter(x=>typeof x==='string').slice(0,10),tasks};
 }
 export function createLiveReportSync({query,exec,sql,config,settings,refreshDirectory,writeStatus,reserveAiRequest=async()=>true,measureAiRequest=(_model,operation)=>operation(),onComplete=async()=>{},observeEmployee=async()=>{},calendar=()=>({}),fetcher=fetch,pause=ms=>new Promise(resolve=>setTimeout(resolve,ms))}){
  let running=false,statusWrites=Promise.resolve(),projection=Promise.resolve(),collectionStartDate='';
@@ -90,6 +99,11 @@ export function createLiveReportSync({query,exec,sql,config,settings,refreshDire
  async function analyzeSerial(report,canProcess,weights,onAttempt,batch,automaticAttemptsLeft){
   const previous=(await query(`SELECT content_json FROM weekly_reports WHERE employee_user_id=${sql(report.userId)} AND week_end<${sql(report.end)} ORDER BY week_end DESC LIMIT 1;`))[0];
   const previousContent=previous?JSON.parse(previous.content_json):{},previousPlan=previousContent.nextPlan||'';
+  const evidenceFragments=buildReportEvidenceFragments(report.facts);
+  const modelFragments=Object.fromEntries(Object.entries(evidenceFragments).map(([moduleId,fragments])=>[
+   moduleId,fragments.map(({id,text})=>({id,text})),
+  ]));
+  const reportMessage=JSON.stringify({week:report.end,report:report.facts,evidenceFragments:modelFragments,department:report.department,previousPlan});
   let failure,feedback=null,lastOutput='';
   for(let attempt=1;attempt<=MAX_ANALYSIS_ATTEMPTS;attempt++){
    await waitForModel(attempt);
@@ -102,10 +116,10 @@ export function createLiveReportSync({query,exec,sql,config,settings,refreshDire
    if(await onAttempt(attempt,null)===false)return null;
    if(aiConfigurationChanged(batch)){batch.blockedReason='ai_model_changed';return ANALYSIS_DEFERRED;}
    try{
-    const messages=[{role:'system',content:buildReportQualityPrompt()},{role:'user',content:JSON.stringify({week:report.end,report:report.facts,department:report.department,previousPlan})}];
+    const messages=[{role:'system',content:buildReportQualityPrompt()},{role:'user',content:reportMessage}];
     if(feedback){
      if(lastOutput)messages.push({role:'assistant',content:lastOutput.slice(0,100000)});
-     messages.push({role:'user',content:JSON.stringify({validationFeedback:feedback,instruction:'上一份结果未通过程序校验。请针对指定字段修正，保持原评分细则和原文证据要求，重新输出完整JSON；不得编造引文。'})});
+     messages.push({role:'user',content:JSON.stringify({validationFeedback:feedback,instruction:'请修正指定字段，并检查所有正分细项都选择了本模块有效的 ref。无相关片段的细项填 0 分和缺失原因，重新输出完整 JSON。'})});
     }
     const value=await measureAiRequest(batch.model,receive=>{
      batch.requests++;
@@ -114,13 +128,13 @@ export function createLiveReportSync({query,exec,sql,config,settings,refreshDire
     });
     lastOutput=value.choices?.[0]?.message?.content||'';
     if(value.choices?.[0]?.finish_reason==='length')throw Object.assign(Error('response_truncated'),{code:'response_truncated'});
-    const ai=validateAnalysis(JSON.parse(lastOutput.replace(/^```(?:json)?\s*|\s*```$/g,'')),report.facts);
+    const ai=validateAnalysis(JSON.parse(lastOutput.replace(/^```(?:json)?\s*|\s*```$/g,'')),report.facts,{
+     evidenceFragments,allowUnsupportedCriteria:attempt===MAX_ANALYSIS_ATTEMPTS||automaticAttemptsLeft===1,
+    });
     const flags=ai.modules.flatMap(module=>!report.facts[module.id]?.trim()?[`${module.module}缺失，自动记0分`]:module.confidence!==null&&module.confidence<0.6?[`${module.module}模型自评置信度较低，仅作提示`]:[]);
     if(ai.totalScore<60)flags.push('内容质量分低于60分，仅作改进提示');
     if(previousContent.ai?.version===REPORT_QUALITY_VERSION&&previousContent.aiModel===batch.model&&Array.isArray(previousContent.ai.scores)&&previousContent.ai.scores.length===4&&previousContent.ai.scores.every(Number.isFinite)&&Math.abs(ai.totalScore-reportQualityTotal(previousContent.ai.scores,weights))>=15)flags.push('内容质量分较上期变化达到15分，仅作趋势提示');
     ai.anomalies=[...new Set([...flags,...ai.anomalies])].slice(0,10);
-    const sources=Object.values(report.facts).filter(Boolean);
-    for(const task of ai.tasks)if(!task.evidence||!sources.some(source=>source.includes(task.evidence)))task.evidence=report.facts.problems||report.facts.nextPlan||report.facts.results||report.facts.reflection;
     return ai;
    }catch(error){
     failure=error;

@@ -38,7 +38,7 @@ try{
    if(failAi)return {ok:false,status:429,json:async()=>({error:{type:'rate_limit'}})};
    const messages=JSON.parse(options.body).messages,payload=JSON.parse(messages.find(message=>message.role==='user').content);
    assert(messages[0].content.includes(REPORT_QUALITY_VERSION));
-   assert.deepEqual(Object.keys(payload).sort(),['department','previousPlan','report','week'],'department provides work context without submission timing or employee identifiers');
+   assert.deepEqual(Object.keys(payload).sort(),['department','evidenceFragments','previousPlan','report','week'],'department provides work context without submission timing or employee identifiers');
    const facts=payload.report;
    const analysis=makeReportQualityAnalysis(facts,{summary:'AI 测试点评',questions:['请核实接口验收标准'],tasks:[{title:'确认接口',description:'与负责人确认验收标准',priority:'P1',evidence:'接口待确认'}],...(lowConfidence?{scores:[40,40,40,40],confidence:.1,anomalies:['数据矛盾待补充说明']}:{})});
    if(forgeQuotes)analysis.modules[0].criteria[0].evidence=[{quote:'不存在于原文的虚构证据',type:'reported_fact'}];

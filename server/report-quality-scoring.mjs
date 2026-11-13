@@ -1,7 +1,8 @@
 // Versioned, content-only scoring. Submission time never enters the model input.
 export const LEGACY_REPORT_QUALITY_VERSION = 'weekly-quality-2026-11-02-v1';
 export const REPORT_QUALITY_VERSION = 'weekly-quality-2026-11-12-v2';
-export const REPORT_QUALITY_PROMPT_VERSION = 'weekly-quality-prompt-2026-11-12-v3';
+export const PREVIOUS_REPORT_QUALITY_PROMPT_VERSION = 'weekly-quality-prompt-2026-11-12-v3';
+export const REPORT_QUALITY_PROMPT_VERSION = 'weekly-quality-prompt-2026-11-13-v4';
 export const NO_REPORT_EVIDENCE = '原文未提供相关证据。';
 export const REPORT_QUALITY_WEIGHTS = Object.freeze([30,25,25,20]);
 const evidenceLevels = ['A','B','C','D'];
@@ -48,12 +49,13 @@ score按细项标准在0到maxScore之间给原始分，可给小数，由程序
 每个模块及细项都须有非空reason和missing字符串数组。模块还须分别输出strengths和deductions字符串数组，逐条写出加分和扣分依据。各数组最多10项，理由和单条文字不超过2000字。confidence取0到1或null，仅为模型自评。空白模块由程序记0分。
 证据分级如下。A：原文明确给出客户验收、上线、业务数据、代码提交、测试、合同等可追溯的硬证据；满足细项标准时可取完整分数。B：会议纪要、任务或审批记录、明确责任人与时间节点、供应商反馈、跨部门交付等内部可核验事实，属于有效证据；程序对成果证据细项按原始分的85%计，不要预先折算。C：具体事项、当前状态、下一步和时间或责任人齐备的员工自述；内容质量可以进入60–74分，证据细项上限为74%。D：只有持续推进、加强沟通等空泛或无法支持细项的表述，相关细项上限为30%。
 分数区间参考：90–100是结果明确、硬证据充分且有价值；75–89是结果清楚、有内部可核验事实且价值基本明确；60–74是事项、状态和下一步清楚但量化或外部证据不足；45–59是偏过程、结果较弱；0–44是空泛、重复或无法判断。仅有C级自述时，不能仅凭自述判定对应结果或完成状态达到高分标准。有独立依据的阶段价值、问题分析及计划按内容评分。硬证据不足只影响证据子项，不能据此把其他子项或整份周报压到低分。B级本身不写进缺失证据；如另有缺失，说明具体缺失的是哪项信息。
-evidence为数组，每细项至多8条，优先1到2条简短原文，格式为{"quote":"本模块连续逐字原文","type":"reported_fact","level":"B"}。type只能取reported_fact（员工报告的事实或当前状态）、plan（未来计划）、judgment（分析或判断）。level只能取A、B、C、D或null。已有具体过程线索但不满足C级时，用null表示该引文只能支撑过程描述，此类引文不能用于高分。A必须对应事实引用；计划可以支持计划细项，不能冒充已经发生的事实。逐字引用只能来自当前模块，不能引用其他模块或上期计划，不能改标点、空格或换行，不超过2000字。正分细项至少有一条引用。无可引用依据时，相关细项给0分并在missing写“${NO_REPORT_EVIDENCE}”。缺少独立记录时可引用明确自述并注明证据级别。
+evidence为数组，每细项优先选择1条最相关的原文片段，必要时可多选，最多8条。格式为{"ref":"results-1","type":"reported_fact","level":"B"}。ref必须从输入evidenceFragments的当前模块中选择实际存在的id，同一片段可支持多个相关细项。程序会按ref回填精确原文，不需要抄写quote。不得选其他模块或上期计划的片段。type只能取reported_fact（员工报告的事实或当前状态）、plan（未来计划）、judgment（分析或判断）。level只能取A、B、C、D或null。已有具体过程线索但不满足C级时，用null表示该片段只能支撑过程描述，此类证据不能用于高分。A必须对应事实引用；计划可以支持计划细项，不能冒充已经发生的事实。
+每项先选证据，再给分。只要score大于0，evidence必须包含至少一个有效的本模块ref。确无相关片段时只给该细项0分，evidence填[]，在missing写“${NO_REPORT_EVIDENCE}”。缺少外部验收时，可以选内部事实或明确自述片段，并据实标注证据等级。不得因为缺少硬证据省略能支持细项的片段。
 仅输出以下完整结构的JSON，模板中的0和示意文案表示类型，必须根据输入逐项替换，不要照抄示意文案：${JSON.stringify(template)}
-factConflict和recommendHumanReview为布尔值。事实可能冲突时在anomalies中说明冲突和相关原文，建议人工核实；低置信度和复核建议不阻止生成候选分。summary须为非空中文点评，概括依据和改进方向。questions最多5项，anomalies最多10项。tasks最多4项，每项包含title、description、priority(P0/P1/P2)、evidence(本周原文引用)、metric、firstStep、supportNeeded。任务必须有本周依据；可对照上期计划，但没有明确交付证据时不得断言已闭环。输入若包含validationFeedback，它是程序给出的失败位置及修正要求，只修正不合规的结构、分值或引用，仍须返回全部四模块的完整JSON。`;
+factConflict和recommendHumanReview为布尔值。事实可能冲突时在anomalies中说明冲突和相关原文，建议人工核实；低置信度和复核建议不阻止生成候选分。summary须为非空中文点评，概括依据和改进方向。questions最多5项，anomalies最多10项。tasks最多4项，每项包含title、description、priority(P0/P1/P2)、evidenceRef(本周片段id)、metric、firstStep、supportNeeded。任务必须有本周依据；可对照上期计划，但没有明确交付证据时不得断言已闭环。输入若包含validationFeedback，请按字段位置修正，并复查所有细项的正分均有当前模块有效ref，仍须返回全部四模块的完整JSON。`;
 }
 
-const diagnosticCodes = new Set(['invalid_structure','invalid_modules','invalid_module_count','missing_module','duplicate_module','invalid_criteria','invalid_criterion_count','missing_criterion','duplicate_criterion','required_text','text_too_long','invalid_missing_list','too_many_missing','invalid_confidence','invalid_score','invalid_evidence_list','too_many_evidence','invalid_evidence_quote','invalid_evidence_type','invalid_evidence_level','evidence_not_in_source','positive_score_without_evidence','invalid_applicability','no_applicable_criteria','invalid_flag']);
+const diagnosticCodes = new Set(['invalid_structure','invalid_modules','invalid_module_count','missing_module','duplicate_module','invalid_criteria','invalid_criterion_count','missing_criterion','duplicate_criterion','required_text','text_too_long','invalid_missing_list','too_many_missing','invalid_confidence','invalid_score','invalid_evidence_list','too_many_evidence','invalid_evidence_quote','invalid_evidence_reference','invalid_evidence_type','invalid_evidence_level','evidence_not_in_source','positive_score_without_evidence','invalid_applicability','no_applicable_criteria','invalid_flag']);
 export const isReportQualityValidationFailure=code=>diagnosticCodes.has(code)||['invalid_summary','invalid_json','response_truncated'].includes(code);
 const errors = new WeakMap();
 function fail(code,path,context={}) {
@@ -88,35 +90,43 @@ function textList(value,path,context) {
   if(value.length > 10) fail('too_many_missing',path,context);
   return value.map((text,index)=>requiredText(text,`${path}[${index}]`,context));
 }
-function evidenceList(value,source,path,context,legacy) {
+function evidenceList(value,source,path,context,{legacy,fragments}) {
   if(!Array.isArray(value)) fail('invalid_evidence_list',path,context);
   if(value.length > 8) fail('too_many_evidence',path,context);
   return value.map((item,index) => {
     const entryPath = `${path}[${index}]`;
-    if(!item || typeof item.quote !== 'string' || !item.quote.trim()) fail('invalid_evidence_quote',entryPath+'.quote',context);
-    if(item.quote.length > 2000) fail('text_too_long',entryPath+'.quote',context);
+    const hasRef = item && Object.hasOwn(item,'ref');
+    const fragment = hasRef && fragments?.get(item.ref);
+    if(hasRef && !fragment) fail('invalid_evidence_reference',entryPath+'.ref',context);
+    const quote = fragment ? fragment.text : item?.quote;
+    if(typeof quote !== 'string' || !quote.trim()) fail('invalid_evidence_quote',entryPath+'.quote',context);
+    if(quote.length > 2000) fail('text_too_long',entryPath+'.quote',context);
     if(!['reported_fact','plan','judgment'].includes(item.type)) fail('invalid_evidence_type',entryPath+'.type',context);
-    const start = source.indexOf(item.quote);
-    if(start < 0) fail('evidence_not_in_source',entryPath+'.quote',context);
+    const savedOffset = !fragments && Number.isInteger(item.start) && item.start>=0 &&
+      item.end===item.start+quote.length && source.slice(item.start,item.end)===quote;
+    const start = fragment ? fragment.start : savedOffset ? item.start : source.indexOf(quote);
+    if(start < 0 || source.slice(start,start+quote.length)!==quote) fail('evidence_not_in_source',entryPath+'.quote',context);
     if(!legacy && ((item.level!==null && !evidenceLevels.includes(item.level)) || (item.level==='A' && item.type!=='reported_fact'))) {
       fail('invalid_evidence_level',entryPath+'.level',context);
     }
-    return {quote:item.quote,type:item.type,start,end:start+item.quote.length,...(!legacy?{level:item.level}:{})};
+    return {quote,type:item.type,start,end:start+quote.length,...(!legacy?{level:item.level}:{})};
   });
 }
 
 const strongestLevel = levels => evidenceLevels.slice(0,3).find(level=>levels.includes(level)) ?? (levels.includes(null)?null:'D');
 const mergeDetails = (...lists) => [...new Set(lists.flat())].slice(0,10);
 
-function validateCriterion(item,criterion,source,criterionPath,context,legacy) {
+function validateCriterion(item,criterion,source,criterionPath,context,options) {
+  const {legacy,fragments,unsupported}=options;
   const path = key=>criterionPath+'.'+key;
   const reason = requiredText(item.reason,path('reason'),context);
   const missing = textList(item.missing,path('missing'),context);
-  const evidence = evidenceList(item.evidence,source,path('evidence'),context,legacy);
+  const evidence = evidenceList(unsupported && item.evidence===undefined ? [] : item.evidence,source,path('evidence'),context,options);
   if(typeof item.score !== 'number' || !Number.isFinite(item.score) || item.score < 0 || item.score > criterion.maxScore) {
     fail('invalid_score',path('score'),context);
   }
-  if(item.score > 0 && !evidence.length) fail('positive_score_without_evidence',path('evidence'),context);
+  const unsupportedScore = item.score > 0 && !evidence.length;
+  if(unsupportedScore && !unsupported) fail('positive_score_without_evidence',path('evidence'),context);
   if(legacy) return {...criterion,score:item.score,reason,missing,evidence};
   if(typeof item.applicable !== 'boolean' || (item.applicable && item.notApplicableReason !== null)) {
     fail('invalid_applicability',path('applicable'),context);
@@ -129,7 +139,8 @@ function validateCriterion(item,criterion,source,criterionPath,context,legacy) {
   const evidenceLevel = strongestLevel(evidence.map(entry=>entry.level));
   // Stored normalized results retain the original points. Revalidation must
   // apply the evidence rule once, just as it does for a fresh provider reply.
-  const rawScore = Object.hasOwn(item,'rawScore') ? item.rawScore : item.score;
+  const stored = !fragments && Object.hasOwn(item,'rawScore');
+  const rawScore = stored ? item.rawScore : item.score;
   if(typeof rawScore !== 'number' || !Number.isFinite(rawScore) || rawScore < 0 || rawScore > criterion.maxScore) {
     fail('invalid_score',path('rawScore'),context);
   }
@@ -139,19 +150,25 @@ function validateCriterion(item,criterion,source,criterionPath,context,legacy) {
   if(evidenceLevel===null) score = Math.min(score,criterion.maxScore*.59);
   if(evidenceCriterion && evidenceLevel==='B') score *= .85;
   if(evidenceCriterion && evidenceLevel==='C') score = Math.min(score,criterion.maxScore*.74);
-  if(Object.hasOwn(item,'rawScore') && score !== item.score) fail('invalid_score',path('score'),context);
+  if(stored && score !== item.score) fail('invalid_score',path('score'),context);
+  if(unsupportedScore) {
+    unsupported.push({path:path('evidence'),context});
+    return {...criterion,score:0,rawScore:0,reason:'AI 未为该细项提供可核验的原文引用，本项未计分，建议人工复核。',
+      missing:mergeDetails([NO_REPORT_EVIDENCE],missing),evidence,applicable:true,notApplicableReason:null,evidenceLevel:'D'};
+  }
   const missingEvidence = evidenceLevel==='D'?mergeDetails([NO_REPORT_EVIDENCE],missing):
     evidenceCriterion&&['A','B'].includes(evidenceLevel)?missing.filter(text=>text!==NO_REPORT_EVIDENCE):missing;
   return {...criterion,score,rawScore,reason,missing:missingEvidence,evidence,applicable:true,notApplicableReason:null,evidenceLevel};
 }
 
-function validateQuality(value,facts,{legacy=false}={}) {
+function validateQuality(value,facts,{legacy=false,evidenceFragments,allowUnsupportedCriteria=false}={}) {
   if(!value || !facts || typeof facts !== 'object') fail('invalid_structure','$');
   if(!Array.isArray(value.modules)) fail('invalid_modules','modules');
   if(value.modules.length > 4) fail('invalid_module_count','modules');
   const rubrics = legacy ? REPORT_QUALITY_RUBRIC.map(rubric=>({
     ...rubric,criteria:rubric.criteria.map(criterion=>criterion.id==='evidence'?{...criterion,standard:legacyEvidenceStandard}:criterion),
   })) : REPORT_QUALITY_RUBRIC;
+  const unsupported = allowUnsupportedCriteria ? [] : null;
   const modules = rubrics.map(rubric => {
     const context = {moduleId:rubric.id},basePath = `modules.${rubric.id}`;
     const matches = value.modules.filter(module=>module?.id===rubric.id);
@@ -169,14 +186,21 @@ function validateQuality(value,facts,{legacy=false}={}) {
     if(module.criteria.length > rubric.criteria.length) fail('invalid_criterion_count',basePath+'.criteria',context);
     const reason = requiredText(module.reason,basePath+'.reason',context),missing = textList(module.missing,basePath+'.missing',context);
     if(module.confidence !== null && (typeof module.confidence !== 'number' || !Number.isFinite(module.confidence) || module.confidence < 0 || module.confidence > 1)) fail('invalid_confidence',basePath+'.confidence',context);
+    const fragments = evidenceFragments && new Map(evidenceFragments[rubric.id].map(fragment=>[fragment.id,fragment]));
+    const previousUnsupported = unsupported?.length ?? 0;
     const criteria = rubric.criteria.map(criterion => {
       const criterionContext = {...context,criterionId:criterion.id},criterionPath = basePath+'.criteria.'+criterion.id;
       const matches = module.criteria.filter(item=>item?.id===criterion.id);
       if(!matches.length) fail('missing_criterion',criterionPath,criterionContext);
       if(matches.length > 1) fail('duplicate_criterion',criterionPath,criterionContext);
-      return validateCriterion(matches[0],criterion,source,criterionPath,criterionContext,legacy);
+      return validateCriterion(matches[0],criterion,source,criterionPath,criterionContext,{legacy,fragments,unsupported});
     });
     const applicableCriteria = criteria.filter(c=>c.applicable!==false);
+    const missingCitations = unsupported?.slice(previousUnsupported) ?? [];
+    if(missingCitations.length && !applicableCriteria.some(criterion=>criterion.score>0&&criterion.evidence.length)) {
+      const {path,context}=missingCitations[0];
+      fail('positive_score_without_evidence',path,context);
+    }
     const applicableMaxScore = applicableCriteria.reduce((sum,c)=>sum+c.maxScore,0);
     if(!applicableMaxScore) fail('no_applicable_criteria',basePath+'.criteria',context);
     const evidence = [...new Map(applicableCriteria.flatMap(c=>c.evidence).map(e=>[JSON.stringify(e),e])).values()];
@@ -184,13 +208,17 @@ function validateQuality(value,facts,{legacy=false}={}) {
     const base = {
       id:rubric.id,module:rubric.module,maxScore:100,
       candidateScore:round(applicableCriteria.reduce((sum,c)=>sum+c.score,0)/applicableMaxScore*100),
-      reason,missing:mergeDetails(!legacy&&evidenceLevel==='D'?[NO_REPORT_EVIDENCE]:[],missing,applicableCriteria.flatMap(c=>c.missing)),
+      reason:missingCitations.length?'本模块部分细项已按原文评分。未附可核验引用的细项未计分，建议人工复核。':reason,
+      missing:mergeDetails(!legacy&&(evidenceLevel==='D'||missingCitations.length)?[NO_REPORT_EVIDENCE]:[],missing,applicableCriteria.flatMap(c=>c.missing)),
       confidence:module.confidence,evidence,criteria,
     };
     if(legacy) return base;
+    const strengths=textList(module.strengths,basePath+'.strengths',context);
+    const deductions=textList(module.deductions,basePath+'.deductions',context);
     return {...base,applicableMaxScore,evidenceLevel,
-      strengths:textList(module.strengths,basePath+'.strengths',context),
-      deductions:textList(module.deductions,basePath+'.deductions',context),
+      strengths:missingCitations.length?mergeDetails(applicableCriteria.filter(criterion=>criterion.score>0).map(criterion=>criterion.reason)):strengths,
+      deductions:missingCitations.length?mergeDetails(missingCitations.map(({context})=>
+        rubric.criteria.find(criterion=>criterion.id===context.criterionId).label+'：AI 未附可核验的原文引用，本项未计分。')):deductions,
     };
   });
   const scores = modules.map(m=>m.candidateScore);
@@ -201,12 +229,12 @@ function validateQuality(value,facts,{legacy=false}={}) {
   return {version:REPORT_QUALITY_VERSION,promptVersion:REPORT_QUALITY_PROMPT_VERSION,modules,scores,
     totalScore:reportQualityTotal(scores),evidenceLevel:strongestLevel(modules.map(m=>m.evidenceLevel)),
     confidence,factConflict:value.factConflict,
-    recommendHumanReview:value.recommendHumanReview||value.factConflict||knownConfidence.some(item=>item<.6),
+    recommendHumanReview:value.recommendHumanReview||value.factConflict||Boolean(unsupported?.length)||knownConfidence.some(item=>item<.6),
   };
 }
 
-export function validateReportQualityAnalysis(value,facts) {
-  return validateQuality(value,facts);
+export function validateReportQualityAnalysis(value,facts,options) {
+  return validateQuality(value,facts,options);
 }
 
 export function reportQualityAssessment(content) {

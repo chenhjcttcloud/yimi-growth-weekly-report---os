@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import {LEGACY_REPORT_QUALITY_VERSION,REPORT_QUALITY_VERSION,REPORT_QUALITY_PROMPT_VERSION,validateReportQualityAnalysis} from '../server/report-quality-scoring.mjs';
+import {LEGACY_REPORT_QUALITY_VERSION,REPORT_QUALITY_VERSION,PREVIOUS_REPORT_QUALITY_PROMPT_VERSION,REPORT_QUALITY_PROMPT_VERSION,reportQualityAssessment,validateReportQualityAnalysis} from '../server/report-quality-scoring.mjs';
 import {reportFacts,usableQuality,previousQualitySnapshot,currentQualityCached,archivedQuality} from '../server/report-rescore-state.mjs';
 import {makeReportQualityAnalysis} from './report-quality-test-fixtures.mjs';
 
@@ -11,7 +11,15 @@ const normalized=validateReportQualityAnalysis(makeReportQualityAnalysis(facts),
 const ai={...makeReportQualityAnalysis(facts),...normalized};
 const ready={...facts,ai,aiModel:model,aiPromptVersion:REPORT_QUALITY_PROMPT_VERSION,aiGeneratedAt:'2026-11-02T00:00:00Z',sourceHash,scoringWeights:weights};
 assert(currentQualityCached(ready,sourceHash,model));
-assert(currentQualityCached({...ready,aiPromptVersion:REPORT_QUALITY_VERSION,ai:{...ai,promptVersion:REPORT_QUALITY_VERSION}},sourceHash,model),'valid earlier prompt output under unchanged scoring rule remains reusable');
+for(const promptVersion of [REPORT_QUALITY_VERSION,PREVIOUS_REPORT_QUALITY_PROMPT_VERSION]) {
+ const historical={...ready,aiPromptVersion:promptVersion,ai:{...ai,promptVersion}};
+ assert(currentQualityCached(historical,sourceHash,model),'valid earlier prompt output under unchanged scoring rule remains reusable');
+ assert.equal(reportQualityAssessment(historical).promptVersion,promptVersion,'the assessment retains the original prompt version');
+ assert.equal(previousQualitySnapshot(historical).aiPromptVersion,promptVersion,'the previous result retains the original prompt version');
+ const forgedHistorical=structuredClone(historical);
+ forgedHistorical.ai.modules[0].criteria[0].evidence[0].quote='伪造旧提示词版本引文';
+ assert.equal(currentQualityCached(forgedHistorical,sourceHash,model),false,'old prompt versions must still pass exact evidence validation');
+}
 assert.equal(currentQualityCached({...ready,aiPromptVersion:'unknown-prompt'},sourceHash,model),false,'unknown prompt version must be stale');
 assert.equal(currentQualityCached(ready,'changed-source',model),false,'changed report cannot reuse old current grade');
 assert.equal(currentQualityCached(ready,sourceHash,'changed-model'),false,'changed model invalidates current cached analysis');

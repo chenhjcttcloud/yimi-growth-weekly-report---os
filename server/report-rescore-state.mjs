@@ -1,4 +1,4 @@
-import {LEGACY_REPORT_QUALITY_VERSION,REPORT_QUALITY_VERSION,REPORT_QUALITY_PROMPT_VERSION,reportQualityAssessment,validateReportQualityAnalysis} from './report-quality-scoring.mjs';
+import {LEGACY_REPORT_QUALITY_VERSION,REPORT_QUALITY_VERSION,PREVIOUS_REPORT_QUALITY_PROMPT_VERSION,REPORT_QUALITY_PROMPT_VERSION,reportQualityAssessment,validateReportQualityAnalysis} from './report-quality-scoring.mjs';
 
 export const reportFacts = content => ({
  results:content?.results||content?.['本周成果摘要']||'',
@@ -29,7 +29,7 @@ export function currentQualityCached(content,sourceHash,model){
  if(content?.sourceHash!==sourceHash||content.aiModel!==model||content.ai?.version!==REPORT_QUALITY_VERSION)return false;
  // A formatting-only prompt repair does not invalidate a result that already
  // passed the unchanged scoring rule. Unknown prompt versions still reanalyse.
- if(![REPORT_QUALITY_VERSION,REPORT_QUALITY_PROMPT_VERSION].includes(content.aiPromptVersion))return false;
+ if(![REPORT_QUALITY_VERSION,PREVIOUS_REPORT_QUALITY_PROMPT_VERSION,REPORT_QUALITY_PROMPT_VERSION].includes(content.aiPromptVersion))return false;
  return usableQuality(content.ai,reportFacts(content));
 }
 export function archivedQuality(content,sourceHash='',weights=[30,25,25,20]){
