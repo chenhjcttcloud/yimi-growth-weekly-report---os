@@ -50,11 +50,12 @@ const monthly={...employee,month,reports:[reportHeader],timeliness,peerCandidate
 const version='a'.repeat(64);
 const reportVersion='b'.repeat(64);
 let mode='management',state='ready',qualityState='pending_ai',detailRequests=0,confirmedScore=null;
+let confirmationBlockedReason;
 const reviewRequests=[],confirmRequests=[],qualityReviews=[];
 const unhandledRoutes=new Set(),errors=[];
 const currentAssessment=()=>state==='ready'?assessment:null;
 const currentScore=()=>state==='pending'?null:64;
-const quality=()=>({status:qualityState,currentAverage:64,candidateScore:qualityState==='pending_ai'?null:64,finalScore:confirmedScore,pendingAnalysis:qualityState==='pending_ai'?1:0,analyzedCount:1,expectedCount:qualityState==='pending_ai'?2:1,canConfirm:qualityState==='pending_confirmation',version,...(qualityState==='final'?{confirmedBy:supervisor.name,confirmedAt:'2026-11-02T08:00:00Z'}:{})});
+const quality=()=>({status:qualityState,currentAverage:64,candidateScore:qualityState==='pending_ai'?null:64,finalScore:confirmedScore,pendingAnalysis:qualityState==='pending_ai'&&!confirmationBlockedReason?1:0,analyzedCount:1,expectedCount:qualityState==='pending_ai'&&!confirmationBlockedReason?2:1,canConfirm:qualityState==='pending_confirmation',confirmationBlockedReason,version,...(qualityState==='final'?{confirmedBy:supervisor.name,confirmedAt:'2026-11-02T08:00:00Z'}:{})});
 const resultRows=()=>qualityState==='final'?[{month,employee_user_id:employee.userId,kind:'quality',result:{score:confirmedScore},scoring_rule:'management_confirmed',confirmed_by:supervisor.name,confirmed_at:'2026-11-02T08:00:00Z',evidenceSummary:{qualityCandidate:64}}]:[];
 const overview=()=>({scopeMonth:month,months:[month],employees:[employee],monthly:[{...monthly,quality:quality()}],collaborations:[],results:resultRows()});
 function personalWorkspace(){return {
@@ -111,6 +112,19 @@ try{
   assert.equal(await page.getByText('周报质量最终均分',{exact:true}).count(),0);
   assert.equal(await page.getByRole('button',{name:'确认月度最终分'}).count(),0);
   assert.equal(detailRequests,0,'scoring details must remain lazy on the overview');
+  for(const [reason,note] of [['month_open','本月尚未结束。'],['collection_pending','本月周报尚未收集完成。']]){
+    confirmationBlockedReason=reason;
+    await page.reload();
+    await page.locator('.pf-confirm-list').getByText('当前已完成分析均分 · 64.0 分',{exact:true}).waitFor();
+    assert(await page.locator('.pf-confirm-list').getByText(note,{exact:false}).isVisible());
+    assert(await page.locator('.pf-metrics').getByText('当前已完成分析均分',{exact:true}).isVisible());
+    assert.equal(await page.getByText('月度质量候选均分',{exact:true}).count(),0);
+    assert.equal(await page.getByRole('button',{name:'确认月度最终分'}).count(),0);
+    assert.equal(confirmRequests.length,0);
+  }
+  confirmationBlockedReason=undefined;
+  await page.reload();
+  await page.getByRole('heading',{name:'员工月度结果',exact:true}).waitFor();
   await page.getByRole('tab',{name:'周报与证据',exact:true}).click();
   const assessmentPanel=page.getByRole('region',{name:'四模块评分依据'});
   await assessmentPanel.getByText('AI 候选',{exact:true}).waitFor();
@@ -165,6 +179,15 @@ try{
   await page.locator('.quality-assessment').evaluate(element=>element.scrollIntoView({block:'start'}));
   await page.screenshot({path:path.join(dir,'personal-mobile.png'),fullPage:true});
 
+  confirmationBlockedReason='month_open';
+  await page.reload();
+  const personalMetrics=page.locator('.pf-metrics');
+  await personalMetrics.getByText('本月尚未结束。',{exact:false}).waitFor();
+  assert(await personalMetrics.getByText('当前已完成分析均分',{exact:true}).isVisible());
+  assert(await personalMetrics.getByText('64.0',{exact:false}).isVisible());
+  assert.equal(await personalMetrics.getByText('待完成 AI 分析 0 份',{exact:false}).count(),0);
+  assert.equal(await page.getByRole('button',{name:'确认月度最终分'}).count(),0);
+  confirmationBlockedReason=undefined;
   qualityState='pending_confirmation';
   await page.reload();
   await page.getByText('月度质量候选分',{exact:true}).waitFor();

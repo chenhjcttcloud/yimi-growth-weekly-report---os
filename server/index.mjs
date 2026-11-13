@@ -197,7 +197,7 @@ const directorySync=createDirectorySync({query:querySqlRows,exec:execSql,sql:sql
 const departments=createDepartments({query:querySqlRows,exec:execSql,sql:sqlValue,employees:()=>loadManagedEmployees(),beforeScore:(month,id)=>managerReviews.freezeBossPlan(month,id),resolveScoreTarget:(month,id)=>managerReviews.bossTarget(month,id),resolveLeaderScoreTarget:(month,id)=>managerReviews.leaderScoreTarget(month,id)});
 let organizationMutationRunning=false;
 const managerReviews=createManagerReviews({query:querySqlRows,exec:execSql,sql:sqlValue,organization:departments.overview,reports:options=>performance.reports(options),isBossUserId:id=>bossAccessState.userIds.has(id)||(config.authMode==='mock'&&id==='mock_owner')});
-const performance = createPerformance({managerReviews,calendar:()=>chinaWorkCalendar,policyFor:systemSettings.policyFor,query: querySqlRows, exec: execSql, sql: sqlValue, readData:readSourceReadonly});
+const performance = createPerformance({managerReviews,calendar:()=>chinaWorkCalendar,policyFor:systemSettings.policyFor,isCollectingReports:liveReportSync.isCollectingReports,query: querySqlRows, exec: execSql, sql: sqlValue, readData:readSourceReadonly});
 const productManagementScores=createProductManagementScoreApi({query:querySqlRows,sql:sqlValue,sendJson,token:process.env.PRODUCT_MANAGEMENT_SCORE_API_TOKEN||''});
 const reportAutomation=createReportAutomation({query:querySqlRows,exec:execSql,sql:sqlValue,getConfig:systemSettings.reportAutomationConfig,getAiRequestsToday:systemSettings.reportAiRequestsToday,calendar:()=>chinaWorkCalendar,policyFor:systemSettings.policyFor,isRunning:()=>liveReportSync.isRunning(),start:options=>liveReportSync.start(options)});
 const scoringSetup=createScoringSetup({query:querySqlRows,exec:execSql,sql:sqlValue,isBoss:id=>bossAccessState.userIds.has(id)||(config.authMode==='mock'&&id==='mock_owner')});
@@ -669,7 +669,7 @@ async function route(req, res) {
         if(code==='request_body_too_large')return sendJson(res,413,{ok:false,error:code});
         if(code==='quality_report_not_found')return sendJson(res,404,{ok:false,error:code});
         if(error.status)return sendJson(res,error.status,{ok:false,error:code});
-        if(['quality_candidate_changed','quality_not_ready','quality_review_changed','result_locked','report_changed','report_rescore_not_supported'].includes(code))return sendJson(res,409,{ok:false,error:code});
+        if(['quality_candidate_changed','quality_not_ready','quality_month_open','quality_collection_pending','quality_review_changed','result_locked','report_changed','report_rescore_not_supported'].includes(code))return sendJson(res,409,{ok:false,error:code});
         if(/^(invalid_|quality_|report_|rescore_)[a-z_]+$/.test(code))return sendJson(res,400,{ok:false,error:code});
         throw error;
       }

@@ -76,8 +76,9 @@ lock=false;
 const results=await Promise.all([scheduler.tick(),createReportAutomation(options).tick()]);assert.equal(results.filter(r=>r.status==='started').length,1);assert.equal(aiCalls,1);assert.equal(queries,1);assert.equal(published,3,'initial queue, each completed report and final sync state project independently');
 const history=async()=>(await performance.personal('测试员工','test-staff')).history[0];
 const personal=await history();
-assert.equal(personal.quality,null);assert.equal(personal.qualityStatus,'pending_confirmation');
-assert.equal(personal.monthlyQuality.candidateScore,83.3);assert.equal(personal.timeliness.rate,100);
+assert.equal(personal.quality,null);assert.equal(personal.qualityStatus,'pending_ai');
+assert.equal(personal.monthlyQuality.confirmationBlockedReason,'month_open');
+assert.equal(personal.monthlyQuality.candidateScore,null);assert.equal(personal.monthlyQuality.currentAverage,83.3);assert.equal(personal.timeliness.rate,100);
 assert.equal(personal.collaboration,null,'AI must not generate collaboration ratings');
 assert.equal((await createReportAutomation(options).tick()).skipped,'not_due','restart preserves the completed slot');
 await nextCheck(scheduler,'2026-10-26T09:00:00+08:00','followup');
@@ -126,7 +127,7 @@ assert.equal(duringFailure.quality,null);assert.equal(duringFailure.qualityStatu
 assert.equal(duringFailure.monthlyQuality.currentAverage,null,'failed reanalysis does not mix old weekly points into the current mean');
 assert.equal(previousReport.displayQualityScore,83.3);assert.equal(previousReport.qualityDisplaySource,'previous');
 providerFailure='';await syncAt(15);
-const recovered=await history();assert.equal(recovered.quality,null);assert.equal(recovered.monthlyQuality.candidateScore,83.3);assert.equal(status.failed,0);
+const recovered=await history();assert.equal(recovered.quality,null);assert.equal(recovered.monthlyQuality.currentAverage,83.3);assert.equal(recovered.monthlyQuality.confirmationBlockedReason,'month_open');assert.equal(status.failed,0);
 const before=aiCalls;
 // Corrupt/incomplete cached analysis is retried instead of trusted as a complete grade.
 run("UPDATE weekly_reports SET content_json=json_set(content_json,'$.ai.modules',json('[]')) WHERE id='lark-report-test-task';");await syncAt(20);assert.equal(aiCalls,before+1);

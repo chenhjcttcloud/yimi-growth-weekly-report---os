@@ -3,6 +3,7 @@ import {mkdtemp,mkdir,readFile} from 'node:fs/promises';
 import path from 'node:path';
 import {spawnSync} from 'node:child_process';
 import {createLiveReportSync,normalizeLiveReport,validateAnalysis} from '../server/live-report-sync.mjs';
+import {createPerformance} from '../server/performance.mjs';
 import {REPORT_QUALITY_VERSION,REPORT_QUALITY_PROMPT_VERSION} from '../server/report-quality-scoring.mjs';
 import {makeReportQualityAnalysis} from './report-quality-test-fixtures.mjs';
 
@@ -178,6 +179,51 @@ try{
  const beforeForgery=calls;await sync.run(options);assert.equal(status.retryHeld,1);assert.equal(calls,beforeForgery+2,'invalid quoted evidence stops automatic retries after one correction attempt');assert.equal(savedReports('quality-evidence').length,1);assert.equal(JSON.parse(savedReports('quality-evidence')[0].content_json).ai,undefined);
  forgeQuotes=false;lowConfidence=true;await sync.run({mode:'rescore',targetMonth:savedReports('quality-evidence')[0].week_end.slice(0,7)});assert.equal(status.ok,true);const lowContent=JSON.parse(savedReports('quality-evidence')[0].content_json);assert.deepEqual(lowContent.ai.scores,[40,40,40,40]);assert.equal(lowContent.ai.modules[0].confidence,.1);assert(lowContent.ai.anomalies.includes('数据矛盾待补充说明'));
  data=JSON.parse(await readFile(path.join(dir,'prototypeData.json')));assert.equal(data.weekly_scores.find(r=>r.user_id==='quality-evidence')['总分'],40,'low scores, confidence and anomalies do not create an approval gate');
+
+ // A manager can approve one employee and week before the actual report arrives.
+ run("INSERT INTO employees(user_id,name) VALUES('approved-worker','测试延期员工'),('unapproved-worker','测试同事');");
+ const approval=spawnSync(process.execPath,[
+  'scripts/record-weekly-on-time-approval.mjs','--db',db,'--employee','测试延期员工','--week-end','2026-10-16',
+  '--reason','仅供审计的测试延期原因','--actor','测试审批人','--apply'
+ ],{encoding:'utf8'});
+ assert.equal(approval.status,0,approval.stderr);
+ assert.equal(JSON.parse(approval.stdout).status,'recorded');
+ assert.deepEqual(savedReports('approved-worker'),[],'approval does not create a submitted report');
+ const approvedAt='2026-10-19T08:00:00+08:00',nextWeekAt='2026-10-23T21:00:00+08:00';
+ const lateItem=(id,userId,at)=>({...item,task_id:id,from_user_id:userId,commit_time:Date.parse(at)/1000});
+ incoming=[
+  lateItem('approved-week','approved-worker',approvedAt),
+  lateItem('next-week','approved-worker',nextWeekAt),
+  lateItem('same-week-other-worker','unapproved-worker',approvedAt),
+ ];
+ await sync.run(options);
+ await sync.run(options);
+ const approved= savedReports('approved-worker').find(row=>row.week_end==='2026-10-16');
+ assert.equal(approved.status,'准时');
+ assert.equal(approved.is_late,0);
+ assert.equal(approved.submitted_at,new Date(approvedAt).toISOString());
+ assert.equal(savedReports('approved-worker').find(row=>row.week_end==='2026-10-23').status,'迟交');
+ assert.equal(savedReports('unapproved-worker')[0].status,'迟交');
+
+ // The authoritative calculation must also handle rows collected before approval.
+ run("UPDATE weekly_reports SET status='迟交',is_late=1 WHERE id='lark-report-approved-week';");
+ await sync.project();
+ data=JSON.parse(await readFile(path.join(dir,'prototypeData.json')));
+ assert.equal(data.weekly_scores.find(row=>row['源记录ID']==='lark-report-approved-week')['状态'],'准时');
+ assert(!JSON.stringify(data).includes('仅供审计的测试延期原因'));
+ const performance=createPerformance({
+  query:async statement=>run(statement,true),exec:async statement=>run(statement),sql,readData:()=>data,
+  policyFor:async()=>({deadlineTime:'20:00',weights:[30,25,25,20]}),
+  managerReviews:{snapshot:async()=>({scores:[],bossScores:[]}),progress:()=>({complete:false})},
+  now:()=>new Date('2026-10-24T00:00:00+08:00'),
+ });
+ const {monthly}=await performance.overview({employeeUserId:'approved-worker',month:'2026-10'});
+ const row=monthly.find(value=>value.userId==='approved-worker');
+ assert.equal(row.reports.find(report=>report.end==='2026-10-16').status,'准时');
+ assert.equal(row.timeliness.onTime,1);
+ assert.equal(row.timeliness.late,1);
+ assert(!JSON.stringify(row).includes('仅供审计的测试延期原因'));
+
  assert.equal(run('PRAGMA integrity_check;').trim(),'ok');
  console.log('live report sync tests passed: pagination, templates, normalization, AI validation, persistence, historical projections, cache/retry, inactive mixed/all batches, no empty imports, pre-import/queued/in-flight stop, closed-history maintenance allowlist and rechecks, no reactivation, zero real upstream requests');
 }finally{console.log('Test artifacts retained:',dir);}

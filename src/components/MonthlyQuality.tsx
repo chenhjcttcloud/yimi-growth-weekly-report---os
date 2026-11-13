@@ -1,6 +1,11 @@
 import { useState } from 'react';
 import { monthText, ResultStatus, scoreText } from './PerformanceUI';
 
+export const qualityConfirmationBlockNotes = {
+  month_open: '本月尚未结束。月结并完成周报收集与评分后可确认最终分。',
+  collection_pending: '本月周报尚未收集完成。收集和评分完成后可确认最终分。',
+};
+
 export interface MonthlyQualitySummary {
   status: 'pending_ai' | 'pending_confirmation' | 'final' | 'revised_final' | 'no_reports';
   currentAverage: number | null;
@@ -12,6 +17,7 @@ export interface MonthlyQualitySummary {
   confirmedBy?: string;
   confirmedAt?: string;
   canConfirm?: boolean;
+  confirmationBlockedReason?: keyof typeof qualityConfirmationBlockNotes;
   version?: string;
 }
 
@@ -27,11 +33,16 @@ export function monthlyQualityView(quality?: MonthlyQualitySummary | null, month
   if (quality?.status === 'final' || quality?.status === 'revised_final') {
     return { label: `${month ? monthText(month) : '月度'}周报质量最终分`, value: quality.finalScore, status: '已确认最终', note: `确认人 ${quality.confirmedBy || '—'} · 确认时间 ${qualityDate(quality.confirmedAt)}`, confirmed: true };
   }
+  if (quality?.status === 'pending_ai' || quality?.confirmationBlockedReason) {
+    const block = quality.confirmationBlockedReason;
+    const pending = `待完成 AI 分析 ${quality.pendingAnalysis} 份`;
+    const note = block
+      ? [qualityConfirmationBlockNotes[block], quality.pendingAnalysis > 0 ? pending : null].filter(Boolean).join(' ')
+      : `${pending} · 仅作周报质量参考`;
+    return { label: '当前已完成分析均分', value: quality.currentAverage, status: '暂定', note, confirmed: false };
+  }
   if (quality?.status === 'pending_confirmation') {
     return { label: '月度质量候选分', value: quality.candidateScore, status: '待管理人员确认', note: 'AI 候选分尚未确认，仅作周报质量参考。', confirmed: false };
-  }
-  if (quality?.status === 'pending_ai') {
-    return { label: '当前已完成分析均分', value: quality.currentAverage, status: '暂定', note: `待完成 AI 分析 ${quality.pendingAnalysis} 份 · 仅作周报质量参考`, confirmed: false };
   }
   return { label: '月度周报质量', value: null, status: '暂无可评分周报', note: '有效周报完成 AI 分析后会展示质量候选分。', confirmed: false };
 }
@@ -50,7 +61,7 @@ export function MonthlyQualityResultRow({ quality, target }: { quality?: Monthly
   const [error, setError] = useState('');
   const view = monthlyQualityView(quality);
   const version = quality?.version;
-  const canConfirm = Boolean(target && quality?.canConfirm && quality.status === 'pending_confirmation' && quality.candidateScore != null && version);
+  const canConfirm = Boolean(target && quality?.canConfirm && !quality.confirmationBlockedReason && quality.status === 'pending_confirmation' && quality.candidateScore != null && version);
   const validOverride = score.trim() !== '' && Number.isFinite(Number(score)) && Number(score) >= 0 && Number(score) <= 100 && Boolean(note.trim());
 
   async function confirm() {
@@ -63,6 +74,10 @@ export function MonthlyQualityResultRow({ quality, target }: { quality?: Monthly
         body: JSON.stringify({ kind: 'quality', userId: target.userId, month: target.month, version, ...(override ? { score: Number(score), note: note.trim() } : {}) }),
       });
       const result = await response.json();
+      if (response.status === 409) {
+        if (result.error === 'quality_month_open') throw Error(qualityConfirmationBlockNotes.month_open);
+        if (result.error === 'quality_collection_pending') throw Error(qualityConfirmationBlockNotes.collection_pending);
+      }
       if (!response.ok) throw Error(response.status === 403 ? '没有确认该员工质量分的权限。' : response.status === 409 ? '月度状态可能已更新，请刷新后查看。' : result.error === 'quality_adjustment_reason_required' ? '请填写人工调整原因。' : '月度质量分确认失败，请重试。');
       target.onUpdated();
     } catch (reason) {

@@ -1,7 +1,8 @@
 import {createHash,randomUUID} from 'node:crypto';
 import {readFile,writeFile,rename,mkdir} from 'node:fs/promises';
 import path from 'node:path';
-import {weeklyReportSchedule,fridayOfWeek} from './weekly-report-schedule.mjs';
+import {weeklyReportSchedule,fridayOfWeek,monthFridays} from './weekly-report-schedule.mjs';
+import {isEligibleOnTimeApproval,readWeeklyOnTimeApprovals} from './weekly-on-time-approvals.mjs';
 import {REPORT_QUALITY_VERSION,REPORT_QUALITY_PROMPT_VERSION,REPORT_QUALITY_WEIGHTS,buildReportQualityPrompt,reportQualityTotal,validateReportQualityAnalysis,qualityAnalysisDiagnostic,isReportQualityValidationFailure} from './report-quality-scoring.mjs';
 import {buildReportEvidenceFragments} from './report-evidence-fragments.mjs';
 import {reportFacts,previousQualitySnapshot,currentQualityCached,archivedQuality,legacyReportScore} from './report-rescore-state.mjs';
@@ -65,6 +66,7 @@ export function validateAnalysis(value,facts,qualityOptions){
 }
 export function createLiveReportSync({query,exec,sql,config,settings,refreshDirectory,writeStatus,reserveAiRequest=async()=>true,measureAiRequest=(_model,operation)=>operation(),onComplete=async()=>{},observeEmployee=async()=>{},calendar=()=>({}),fetcher=fetch,pause=ms=>new Promise(resolve=>setTimeout(resolve,ms))}){
  let running=false,statusWrites=Promise.resolve(),projection=Promise.resolve(),collectionStartDate='';
+ let collecting=null;
  let modelQueue=Promise.resolve(),modelCooldownUntil=0;
  const emit=state=>{statusWrites=statusWrites.catch(()=>{}).then(()=>writeStatus(state));return statusWrites;};
  const jsonFile=async name=>{try{return JSON.parse(await readFile(path.join(config.dataDir,name+'.json'),'utf8'));}catch{return {};}};
@@ -152,6 +154,7 @@ export function createLiveReportSync({query,exec,sql,config,settings,refreshDire
  }
  async function project(){
   const old=await jsonFile('prototypeData'),byPeriod={};const stored=await query('SELECT * FROM weekly_reports ORDER BY week_end,submitted_at;');const roster=await query('SELECT * FROM employees WHERE is_active=1;');const rows=[];const periods=new Map();
+  const approvedOnTime=await readWeeklyOnTimeApprovals({query,sql});
   for(const r of stored){
    const c=JSON.parse(r.content_json),legacy=c.source?.provider==='legacy-reportos';
    if(!legacy&&c.source?.provider!=='feishu-report')continue;
@@ -160,7 +163,8 @@ export function createLiveReportSync({query,exec,sql,config,settings,refreshDire
    const score=legacy?legacyReportScore(c):a?reportQualityTotal(a.scores,weights):null;
    const p={id:c['周期ID']||'period-'+r.week_end,label:r.week_label,start:r.week_start,end:r.week_end,range:r.week_start+' — '+r.week_end,exempt_people:[],status:'历史'};
    periods.set(p.end,p);
-   rows.push({...c,user_id:r.employee_user_id,'姓名':r.employee_name,'部门':r.department,'源记录ID':r.id,'周次':r.week_label,'开始日期':r.week_start,'结束日期':r.week_end,'提交时间':r.submitted_at,'状态':r.status,'总分':score});
+   const status=r.status==='迟交'&&approvedOnTime(r.employee_user_id,r.week_end)&&isEligibleOnTimeApproval(r.status,Date.parse(r.submitted_at))?'准时':r.status;
+   rows.push({...c,user_id:r.employee_user_id,'姓名':r.employee_name,'部门':r.department,'源记录ID':r.id,'周次':r.week_label,'开始日期':r.week_start,'结束日期':r.week_end,'提交时间':r.submitted_at,'状态':status,'总分':score});
    byPeriod[p.id]??={meta:{provider:'moonshot',model:config.kimiFollowupModel,generatedAt:new Date().toISOString(),source:'feishu-report'},executiveSummary:[],collectiveFocus:[],attentionQueue:[],mustReadReports:[],themes:[],employeeInsights:[],feishuTaskPlan:{}};
    if(a)byPeriod[p.id].employeeInsights.push({userId:r.employee_user_id,name:r.employee_name,coachSummary:typeof a.summary==='string'?a.summary:'',coachQuestions:Array.isArray(a.questions)?a.questions:[],taskCandidates:(Array.isArray(a.tasks)?a.tasks:[]).filter(task=>task&&typeof task==='object').map(t=>({...t,ownerUserId:r.employee_user_id,owner:r.employee_name,department:r.department,source:'飞书周报 · Kimi 分析',dueDate:shift(r.week_end,7)}))});
   }
@@ -217,6 +221,7 @@ export function createLiveReportSync({query,exec,sql,config,settings,refreshDire
    if(!config.feishuAppId||!config.feishuAppSecret)throw Error('feishu_not_configured');
    const end=options.end||today,start=options.start||reportConfig.startDate||end.slice(0,7)+'-01';
    if(!/^\d{4}-\d{2}-\d{2}$/.test(start)||!/^\d{4}-\d{2}-\d{2}$/.test(end)||start>end)throw Error('invalid_sync_dates');
+   if(collecting)collecting={start,end};
    stat.period={label:start+' 至 '+end,range:''};await emit(stat);
    const token=await request('https://open.feishu.cn/open-apis/auth/v3/tenant_access_token/internal',{app_id:config.feishuAppId,app_secret:config.feishuAppSecret});
    let page='',items=[],seen=new Set();
@@ -244,6 +249,7 @@ export function createLiveReportSync({query,exec,sql,config,settings,refreshDire
   }
   const skippedMessage=()=>`${stat.skippedInactive?`；已跳过 ${stat.skippedInactive} 份已停用人员汇报`:''}${stat.skippedInactiveAnalysis?`；已停止 ${stat.skippedInactiveAnalysis} 份停用人员的排队分析`:''}`;
   if(!reports.size){await emit({...stat,running:false,phase:'done',message:rescore?'所选月份没有可补跑的在职员工周报':`本次没有需要导入的汇报${skippedMessage()}。`,finishedAt:new Date().toISOString()});return;}
+  const approvedOnTime=await readWeeklyOnTimeApprovals({query,sql,month:rescore?options.targetMonth:undefined});
   const work=[];let batch='';
   function monthCell(report){return stat.byMonth[report.end.slice(0,7)]??={total:0,completed:0,failed:0,cached:0,remaining:0,active:0,skipped:0};}
   function recordRetryHold(cell){stat.retryHeld++;cell.retryHeld=(cell.retryHeld||0)+1;}
@@ -268,7 +274,7 @@ export function createLiveReportSync({query,exec,sql,config,settings,refreshDire
    if(historicalInactive)stat.historicalInactiveReports++;
    if(rescore&&ai){stat.cached++;cell.cached++;continue;}
    const snapshot=previousQualitySnapshot(prior,old?.source_hash||'',policy.weights||weights),history=ai?previous.aiAnalysisHistory||[]:archivedQuality(prior,old?.source_hash||'',policy.weights||weights);
-   const schedule=weeklyReportSchedule(report.end,calendar(),policy.deadlineTime),late=!schedule.exempt&&!schedule.calendarPending&&Date.parse(report.submittedAt)>Date.parse(schedule.dueAt||'');
+   const schedule=weeklyReportSchedule(report.end,calendar(),policy.deadlineTime),late=!schedule.exempt&&!schedule.calendarPending&&Date.parse(report.submittedAt)>Date.parse(schedule.dueAt||'')&&!approvedOnTime(report.userId,report.end);
    const attempts=Array.isArray(previous.aiAnalysisAttempts)?previous.aiAnalysisAttempts:[];
    // Older diagnostic entries lacked a model. Keep the original attribution through later model changes.
    const legacyModel=previous.aiLegacyAttemptsModel||previous.qualityRefresh?.model||previous.aiModel||analysisBatch.model;
@@ -288,6 +294,7 @@ export function createLiveReportSync({query,exec,sql,config,settings,refreshDire
    else work.push({report,content,automaticAttemptsLeft:rescore?Infinity:MAX_ANALYSIS_ATTEMPTS-automaticFailures});
   }
   if(batch)await exec(`UPDATE import_batches SET record_count=${stat.rowCount} WHERE id=${sql(batch)};`);
+  if(!rescore)collecting=null;
   stat.aiRequestBudget=work.length*MAX_ANALYSIS_ATTEMPTS;
   updateRemaining();
   if(!stat.rowCount){await emit({...stat,running:false,phase:'done',message:`本次没有需要导入的汇报${skippedMessage()}。`,finishedAt:new Date().toISOString()});return;}
@@ -344,9 +351,18 @@ export function createLiveReportSync({query,exec,sql,config,settings,refreshDire
  }
  async function start(options={},beforeStart){
   validateOptions(options);if(running)return false;running=true;
-  try{await beforeStart?.();await emit({ok:true,running:true,phase:'queued',mode:options.mode||'sync',...(options.targetMonth?{targetMonth:options.targetMonth}:{}),message:'同步已开始'});}catch(error){running=false;throw error;}
-  void run(options).catch(async(error)=>{await emit({ok:false,running:false,phase:'failed',mode:options.mode||'sync',targetMonth:options.targetMonth,message:'任务失败，请检查评分诊断、日期或服务配置后重试',diagnostics:[analysisDiagnostic(error)]});}).finally(()=>{running=false;});
+  collecting=options.mode==='rescore'?null:{start:options.start,end:options.end};
+  try{await beforeStart?.();await emit({ok:true,running:true,phase:'queued',mode:options.mode||'sync',...(options.targetMonth?{targetMonth:options.targetMonth}:{}),message:'同步已开始'});}catch(error){collecting=null;running=false;throw error;}
+  void run(options).catch(async(error)=>{await emit({ok:false,running:false,phase:'failed',mode:options.mode||'sync',targetMonth:options.targetMonth,message:'任务失败，请检查评分诊断、日期或服务配置后重试',diagnostics:[analysisDiagnostic(error)]});}).finally(()=>{collecting=null;running=false;});
   return true;
  }
- return {start,isRunning:()=>running,run,project};
+ function isCollectingReports(month){
+  if(!collecting)return false;
+  const fridays=monthFridays(month);
+  // A work week is attributed to its Friday. Its submissions can fall on
+  // the previous month's workdays or through the following Monday.
+  return (!collecting.end||collecting.end>=shift(fridays[0],-4)) &&
+    (!collecting.start||collecting.start<=shift(fridays.at(-1),3));
+ }
+ return {start,isRunning:()=>running,isCollectingReports,run,project};
 }

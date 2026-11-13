@@ -117,8 +117,10 @@ assert.equal(afterWorkspace.rollingMonths,1,'only management-confirmed quality c
 assert.equal(afterWorkspace.rollingQuality,77);
 const octoberQuality=afterWorkspace.history.find(r=>r.month==='2026-10');
 assert.equal(octoberQuality.quality,null);
-assert.equal(octoberQuality.qualityStatus,'pending_confirmation');
-assert.equal(octoberQuality.monthlyQuality.candidateScore,69);
+assert.equal(octoberQuality.qualityStatus,'pending_ai');
+assert.equal(octoberQuality.monthlyQuality.confirmationBlockedReason,'month_open');
+assert.equal(octoberQuality.monthlyQuality.candidateScore,null);
+assert.equal(octoberQuality.monthlyQuality.currentAverage,69);
 assert.equal(octoberQuality.monthlyQuality.canConfirm,false);
 assert(!Object.hasOwn(octoberQuality.monthlyQuality,'version'),'confirmation version is manager-only');
 assert(!JSON.stringify(afterWorkspace).includes('B_PRIVATE'));assert(!JSON.stringify(afterWorkspace).includes('AMBIGUOUS_PRIVATE'));
@@ -188,7 +190,7 @@ const pretender=await current.workspace.workspace({name:user.name,userId:'not-in
 const versions=()=>run(db,"SELECT COUNT(*) AS n FROM automatic_performance_results WHERE employee_user_id='a';",true)[0].n;
 const versionA=versions();weights=[100,0,0,0];current.reset();
 const changed=await current.performance.personal(user.name,'a');
-assert.equal(changed.history.find(r=>r.month==='2026-10').monthlyQuality.candidateScore,90);assert(versions()>versionA);
+assert.equal(changed.history.find(r=>r.month==='2026-10').monthlyQuality.currentAverage,90);assert(versions()>versionA);
 assert.deepEqual(changed.history.find(r=>r.month==='2026-10').collaboration,83.5,'published collaboration remains immutable');
 assert.equal(changed.history.find(r=>r.month==='2026-04').quality,77,'legacy human results remain authoritative');
 const versionB=versions();await current.performance.personal(user.name,'a');assert.equal(versions(),versionB,'same inputs must not append a revision');

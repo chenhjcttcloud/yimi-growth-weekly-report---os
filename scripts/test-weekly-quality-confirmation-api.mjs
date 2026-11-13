@@ -51,6 +51,11 @@ const provider=path.join(dir,'provider.mjs'),providerLog=path.join(dir,'provider
 await writeFile(provider,`import {appendFileSync,existsSync} from 'node:fs';
 import {setTimeout as pause} from 'node:timers/promises';
 import {makeReportQualityAnalysis} from ${JSON.stringify(new URL('./report-quality-test-fixtures.mjs',import.meta.url).href)};
+const RealDate=Date, now=RealDate.parse('2026-11-13T17:00:00+08:00');
+globalThis.Date=class extends RealDate {
+ constructor(...args){super(...(args.length?args:[now]));}
+ static now(){return now;}
+};
 globalThis.fetch=async (url,request)=>{
  if(String(url)!=='https://weekly-quality-fixture.invalid/v1/chat/completions')throw Error('fixture blocked all non-model requests');
  const {report,week}=JSON.parse(JSON.parse(request.body).messages[1].content);
@@ -104,6 +109,17 @@ try{
  const initialWeek=initial.body.monthly.reports.find(report=>report.id==='score-first');
  assert.equal(initialWeek.qualityAssessment.modules[0].evidence[0].quote,facts.results);
  assert.equal((await confirm({version:'a'.repeat(64)})).status,409);
+
+ const openMonth='2026-11';
+ storeReport('current-month-score','other','2026-11-06',[70,82,78,70]);
+ const openDetail=await api(`/api/performance/employee-month?month=${openMonth}&employeeId=other`,'boss');
+ assert.equal(openDetail.body.monthly.quality.currentAverage,75);
+ assert.equal(openDetail.body.monthly.quality.pendingAnalysis,0);
+ assert.equal(openDetail.body.monthly.quality.confirmationBlockedReason,'month_open');
+ assert.equal(openDetail.body.monthly.quality.canConfirm,false);
+ const premature=await confirm({userId:'other',month:openMonth,version:'a'.repeat(64)},'boss');
+ assert.equal(premature.status,409);
+ assert.equal(premature.body.error,'quality_month_open');
 
  const next=reportContent('score-second',[81,81,81,81]);
  run(`UPDATE weekly_reports SET content_json=${quote(JSON.stringify(next))} WHERE id='score-second';`);

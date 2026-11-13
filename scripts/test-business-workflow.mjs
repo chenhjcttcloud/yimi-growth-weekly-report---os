@@ -8,10 +8,10 @@ import {chromium} from 'playwright';
 // process; an unexpected request fails closed. Artifacts are deliberately retained.
 await mkdir('outputs/tests',{recursive:true});
 const dir=await mkdtemp(path.resolve('outputs/tests/business-workflow-')),data=dir+'/data',db=dir+'/test.sqlite';await mkdir(data);
-// The provider records, editable scoring month and UI all represent October.
-// Fix only the isolated test clocks so the complete flow survives a month change.
+// Keep the October workflows editable until the month-end confirmation check.
 const fixtureNow=Date.parse('2026-10-26T02:00:00Z');
-const clockSource=`const RealDate=Date;globalThis.Date=class extends RealDate{constructor(...args){super(...(args.length?args:[${fixtureNow}]));}static now(){return ${fixtureNow};}};`;
+const afterMonthClose=Date.parse('2026-11-01T00:00:00+08:00');
+const clockSource=now=>`const fixedNow=${now},RealDate=Date;globalThis.Date=class extends RealDate{constructor(...args){super(...(args.length?args:[fixedNow]));}static now(){return fixedNow;}};`;
 const sql=v=>"'"+String(v).replaceAll("'","''")+"'";
 const run=(s,json=false)=>{const r=spawnSync('sqlite3',['-bail',...(json?['-json']:[]),db],{input:s,encoding:'utf8'});if(r.status)throw Error(r.stderr);return json?JSON.parse(r.stdout||'[]'):r.stdout;};
 run(await readFile('db/schema.sql','utf8'));
@@ -24,7 +24,7 @@ const report={task_id:'report-staff',from_user_id:'staff',from_user_name:names.s
 await writeFile(dir+'/providers.mjs',`
 import {appendFile,readFile} from 'node:fs/promises';
 import {makeReportQualityAnalysis} from ${JSON.stringify(new URL('./report-quality-test-fixtures.mjs',import.meta.url).href)};
-${clockSource}
+${clockSource('Number(process.env.BUSINESS_FIXTURE_NOW)')}
 const names=${JSON.stringify(names)},report=${JSON.stringify(report)};let rotations=0;const expired=new Set();
 globalThis.fetch=async(url,options={})=>{
  const u=new URL(String(url)),body=JSON.parse(options.body||'{}'),flags=JSON.parse(await readFile(${JSON.stringify(control)},'utf8'));let value,status=200,kind='';
@@ -52,7 +52,7 @@ globalThis.fetch=async(url,options={})=>{
 const port=12400+Math.floor(Math.random()*300),base='http://127.0.0.1:'+port;
 const env={...process.env,AUTH_MODE:'feishu',SESSION_SECRET:'isolated-full-business-test',SERVER_PORT:String(port),BASE_URL:base,APP_DATA_DIR:data,WEEKLY_REPORT_DB_PATH:db,WEEKLY_REPORT_UPLOAD_DIR:dir+'/uploads',BACKUP_DIR:dir+'/backups',STATIC_DIR:process.env.TEST_STATIC_DIR||'outputs/full-business-fixes-20261028',LARK_REPORT_SYNC_STATUS_PATH:dir+'/sync-status.json',FEISHU_APP_ID:'cli_fixture',FEISHU_APP_SECRET:'fixture-secret',FEISHU_COMPANY_CHAT_ID:'fixture-chat',MOONSHOT_API_KEY:'fixture-key',MOONSHOT_BASE_URL:'https://fixture-ai.invalid/v1',KIMI_FOLLOWUP_MODEL:'fixture',BOSS_VIEW_USER_IDS:'boss',SCORING360_CONFIG_MANAGER_USER_IDS:'admin',DEV_VIEW_SWITCH_ENABLED:'false',CHINA_CALENDAR_AUTO_UPDATE_ENABLED:'false',LARK_REPORT_AUTO_SYNC_ENABLED:'false',LARK_AUTH_MONITOR_ENABLED:'false',SCORING360_REMINDER_ENABLED:'false',WEEKLY_REMINDER_ENABLED:'false',WEEKLY_UPDATE_REMINDER_ENABLED:'false',FEISHU_EVENT_VERIFICATION_TOKEN:'fixture-event-token',FEISHU_EVENT_ENCRYPT_KEY:''};
 let server,browser,logs='';const cookies={},stages=[];
-async function start(){server=spawn(process.execPath,['--import',dir+'/providers.mjs','server/index.mjs'],{env,stdio:['ignore','pipe','pipe']});server.stderr.on('data',x=>logs+=x);for(let i=0;i<120;i++){if(server.exitCode!==null)throw Error(logs);try{if((await fetch(base+'/health')).ok)return;}catch{}await new Promise(r=>setTimeout(r,100));}throw Error('startup_timeout');}
+async function start(now=fixtureNow){server=spawn(process.execPath,['--import',dir+'/providers.mjs','server/index.mjs'],{env:{...env,BUSINESS_FIXTURE_NOW:String(now)},stdio:['ignore','pipe','pipe']});server.stderr.on('data',x=>logs+=x);for(let i=0;i<120;i++){if(server.exitCode!==null)throw Error(logs);try{if((await fetch(base+'/health')).ok)return;}catch{}await new Promise(r=>setTimeout(r,100));}throw Error('startup_timeout');}
 async function stop(){if(server?.exitCode===null){server.kill('SIGTERM');await new Promise(r=>server.once('exit',r));}}
 async function call(route,id='staff',body,extra={}){const response=await fetch(base+route,{method:body?'POST':'GET',headers:{...(cookies[id]?{cookie:cookies[id]}:{}),'content-type':'application/json',...extra},body:body?JSON.stringify(body):undefined,redirect:'manual'});return {status:response.status,body:await response.json()};}
 async function login(id){const r=await fetch(base+'/auth/login',{redirect:'manual'}),state=new URL(r.headers.get('location')).searchParams.get('state'),cookie=r.headers.getSetCookie().find(v=>v.startsWith('wos_oauth_state=')).split(';')[0];const callback=await fetch(base+'/auth/feishu/callback?code='+id+'&state='+encodeURIComponent(state),{headers:{cookie},redirect:'manual'});if(callback.status===302){cookies[id]=callback.headers.getSetCookie().find(v=>v.startsWith('wos_session=')).split(';')[0];const payload=JSON.parse(Buffer.from(cookies[id].split('=')[1].split('.')[0],'base64url'));assert(!payload.userAccessToken&&!payload.refreshToken);assert(payload.sessionId);}return callback.status;}
@@ -66,14 +66,19 @@ try{
  assert.equal((await call('/api/lark-report-sync','admin',{start:'2026-10-01',end:'2026-10-28'})).status,202);
  let sync;for(let i=0;i<100;i++){sync=(await call('/api/lark-report-sync','admin')).body;if(!sync.processRunning&&!sync.status?.running)break;await new Promise(r=>setTimeout(r,100));}
  const month='2026-10',ownMonth=async()=> (await call('/api/performance/me')).body.history.find(row=>row.month===month);
- assert.equal(run('SELECT count(*) FROM weekly_reports;').trim(),'1');const history=await ownMonth();assert.equal(history.quality,null);assert.equal(history.monthlyQuality.candidateScore,83.3);assert.equal(history.qualityStatus,'pending_confirmation');assert.equal(history.collaboration,null);
- const qualityCandidate=(await call(`/api/performance/employee-month?employeeId=staff&month=${month}`,'admin')).body.monthly.quality;
- const confirmation={kind:'quality',userId:'staff',month,version:qualityCandidate.version};
+ const adminQuality=async()=> (await call(`/api/performance/employee-month?employeeId=staff&month=${month}`,'admin')).body.monthly.quality;
+ assert.equal(run('SELECT count(*) FROM weekly_reports;').trim(),'1');const history=await ownMonth();
+ assert.equal(history.quality,null);assert.equal(history.qualityStatus,'pending_ai');assert.equal(history.collaboration,null);
+ for(const quality of [history.monthlyQuality,await adminQuality()]){
+   assert.equal(quality.currentAverage,83.3);assert.equal(quality.candidateScore,null);
+   assert.equal(quality.confirmationBlockedReason,'month_open');assert.equal(quality.canConfirm,false);
+ }
+ const confirmation={kind:'quality',userId:'staff',month,version:'0'.repeat(64)};
  assert.equal((await call('/api/performance/confirm','staff',confirmation)).status,403);
- assert.equal((await call('/api/performance/confirm','admin',confirmation)).status,200);
- assert.equal((await ownMonth()).quality,83.3);assert.equal((await ownMonth()).qualityStatus,'final');
- const analysed=(await providerCalls()).filter(c=>c.kind==='ai').length;
- await call('/api/lark-report-sync','admin',{start:'2026-10-01',end:'2026-10-28'});for(let i=0;i<100;i++){sync=(await call('/api/lark-report-sync','admin')).body;if(!sync.processRunning&&!sync.status?.running)break;await new Promise(r=>setTimeout(r,100));}assert.equal((await providerCalls()).filter(c=>c.kind==='ai').length,analysed);assert.equal((await ownMonth()).quality,83.3);stages.push('飞书汇报→四模块 AI 候选分→管理确认最终分、重复收集复用评分');
+ const earlyConfirmation=await call('/api/performance/confirm','admin',confirmation);
+ assert.equal(earlyConfirmation.status,409);assert.equal(earlyConfirmation.body.error,'quality_month_open');
+ assert.equal(run("SELECT count(*) FROM performance_results WHERE kind='quality';").trim(),'0');
+ stages.push('飞书汇报生成四模块 AI 评分，月内显示当前均分并拒绝提前确认');
  assert.equal((await call('/api/scoring360/setup','admin',{month,action:'prepare'})).status,200);assert.equal((await call('/api/scoring360/setup','admin',{month,action:'assign',pairs:['staff','head','admin'].map(evalueeUserId=>({evalueeUserId,evaluatorUserId:'peer'}))})).status,200);assert.equal((await call('/api/scoring360/setup','admin',{month,action:'open'})).status,200);
  const setup=(await call('/api/scoring360/setup?month='+month,'admin')).body,cycleId=setup.cycle.id;
  for(const target of ['staff','head','admin']){const a=setup.assignments.find(a=>a.evaluee_user_id===target);assert(a);assert.equal((await call('/api/scoring360/submit','peer',{cycleId,scores:[{assignmentId:a.id,score:target==='staff'?90:80,comment:'已核实共同交付结果'}]})).body.saved,1);}
@@ -92,7 +97,7 @@ try{
  await call('/api/weekly-reminders/send','admin',{dryRun:false});assert.equal((await providerCalls()).filter(c=>c.kind==='direct_message').length,sends.length);assert.deepEqual(run('SELECT id FROM weekly_reminder_sends ORDER BY id;',true),ledgerIds);run("INSERT INTO employees(user_id,name,department) VALUES('late','后加入的测试员工','团队');");await writeFile(control,JSON.stringify({messageTimeout:true}));await call('/api/weekly-reminders/send','admin',{dryRun:false});assert.equal(run("SELECT status FROM weekly_reminder_sends WHERE recipient_user_id='late';").trim(),'uncertain');const afterLostAck=(await providerCalls()).filter(c=>c.kind==='direct_message').length;await writeFile(control,'{}');await call('/api/weekly-reminders/send','admin',{dryRun:false});assert.equal((await providerCalls()).filter(c=>c.kind==='direct_message').length,afterLostAck);stages.push('周报机器人HTTP提醒、按user_id发给在职员工、重复请求不重复发送且保留记录ID');
  const backup=await call('/api/operations/backup','admin',{});assert.equal(backup.status,200);const verification=await call('/api/operations/verify','admin',{id:backup.body.result.id});assert.equal(verification.status,200);assert.equal((await call('/api/operations','admin')).body.config.alertsEnabled,false);stages.push('服务器本地备份→独立目录恢复校验、告警默认关闭');
  if(process.env.BUSINESS_TEST_SKIP_BROWSER!=='true'){
- browser=await chromium.launchPersistentContext(dir+'/browser',{channel:'chrome',headless:true,viewport:{width:1440,height:1000}});await browser.addInitScript({content:clockSource});const page=await browser.newPage(),errors=[];page.setDefaultTimeout(10000);page.on('pageerror',e=>{errors.push(e.message);console.error('Browser:',e.stack);});
+ browser=await chromium.launchPersistentContext(dir+'/browser',{channel:'chrome',headless:true,viewport:{width:1440,height:1000}});await browser.addInitScript({content:clockSource(fixtureNow)});const page=await browser.newPage(),errors=[];page.setDefaultTimeout(10000);page.on('pageerror',e=>{errors.push(e.message);console.error('Browser:',e.stack);});
  for(const id of ['staff','head','admin','boss']){await browser.addCookies([{name:'wos_session',value:cookies[id].split('=')[1],url:base}]);await page.goto(base+'/?page='+(['boss'].includes(id)?'dashboard':'growth'));await page.screenshot({path:dir+'/before-nav-'+id+'.png',fullPage:true});await page.getByRole('button',{name:'评分工作台',exact:true}).waitFor();const personalNav=page.getByRole('button',{name:'个人最终结果',exact:true});await personalNav.waitFor({state:['boss','admin'].includes(id)?'hidden':'visible'});assert.equal(await personalNav.count(),['boss','admin'].includes(id)?0:1);if(id==='admin'){await page.getByRole('button',{name:/切换视角，当前/}).click();await page.getByRole('button',{name:/^本人视角/}).click();await personalNav.waitFor();await page.locator('.pf-metric-value').nth(2).waitFor();assert.match(await page.locator('.pf-metric-value').nth(2).innerText(),/83\.0/);await page.screenshot({path:dir+'/admin-personal.png',fullPage:true});await page.getByRole('button',{name:/切换视角，当前/}).click();await page.getByRole('button',{name:/^管理视角/}).click();await page.getByRole('button',{name:'系统设置',exact:true}).waitFor();}assert.equal(await page.getByRole('button',{name:'系统设置',exact:true}).count(),['boss','admin'].includes(id)?1:0);if(['staff','head'].includes(id)){await page.locator('.pf-metric-value').nth(2).waitFor();assert.match(await page.locator('.pf-metric-value').nth(2).innerText(),id==='staff'?/87\.0/:/77\.0/);}else await page.locator('.v2-dash-hero-line').waitFor();assert(await page.evaluate(()=>document.scrollingElement.scrollHeight<=innerHeight+1));await page.screenshot({path:dir+'/'+id+'.png',fullPage:true});}
  await browser.addCookies([{name:'wos_session',value:cookies.boss.split('=')[1],url:base}]);await page.goto(base+'/?page=dashboard');await page.getByRole('button',{name:'评分工作台',exact:true}).waitFor();
  assert.equal((await call('/api/departments/save','boss',{id:'team',name:'团队',leaderUserId:'new'})).status,200);
@@ -102,5 +107,17 @@ try{
  assert.deepEqual(errors,[]);await browser.close();browser=null;stages.push('员工/负责人/管理员/老板四视角浏览器检查、导航权限、内部滚动、无脚本异常');
  }
  const oldCookie=cookies.staff;await call('/auth/logout','staff',{});assert.equal((await call('/api/me')).status,401);await stop();await start();cookies.staff=oldCookie;assert.equal((await call('/api/me')).status,401);assert.equal((await call('/api/performance/me','admin')).body.history.find(v=>v.month===month).collaboration,83);await call('/api/weekly-reminders/send','admin',{dryRun:false});assert.equal((await providerCalls()).filter(c=>c.kind==='direct_message').length,afterLostAck);stages.push('重启后成绩和发送去重保留、退出会话不可重放');
+ await stop();await start(afterMonthClose);
+ for(const id of ['admin','staff'])assert.equal(await login(id),302);
+ const qualityCandidate=await adminQuality();
+ assert.equal(qualityCandidate.status,'pending_confirmation');assert.equal(qualityCandidate.canConfirm,true);assert.equal(qualityCandidate.candidateScore,83.3);
+ const confirmed=await call('/api/performance/confirm','admin',{...confirmation,version:qualityCandidate.version});
+ assert.equal(confirmed.status,200);assert.equal(confirmed.body.confirmedAt,new Date(afterMonthClose).toISOString());
+ const analyzed=(await providerCalls()).filter(c=>c.kind==='ai').length;
+ assert.equal((await call('/api/lark-report-sync','admin',{start:'2026-10-01',end:'2026-10-28'})).status,202);
+ for(let i=0;i<100;i++){sync=(await call('/api/lark-report-sync','admin')).body;if(!sync.processRunning&&!sync.status?.running)break;await new Promise(r=>setTimeout(r,100));}
+ assert.equal((await providerCalls()).filter(c=>c.kind==='ai').length,analyzed);
+ const finalHistory=await ownMonth();assert.equal(finalHistory.quality,83.3);assert.equal(finalHistory.qualityStatus,'final');
+ stages.push('上海时间进入次月后管理确认最终分，重复收集复用评分且保留最终分');
  assert.equal(run('PRAGMA integrity_check;').trim(),'ok');await writeFile(dir+'/result.json',JSON.stringify({ok:true,stages,realMessagesSent:0,realTasksCreated:0,realAICalls:0,artifacts:dir},null,2));console.log(JSON.stringify({ok:true,stages,realMessagesSent:0,artifacts:dir}));
 }catch(error){console.error('Completed stages:',stages,'\nServer:',logs);throw error;}finally{if(browser)await browser.close();await stop();console.log('Artifacts retained:',dir);}

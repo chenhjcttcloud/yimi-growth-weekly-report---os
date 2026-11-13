@@ -45,18 +45,19 @@ export function applyQualityReviews(report,records) {
     ...(moduleScores&&moduleScores!==report.qualityAssessment.scores?{reviewedModuleScores:moduleScores}:{})};
 }
 
-export function summarizeMonthlyQuality(reports) {
+export function summarizeMonthlyQuality(reports,confirmationBlockedReason) {
   const submitted=reports.filter(report=>report.submitted&&!report.qualityExcluded);
   const analyzed=submitted.filter(report=>report.candidate!==null);
   const pendingAnalysis=submitted.length-analyzed.length;
   const currentAverage=analyzed.length?qualityRound(analyzed.reduce((sum,report)=>sum+report.candidate,0)/analyzed.length):null;
-  const status=!submitted.length?'no_reports':pendingAnalysis?'pending_ai':'pending_confirmation';
+  const status=!submitted.length?'no_reports':confirmationBlockedReason||pendingAnalysis?'pending_ai':'pending_confirmation';
   const canConfirm=status==='pending_confirmation';
   const version=canConfirm?qualityVersion(reports.filter(report=>report.submitted).map(report=>[
     report.end,report.id,report.submittedAt,report.candidate,report.qualityReviewVersion,report.qualityExcluded
   ]).sort((left,right)=>String(left[0]).localeCompare(String(right[0])))):undefined;
   return {status,currentAverage,candidateScore:canConfirm?currentAverage:null,finalScore:null,pendingAnalysis,
-    analyzedCount:analyzed.length,expectedCount:submitted.length,canConfirm,...(version?{version}:{})};
+    analyzedCount:analyzed.length,expectedCount:submitted.length,canConfirm,
+    ...(confirmationBlockedReason?{confirmationBlockedReason}:{}),...(version?{version}:{})};
 }
 
 export function qualityReviewDetails(report,body) {

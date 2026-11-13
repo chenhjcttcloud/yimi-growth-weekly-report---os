@@ -32,7 +32,8 @@ const weights=[30,25,25,20],policyFor=async()=>({weights:[...weights],deadlineTi
 const data={meta:{collectionStartDate:'2026-08-31',periods:[{id:'period-2026-09-04',start:'2026-08-31',end:'2026-09-04'}]},employee_summary:[{user_id:'staff','姓名':'评分测试员工','部门':'测试团队'},{user_id:'other','姓名':'另一位测试员工','部门':'其他团队'}],weekly_scores:[]};
 const readData=name=>name==='prototypeData'?data:{};
 const managerReviews={snapshot:async()=>({plans:new Map(),scores:[],bossScores:[]}),progress:()=>({kind:'unassigned',expected:0,submitted:0,complete:false,score:null})};
-const now=()=>new Date('2026-09-30T15:00:00Z');
+let currentTime='2026-09-30T23:59:59+08:00';
+const now=()=>new Date(currentTime);
 const performance=createPerformance({query,exec,sql,readData,policyFor,managerReviews,now});
 let outboundRequests=0;
 const originalFetch=globalThis.fetch;
@@ -58,10 +59,22 @@ try{
  store('low-score','staff','2026-08-31','2026-09-04',contentFor(facts));
  store('other-report','other','2026-08-31','2026-09-04',contentFor(otherFacts,{scores:[95,95,95,95],confidence:.95,anomalies:[]}));
  let view=await performance.overview(),quality=ownMonth(view).quality;
+ assert.equal(quality.currentAverage,36,'the analyzed weekly score remains visible during the open month');
+ assert.equal(quality.pendingAnalysis,0,'future or unsubmitted reports are excluded from analysis counts');
+ assert.equal(quality.status,'pending_ai');
+ assert.equal(quality.confirmationBlockedReason,'month_open');
+ assert.equal(quality.candidateScore,null);
+ assert.equal(quality.canConfirm,false);
+ assert.equal(quality.version,undefined);
+ await assert.rejects(()=>performance.confirm({month,userId:'staff',kind:'quality',version:'a'.repeat(64)},{userId:'manager'}),/quality_month_open/);
+ assert.equal(run("SELECT count(*) FROM performance_results WHERE kind='quality';"),'0');
+ currentTime='2026-10-01T00:00:00+08:00';
+ view=await performance.overview();quality=ownMonth(view).quality;
  assert.equal(quality.candidateScore,36,'low quality can be presented for human review');
  assert.equal(quality.status,'pending_confirmation');
  assert.equal(qualityRow(view),undefined,'AI cannot publish the final result');
- const firstSnapshot=decodeAutomaticEvidence(latestCandidate().evidence_json);
+ const firstCandidate=latestCandidate();
+ const firstSnapshot=decodeAutomaticEvidence(firstCandidate.evidence_json);
  const snapshot=JSON.parse(firstSnapshot),assessment=ownMonth(view).reports[0].qualityAssessment;
  assert(assessment,'structured score details must enter performance report responses');
  assert.equal(assessment.modules[0].confidence,.12,'low self-rated confidence does not block a candidate');
@@ -121,7 +134,7 @@ try{
  const projected=JSON.parse(await readFile(path.join(dir,'prototypeData.json'),'utf8')).weekly_scores.find(report=>report['源记录ID']==='legacy-import');
  assert.equal(projected['总分'],originalLegacyScore,'refreshing the dashboard projection retains the original historical total');
  assert.equal(run("SELECT start_date FROM employee_employment_periods WHERE id='staff-hire';"),'2026-08-31','historical display does not rewrite employee start dates');
- const firstPublicationId=run("SELECT id FROM automatic_performance_results WHERE employee_user_id='staff' AND month='2026-09' AND kind='quality' ORDER BY rowid LIMIT 1;");
+ const firstPublicationId=firstCandidate.id;
  const firstStoredSnapshot=run(`SELECT evidence_json FROM automatic_performance_results WHERE id=${sql(firstPublicationId)};`);
  assert.equal(decodeAutomaticEvidence(firstStoredSnapshot),firstSnapshot,'storage encoding preserves the complete original explanation bytes');
 
@@ -248,9 +261,39 @@ try{
  assert.equal(run('SELECT count(*) FROM scoring360_responses;'),'0');
  assert.equal(run('SELECT count(*) FROM monthly_manager_scores;'),'0');
  assert.equal(run('SELECT count(*) FROM feishu_tasks;'),'0');
+
+ // A make-up workday can move the final Friday period into the next month.
+ const october='2026-10';
+ const calendar=()=>({year:2026,workdayOverrides:['2026-11-01']});
+ let collectingMonth;
+ const withCalendar=createPerformance({query,exec,sql,readData,policyFor,managerReviews,now,calendar,
+  isCollectingReports:requestedMonth=>requestedMonth===collectingMonth});
+ store('october-score','staff','2026-10-26','2026-10-30',contentFor(facts));
+ const octoberQuality=async()=>{
+  const overview=await withCalendar.overview({employeeUserId:'staff',month:october});
+  return overview.monthly.find(row=>row.month===october).quality;
+ };
+ currentTime='2026-11-01T19:59:59+08:00';
+ const waitingCollection=await octoberQuality();
+ assert.equal(waitingCollection.currentAverage,36);
+ assert.equal(waitingCollection.status,'pending_ai');
+ assert.equal(waitingCollection.confirmationBlockedReason,'collection_pending');
+ assert.equal(waitingCollection.canConfirm,false);
+ await assert.rejects(()=>withCalendar.confirm({month:october,userId:'staff',kind:'quality',version:'a'.repeat(64)},reviewer),/quality_collection_pending/);
+ currentTime='2026-11-02T10:00:00+08:00';
+ collectingMonth=october;
+ assert.equal((await octoberQuality()).confirmationBlockedReason,'collection_pending');
+ await assert.rejects(()=>withCalendar.confirm({month:october,userId:'staff',kind:'quality',version:'a'.repeat(64)},reviewer),/quality_collection_pending/);
+ collectingMonth='2026-11';
+ const collectionEnded=await octoberQuality();
+ assert.equal(collectionEnded.status,'pending_confirmation');
+ assert.equal(collectionEnded.candidateScore,36);
+ assert.equal(collectionEnded.canConfirm,true);
+ assert.equal(collectionEnded.confirmationBlockedReason,undefined);
+
  assert.equal(run('PRAGMA integrity_check;'),'ok');
  assert.equal(outboundRequests,0);
- const result={ok:true,lowScoreAvailableForReview:true,lowConfidenceAndAnomaliesDoNotBlockCandidate:true,exactEvidenceAndReasonsPreserved:true,monthlySnapshotsRetained:true,pendingExcludedFromCurrentAverage:true,forgedStoredEvidenceRejected:true,validZeroIncluded:true,legacyScoresCompatible:true,individualEmployeeConfirmedIndependently:true,archivedBlankedScoreRecovered:true,noInventedFirstMonthlyFinal:true,manualHistoricalFinalImmutable:true,personalEvidenceScoped:true,overviewHeadersRemainLean:true,humanApprovalRequired:true,externalRequests:outboundRequests,messagesSent:0,artifacts:dir};
+ const result={ok:true,shanghaiMonthEndGate:true,crossMonthDeadlineGate:true,lowScoreAvailableForReview:true,lowConfidenceAndAnomaliesDoNotBlockCandidate:true,exactEvidenceAndReasonsPreserved:true,monthlySnapshotsRetained:true,pendingExcludedFromCurrentAverage:true,forgedStoredEvidenceRejected:true,validZeroIncluded:true,legacyScoresCompatible:true,individualEmployeeConfirmedIndependently:true,archivedBlankedScoreRecovered:true,noInventedFirstMonthlyFinal:true,manualHistoricalFinalImmutable:true,personalEvidenceScoped:true,overviewHeadersRemainLean:true,humanApprovalRequired:true,externalRequests:outboundRequests,messagesSent:0,artifacts:dir};
  await writeFile(path.join(dir,'result.json'),JSON.stringify(result,null,2));
  console.log(JSON.stringify(result));
 }finally{

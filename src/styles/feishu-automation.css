@@ -1,0 +1,123 @@
+.fi-automation-body {
+  display: grid;
+  gap: 16px;
+}
+
+.fi-automation-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 280px), 1fr));
+  gap: 12px;
+}
+
+.fi-automation-status {
+  white-space: nowrap;
+}
+
+.fi-automation-status[data-active="true"] {
+  border-color: var(--v2-brand-soft);
+  background: var(--v2-brand-softer);
+  color: var(--v2-brand-deep);
+}
+
+.fi-automation-toggle-copy {
+  flex: 1;
+  min-width: 0;
+}
+
+.fi-automation-toggle-copy > label {
+  color: var(--v2-ink);
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.fi-automation-toggle-copy > p,
+.fi-automation-month > p,
+.fi-automation-policy {
+  margin: 4px 0 0;
+  color: var(--v2-ink-2);
+  font-size: 12px;
+  line-height: 1.65;
+}
+
+.fi-automation-details {
+  align-items: start;
+}
+
+.fi-automation-month,
+.fi-automation-activity {
+  min-width: 0;
+  padding: 14px 16px;
+}
+
+.fi-automation-month-field {
+  max-width: 240px;
+}
+
+.fi-automation-month > p {
+  margin-top: 8px;
+}
+
+.fi-automation-activity {
+  border: 1px solid var(--v2-line);
+  border-radius: 10px;
+  background: var(--v2-bg-soft);
+}
+
+.fi-automation-activity-heading,
+.fi-automation-schedule > div {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  column-gap: 12px;
+}
+
+.fi-automation-activity-heading h3 {
+  margin: 0;
+  color: var(--v2-ink);
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.fi-automation-activity-heading span {
+  color: var(--v2-ink-2);
+  font-size: 11px;
+}
+
+.fi-automation-schedule {
+  display: grid;
+  gap: 6px;
+  margin: 10px 0 0;
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.fi-automation-schedule dt {
+  color: var(--v2-ink-2);
+}
+
+.fi-automation-schedule dd {
+  margin: 0;
+  color: var(--v2-ink);
+  font-variant-numeric: tabular-nums;
+}
+
+.fi-automation-requests {
+  display: block;
+  margin-top: 10px;
+  padding-top: 10px;
+  border-top: 1px solid var(--v2-line);
+  color: var(--v2-brand-deep);
+  font-size: 12px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+
+.fi-automation-policy {
+  margin: 0;
+}
+
+.fi-automation-actions .secondary-button {
+  gap: 7px;
+}

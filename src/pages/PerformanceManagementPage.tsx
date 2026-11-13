@@ -8,7 +8,7 @@ import {ReviewMonthPicker} from '../components/ReviewMonthPicker';
 import {lazy,Suspense,useEffect,useRef,useState} from 'react';
 import {DeferredEvidence} from '../components/DeferredEvidence';
 import {ManagedQualityReport} from '../components/ManagedQualityReport';
-import {MonthlyQualityResultRow, monthlyQualityView, qualityDate, qualityReviewNotice, type MonthlyQualitySummary} from '../components/MonthlyQuality';
+import {MonthlyQualityResultRow, monthlyQualityView, qualityConfirmationBlockNotes, qualityDate, qualityReviewNotice, type MonthlyQualitySummary} from '../components/MonthlyQuality';
 const ManualScoringSetup=lazy(()=>import('../components/ManualScoringSetup').then(module=>({default:module.ManualScoringSetup})));
 import { AppSelect } from '../components/AppSelect';
 import { CalendarDays, ChevronRight, Clock3, FileCheck2, History, ShieldCheck, UsersRound } from 'lucide-react';
@@ -140,8 +140,10 @@ export function PerformanceResults({scoreFocus}:{scoreFocus?:'quality'|'collabor
  const mean=(kind:string)=>{const xs=published.filter((r:any)=>r.kind===kind&&r.result.score!=null);return xs.length?(xs.reduce((n:number,r:any)=>n+r.result.score,0)/xs.length).toFixed(1):'—';};
  const summaries:MonthlyQualitySummary[]=rows.flatMap(row=>row.quality?[row.quality]:[]);
  const pending=summaries.reduce((n,quality)=>n+quality.pendingAnalysis,0);
+ const qualityBlock=summaries.find(quality=>quality.confirmationBlockedReason)?.confirmationBlockedReason;
+ const provisional=Boolean(qualityBlock)||pending>0;
  const scoredSummaries=summaries.filter(quality=>quality.currentAverage!=null||quality.finalScore!=null);
- const allQualityConfirmed=Boolean(scoredSummaries.length)&&pending===0&&scoredSummaries.every(quality=>monthlyQualityView(quality).confirmed);
+ const allQualityConfirmed=Boolean(scoredSummaries.length)&&!provisional&&scoredSummaries.every(quality=>monthlyQualityView(quality).confirmed);
  const analyzed=summaries.reduce((n,quality)=>n+quality.analyzedCount,0);
  const qualityMean=allQualityConfirmed?mean('quality'):scoreText(analyzed?summaries.reduce((sum,quality)=>sum+(quality.currentAverage??0)*quality.analyzedCount,0)/analyzed:null);
  const kinds=[['quality','周报质量'],['timeliness','提交及时率'],['collaboration','月度综合评分']].filter(([kind])=>!scoreFocus||kind===scoreFocus);
@@ -161,7 +163,7 @@ export function PerformanceResults({scoreFocus}:{scoreFocus?:'quality'|'collabor
   {scoreFocus!=='collaboration'&&<p className="pf-notice">{qualityReviewNotice}</p>}
   <section className={`pf-metrics ${scoreFocus?'pf-metrics-focused':''}`}>
    {scoreFocus!=='collaboration'&&<ResultMetric icon={Clock3} label="全员周报提交率" value={pct} unit="%" description={`准时提交率 ${timePct}${timePct==='—'?'':'%'}`}><span className="pf-caption">迟交 <b>{rows.filter((r:any)=>r.timeliness.late>0).length}</b> 人</span><span className="pf-caption">未交 <b>{rows.filter((r:any)=>r.timeliness.missing>0).length}</b> 人</span></ResultMetric>}
-   {scoreFocus!=='collaboration'&&<ResultMetric icon={FileCheck2} label={allQualityConfirmed?'周报质量最终均分':pending>0?'当前已完成分析均分':analyzed?'月度质量候选均分':'月度周报质量'} value={qualityMean} unit="分" description={allQualityConfirmed?'管理人员已确认的员工质量最终分':pending>0?'汇总已完成分析的有效周报 · 暂定':analyzed?'汇总已完成分析的有效周报 · 待管理人员确认':'本月暂无可评分周报'}><span className="pf-caption">本月待完成 AI 分析</span><span className="pf-status">{pending} 份</span></ResultMetric>}
+   {scoreFocus!=='collaboration'&&<ResultMetric icon={FileCheck2} label={allQualityConfirmed?'周报质量最终均分':provisional?'当前已完成分析均分':analyzed?'月度质量候选均分':'月度周报质量'} value={qualityMean} unit="分" description={allQualityConfirmed?'管理人员已确认的员工质量最终分':qualityBlock?qualityConfirmationBlockNotes[qualityBlock]:provisional?'汇总已完成分析的有效周报 · 暂定':analyzed?'汇总已完成分析的有效周报 · 待管理人员确认':'本月暂无可评分周报'}><span className="pf-caption">本月待完成 AI 分析</span><span className="pf-status">{pending} 份</span></ResultMetric>}
    {scoreFocus!=='quality'&&<ResultMetric icon={UsersRound} label="月度综合最终均分" value={mean('collaboration')} unit="分" description="负责人/老板30%＋同事70%，全部完成后发布"><span className="pf-caption">同事待评 / 负责人待评</span><span className={`pf-status ${pendingPeople.length?'is-warning':'is-confirmed'}`}>{pendingPeople.length} / {rows.filter((r:any)=>r.managerProgress.expected>0&&!r.managerProgress.complete).length} 人</span></ResultMetric>}
   </section>
   {scoreFocus!=='collaboration'&&<div className="pf-policy"><span><Clock3 size={14}/>周五或放假前最后一个工作日 20:00 截止</span><span>直属上级点评、协同部门反馈：周一 12:00 前</span><span>北京时间</span></div>}

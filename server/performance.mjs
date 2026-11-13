@@ -1,5 +1,6 @@
 import {randomUUID} from 'node:crypto';
 import {weeklyReportSchedule,monthFridays,shiftDate} from './weekly-report-schedule.mjs';
+import {isEligibleOnTimeApproval,readWeeklyOnTimeApprovals} from './weekly-on-time-approvals.mjs';
 import {employedOn,employedInMonth} from './employee-lifecycle.mjs';
 import {LEGACY_REPORT_QUALITY_VERSION,REPORT_QUALITY_VERSION,REPORT_QUALITY_WEIGHTS,reportQualityAssessment} from './report-quality-scoring.mjs';
 import {legacyReportScore} from './report-rescore-state.mjs';
@@ -34,10 +35,11 @@ function automaticBusinessHash(row,kind,result){
   return qualityVersion({version:'automatic-score-business-v1',month:row.month,userId:row.userId,name:row.name,department:row.department,kind,result:stableResult,reports});
 }
 // Weekly quality analysis supplies candidates for management confirmation.
-export function createPerformance({ query, exec, sql, readData, policyFor, managerReviews, calendar, now=()=>new Date() }) {
+export function createPerformance({ query, exec, sql, readData, policyFor, managerReviews, calendar, isCollectingReports, now=()=>new Date() }) {
   const round = n => Math.round(n * 10) / 10;
   const average = xs => xs.length ? round(xs.reduce((a,b)=>a+b,0)/xs.length) : null;
   const monthOf = value => String(value || '').slice(0,7);
+  const shanghaiDate = new Intl.DateTimeFormat('sv-SE',{timeZone:'Asia/Shanghai'});
   const reportContexts=new WeakSet();
   function employeeScope(value) {
     if(value===undefined)return undefined;
@@ -65,6 +67,14 @@ export function createPerformance({ query, exec, sql, readData, policyFor, manag
       if(!schedules.has(key))schedules.set(key,weeklyReportSchedule(end,workCalendar,deadlineTime));
       return schedules.get(key);
     };
+  }
+  function qualityConfirmationBlock(month,today,asOf,policy,readSchedule) {
+    if(month>=monthOf(today))return 'month_open';
+    const deadlinePending=monthFridays(month).some(end=>{
+      const schedule=readSchedule(end,policy.deadlineTime);
+      return !schedule.exempt && Date.parse(schedule.dueAt)>asOf.getTime();
+    });
+    if(deadlinePending||isCollectingReports?.(month))return 'collection_pending';
   }
   function resultScope(userId,month,alias='') {
     return [userId?`${alias}employee_user_id=${sql(userId)}`:'',month?`${alias}month=${sql(month)}`:''].filter(Boolean);
@@ -117,7 +127,7 @@ ORDER BY month DESC, employee_name;`)).map(r=>({...r,...(!clientSummary&&r.scori
     const timeliness={...row.timeliness,rate:row.timeliness.pendingTimestamp||row.timeliness.pendingCalendar?null:row.timeliness.rate,status:row.timeliness.pendingCalendar?'pending_calendar':row.timeliness.pendingTimestamp?'pending_timestamp':row.timeliness.expected?'ready':'no_due_reports',publicationMode:'automatic'};
     for(const [kind,result] of [['quality',quality],['timeliness',timeliness]]){
       if(existing.some(r=>r.month===row.month&&r.employee_user_id===row.userId&&r.kind===kind&&['legacy','management_confirmed'].includes(r.scoring_rule)))continue;
-      const qualityRule='取已完成分析的有效周报算术平均，全部完成后提交管理确认';
+      const qualityRule='取已完成分析的有效周报算术平均，月份结束且分析完成后提交管理确认';
       const evidence={userId:row.userId,name:row.name,department:row.department,publicationMode:result.publicationMode,rule:kind==='quality'?qualityRule:'按提交时间和周五截止时间自动统计，及时率与质量分独立',reports:row.reports,statistics:row.timeliness,reviewNote:kind==='quality'?'AI 候选汇总，须经管理人员确认':'系统自动计算，无需人工确认',deduction:0};
       const hash=automaticBusinessHash(row,kind,result);
       // A read with unchanged inputs does not need a write transaction. Keep the
@@ -157,6 +167,7 @@ WHERE COALESCE((SELECT calculation_hash FROM automatic_performance_results WHERE
       if(writeBasis)writeBasis.lastReview=records.at(-1)?.review_rowid??0;
     }
     if(writeBasis)writeBasis.stored=stored;
+    const approvedOnTime=rows.size?await readWeeklyOnTimeApprovals({query,sql,month,employeeUserId:userId}):null;
     const policies=new Map();
     for(const r of rows.values())if(!policies.has(monthOf(r.end)))policies.set(monthOf(r.end),await readPolicy(monthOf(r.end)));
     return [...rows.values()].map(r=>{
@@ -184,9 +195,10 @@ WHERE COALESCE((SELECT calculation_hash FROM automatic_performance_results WHERE
       const submitted=r.status!=='未交' && (!!r.submittedAt || sections.some(([key])=>String(c[key]||'').trim()));
       const ts=submitted?Date.parse(String(r.submittedAt).replace(' ','T')+(/(?:Z|[+-]\d\d:\d\d)$/.test(r.submittedAt)?'':'+08:00')):NaN;
       const schedule=readSchedule(r.end,policy.deadlineTime),deadline=Date.parse(schedule.dueAt||'');
-      const late=submitted&&!schedule.exempt&&!schedule.calendarPending&&Number.isFinite(ts)&&ts>deadline;
+      const approved=approvedOnTime(r.employeeUserId,r.end)&&isEligibleOnTimeApproval(r.status,ts);
+      const late=submitted&&!schedule.exempt&&!schedule.calendarPending&&Number.isFinite(ts)&&ts>deadline&&!approved;
       const status=schedule.exempt?'免交':schedule.calendarPending?'等待日历':!submitted?'未交':!Number.isFinite(ts)?'待核实时间':late?'迟交':'准时';
-      const report={...r,content:c,status,schedule,scoringPolicy:policy,...(qualityAssessment&&!refreshPending?{qualityAssessment}:{}),...(qualityRefresh?{qualityRefresh,displayQualityScore:refreshPending?previousQualityScore:null,...(refreshPending&&previousQualityScore!==null?{qualityDisplaySource:'previous',previousQualityVersion:previous.ai.version||previous.aiPromptVersion||previous.promptVersion||'legacy',previousScoringWeights:previous.ai.version===REPORT_QUALITY_VERSION?REPORT_QUALITY_WEIGHTS:previous.scoringWeights||policy.weights,...(previousQualityAssessment?{previousQualityAssessment}:{})}: {})}:{}), month:monthOf(r.end), submitted, timestampUnknown:submitted&&!Number.isFinite(ts),late,onTime:submitted&&!schedule.exempt&&!schedule.calendarPending&&Number.isFinite(ts)&&ts<=deadline, candidate, missing, evidence:sections.map(([key])=>({module:key,text:c[key]||''})), anomalies:[...(Array.isArray(c.ai?.anomalies)?c.ai.anomalies:[]),...(c.source?.weekInference?['周次按提交日期推定，请核实补交或跨周汇报的归属']:[]),...missing.map(x=>`缺失：${x}`),...(!valid?['缺少有效的四模块候选分']:[]),...(submitted&&!Number.isFinite(ts)?['提交时间无法解析']:[])], suggestions:c.ai?.summary|| (missing.length?'请补齐缺失模块，并由主管核实事实与结果。':'请主管核实成果证据、问题影响和计划可验证性。'),qualityExcluded:['无效','重复','invalid','duplicate','void'].includes(String(r.status||'').toLowerCase())};
+      const report={...r,content:c,status,schedule,scoringPolicy:policy,...(qualityAssessment&&!refreshPending?{qualityAssessment}:{}),...(qualityRefresh?{qualityRefresh,displayQualityScore:refreshPending?previousQualityScore:null,...(refreshPending&&previousQualityScore!==null?{qualityDisplaySource:'previous',previousQualityVersion:previous.ai.version||previous.aiPromptVersion||previous.promptVersion||'legacy',previousScoringWeights:previous.ai.version===REPORT_QUALITY_VERSION?REPORT_QUALITY_WEIGHTS:previous.scoringWeights||policy.weights,...(previousQualityAssessment?{previousQualityAssessment}:{})}: {})}:{}), month:monthOf(r.end), submitted, timestampUnknown:submitted&&!Number.isFinite(ts),late,onTime:submitted&&!schedule.exempt&&!schedule.calendarPending&&Number.isFinite(ts)&&(ts<=deadline||approved), candidate, missing, evidence:sections.map(([key])=>({module:key,text:c[key]||''})), anomalies:[...(Array.isArray(c.ai?.anomalies)?c.ai.anomalies:[]),...(c.source?.weekInference?['周次按提交日期推定，请核实补交或跨周汇报的归属']:[]),...missing.map(x=>`缺失：${x}`),...(!valid?['缺少有效的四模块候选分']:[]),...(submitted&&!Number.isFinite(ts)?['提交时间无法解析']:[])], suggestions:c.ai?.summary|| (missing.length?'请补齐缺失模块，并由主管核实事实与结果。':'请主管核实成果证据、问题影响和计划可验证性。'),qualityExcluded:['无效','重复','invalid','duplicate','void'].includes(String(r.status||'').toLowerCase())};
       const reviewed=applyQualityReviews(report,reviews.get(JSON.stringify([r.employeeUserId,report.month,r.id]))||[]);
       return {...reviewed,content:original};
     });
@@ -262,7 +274,7 @@ WHERE COALESCE((SELECT calculation_hash FROM automatic_performance_results WHERE
     }
     for(const r of reportPeriods) if(r.end&&!periodMap.has(r.end)) periodMap.set(r.end,{end:r.end,start:r.start});
     const asOf=now();
-    const today=new Intl.DateTimeFormat('sv-SE',{timeZone:'Asia/Shanghai'}).format(asOf);
+    const today=shanghaiDate.format(asOf);
     const coverageStart=data.meta?.collectionStartDate||[...periodMap.values()].map(p=>p.start).filter(Boolean).sort()[0]||shiftDate(today,-((new Date(today+'T00:00:00Z').getUTCDay()||7)-1));
     if(calendar){
       const current=today.slice(0,7);
@@ -301,7 +313,13 @@ WHERE COALESCE((SELECT calculation_hash FROM automatic_performance_results WHERE
     }
     const employees=[...directory.values()];
     const monthly=[];
-    for(const month of scoped?months.filter(m=>m===scopeMonth):months) for(const employee of employees){
+    const selectedMonths=scoped?months.filter(m=>m===scopeMonth):months;
+    const confirmationBlocks=new Map();
+    for(const month of selectedMonths){
+      const monthPolicy=await readPolicy(month);
+      confirmationBlocks.set(month,qualityConfirmationBlock(month,today,asOf,monthPolicy,readSchedule));
+    }
+    for(const month of selectedMonths) for(const employee of employees){
       const employeeReports=rs.filter(r=>r.employeeUserId===employee.userId&&r.month===month);
       if(!employedInMonth(employee.employmentPeriods,month)&&!results.some(r=>r.month===month&&r.employee_user_id===employee.userId)&&!employeeReports.some(r=>legacyReportScore(r.content)!==null))continue;
       const monthPolicy=await readPolicy(month);
@@ -315,7 +333,7 @@ WHERE COALESCE((SELECT calculation_hash FROM automatic_performance_results WHERE
       const peerCandidate=average(assignments.filter(a=>a.score!=='').map(a=>Number(a.score)));
       const peerComplete=cyclesForMonth.length>0&&assignments.length>0&&assignments.some(a=>a.status==='active')&&assignments.every(a=>a.score!==''&&String(a.comment||'').trim());
       const complete=peerComplete&&managerProgress.complete;
-      const quality=summarizeMonthlyQuality(employeeReports);
+      const quality=summarizeMonthlyQuality(employeeReports,confirmationBlocks.get(month));
       monthly.push({...employee,month,reports:employeeReports,quality,qualityCandidate:quality.candidateScore,timeliness:{expected,submitted,onTime,late:counted.filter(r=>r.late).length,pendingTimestamp:counted.filter(r=>r.timestampUnknown).length,pendingCalendar:new Set([...weeks.filter(p=>readSchedule(p.end,monthPolicy.deadlineTime).calendarPending).map(p=>p.end),...counted.filter(r=>r.schedule.calendarPending).map(r=>r.end)]).size,missing:Math.max(0,expected-submitted),rate:expected?round(onTime/expected*100):null},peerCandidate,peerComplete,managerProgress,collaborationCandidate:complete?round(peerCandidate*.7+managerProgress.score*.3):null,collaborationComplete:complete,collaborationExpected:assignments.length,collaborationSubmitted:assignments.filter(a=>a.score!==''&&String(a.comment||'').trim()).length});
     }
     const calculations=monthly.flatMap(row=>calculateReportResults(row,results));
@@ -338,7 +356,7 @@ WHERE NOT EXISTS(SELECT 1 FROM all_monthly_weighted_results WHERE ${match})
     for(const row of monthly){
       const final=finals.get(`${row.month}|${row.userId}`);
       if(final){
-        const {version,...quality}=row.quality;
+        const {version,confirmationBlockedReason,...quality}=row.quality;
         row.quality={...quality,status:'final',currentAverage:final.result.candidateScore??null,candidateScore:final.result.candidateScore??null,finalScore:final.result.score??null,
           confirmedBy:final.confirmed_by,confirmedAt:final.confirmed_at,canConfirm:false,
           ...(final.result.version?{version:final.result.version}:{}),
@@ -397,8 +415,16 @@ WHERE NOT EXISTS(SELECT 1 FROM all_monthly_weighted_results WHERE ${match})
     if(body?.kind!=='quality')throw Error('results_auto_published');
     const {userId,month,version,reviewerName}=qualityWriteIdentity(body,user);
     await assertQualityUnlocked(userId,month);
+    const readPolicy=policyReader(),readSchedule=scheduleReader();
+    const monthPolicy=await readPolicy(month);
+    function assertConfirmationOpen() {
+      const instant=now();
+      const blocked=qualityConfirmationBlock(month,shanghaiDate.format(instant),instant,monthPolicy,readSchedule);
+      if(blocked)throw Error('quality_'+blocked);
+    }
+    assertConfirmationOpen();
     const basis={};
-    const reports=await readReports(readData('prototypeData'),userId,policyReader(),month,scheduleReader(),basis);
+    const reports=await readReports(readData('prototypeData'),userId,readPolicy,month,readSchedule,basis);
     const quality=summarizeMonthlyQuality(reports);
     if(!quality.canConfirm)throw Error('quality_not_ready');
     if(version!==quality.version)throw Error('quality_candidate_changed');
@@ -414,6 +440,7 @@ WHERE NOT EXISTS(SELECT 1 FROM all_monthly_weighted_results WHERE ${match})
       reviewerId:user.userId,reviewerName,confirmedAt,reviewNote:note||'管理人员确认月度质量候选分',
       rule:'取当月有效周报候选分算术平均后由管理人员确认'};
     const audit={month,employeeUserId:userId,confirmationId,score,candidateScore:quality.candidateScore,reason:note};
+    assertConfirmationOpen();
     await exec(`BEGIN IMMEDIATE;
       INSERT INTO performance_results(month,employee_user_id,employee_name,kind,result_json,evidence_json,confirmed_by,confirmed_at)
       SELECT ${sql(month)},${sql(userId)},${sql(name)},'quality',${sql(JSON.stringify(result))},${sql(JSON.stringify(evidence))},${sql(reviewerName)},${sql(confirmedAt)}

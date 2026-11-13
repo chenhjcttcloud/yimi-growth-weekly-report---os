@@ -22,6 +22,7 @@ const query=async statement=>{
  const own=rows=>userId?rows.filter(row=>(row.employee_user_id||row.user_id)===userId):rows;
  if(/^SELECT \* FROM weekly_reports(?: WHERE employee_user_id='[ab]')?;$/.test(statement))return [];
  if(statement.startsWith('SELECT rowid AS review_rowid,* FROM weekly_quality_reviews'))return [];
+ if(statement.startsWith('SELECT key FROM app_settings WHERE key GLOB'))return [];
  if(statement==='SELECT employee_user_id,week_start,week_end FROM weekly_reports;')return [];
  if(statement==='SELECT month FROM performance_results UNION SELECT month FROM all_monthly_weighted_results UNION SELECT month FROM automatic_performance_results;')return published.map(({month})=>({month}));
  if(statement.includes('NULL AS calculation_hash FROM performance_results p'))return own(published).map(({month,employee_user_id,kind,scoring_rule})=>({month,employee_user_id,kind,scoring_rule}));
