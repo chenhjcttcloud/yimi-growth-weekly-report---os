@@ -3,7 +3,7 @@ import { lazy, Suspense, useEffect, useLayoutEffect, useMemo, useState } from "r
 import { AppHeader } from "./components/AppHeader";
 import { Sidebar } from "./components/Sidebar";
 import { bootstrapData as appData } from "./lib/bootstrap-data";
-import type { EmployeeResultTarget, PageKey } from "./lib/types";
+import type { EmployeeResultTarget, PageKey, SessionPerspective } from "./lib/types";
 import { FinalResultsPage } from "./pages/FinalResultsPage";
 import { PerformanceManagementPage, PerformanceResults } from "./pages/PerformanceManagementPage";
 import { ScoringTasksPage } from "./pages/ScoringTasksPage";
@@ -48,6 +48,7 @@ export function App() {
   useEffect(()=>{setSummaryReady(false);setActionMessage('');},[selectedPeriodId]);
   async function generateSummary(){if(summaryBusy)return;setSummaryBusy(true);setActionMessage('');try{const r=await fetch('/api/management/summary',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({periodId:selectedPeriodId})}),j=await r.json();if(!r.ok)throw Error(j.error==='ai_not_configured'?'请先在系统设置配置 AI 服务':j.error==='no_reports'?'本周期没有可分析周报':'摘要生成未完成，请检查服务后重试');setSummaryReady(true);setSummaryVersion(v=>v+1);setActivePage('dashboard');setActionMessage(`已根据 ${j.summary.reportCount} 份本周期周报生成摘要，尚未发送消息。`);}catch(e){setActionMessage(e instanceof Error?e.message:'生成失败');}finally{setSummaryBusy(false);}}
   const [access, setAccess] = useState<UserAccess | null>(null);
+  const [sessionPerspective, setSessionPerspective] = useState<SessionPerspective>();
   const [adminPerspective,setAdminPerspective]=useState<string>('management');
   const previewEmployeeId=access?.role==='system_admin'&&adminPerspective.startsWith('employee:')?adminPerspective.slice(9):'';
   const previewEmployee=access?.visibleEmployees.find(e=>e.userId===previewEmployeeId);
@@ -75,7 +76,7 @@ export function App() {
   useEffect(() => {
     async function loadMe() {
       try {
-        const response = await fetch("/api/me");
+        const response = await fetch("/api/me", { cache: "no-store" });
         if (response.status === 401) {
           const next = `${window.location.pathname}${window.location.search}`;
           window.location.assign(`/auth/login?next=${encodeURIComponent(next)}`);
@@ -84,6 +85,8 @@ export function App() {
         if (!response.ok) throw new Error("load_me_failed");
         const result = await response.json();
         const nextAccess = normalizeAccess(result.access, result.user);
+        const activePerspective = result.activePerspective;
+        setSessionPerspective(result.canSwitchPerspective === true && (activePerspective === "boss" || activePerspective === "employee") ? activePerspective : undefined);
         setAccess(nextAccess);
         let mode='management';
         if(nextAccess.role==='system_admin'){
@@ -94,6 +97,7 @@ export function App() {
         setActivePage(page=>resolvePage(requestedPage()||(page!=='growth'?page:undefined),permitted));
 
       } catch {
+        setSessionPerspective(undefined);
         setAccess(fallbackAccess);
         setActivePage(page=>resolvePage(page,fallbackAccess));
       }
@@ -177,7 +181,7 @@ export function App() {
     }
 
     if (activePage === "scores") {
-      return currentAccess.canManageScoring360 ? <PerformanceManagementPage isBoss={currentAccess.role==='boss'}/> : <ScoringTasksPage key={previewEmployeeId} previewEmployeeId={previewEmployeeId}/>;
+      return currentAccess.canManageScoring360 ? <PerformanceManagementPage isBoss={currentAccess.role==='boss'}/> : <ScoringTasksPage key={previewEmployeeId} previewEmployeeId={previewEmployeeId} showManagerReviews={sessionPerspective!=='employee'}/>;
     }
 
     if (activePage === "monthly" && currentAccess.canViewBossDashboard) {
@@ -212,7 +216,7 @@ export function App() {
 
 
     return <FinalResultsPage previewEmployeeId={previewEmployeeId} key={previewEmployeeId||currentAccess.currentEmployee?.userId||'self'} employeeContextId={previewEmployeeId||currentAccess.currentEmployee?.userId||'self'} onOpenModule={setActivePage} />;
-  }, [activePage, selectedPeriodId, summaryReady,summaryVersion, taskCreated, currentAccess, externalView, previewEmployeeId]);
+  }, [activePage, selectedPeriodId, summaryReady,summaryVersion, taskCreated, currentAccess, externalView, previewEmployeeId, sessionPerspective]);
 
   return (
     <div className="app-shell">
@@ -230,6 +234,7 @@ export function App() {
         <AppHeader
           activePage={activePage}
           managementRole={currentAccess.role}
+          sessionPerspective={sessionPerspective}
           adminPerspective={access?.role==='system_admin'?adminPerspective:undefined}
           onChangeAdminPerspective={changePerspective}
           previewEmployees={access?.visibleEmployees||[]}

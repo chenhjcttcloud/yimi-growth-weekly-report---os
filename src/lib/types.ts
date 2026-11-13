@@ -12,6 +12,8 @@ export interface EmployeeResultTarget {
 
 export type PageKey = PersonalModule | "dashboard" | "monthly" | "scores" | "quality-scores" | "collaboration-scores" | "tasks" | "growth" | "trends" | "settings" | "departments";
 
+export type SessionPerspective = "boss" | "employee";
+
 export type Priority = "P0" | "P1" | "P2";
 
 export type EmployeeLevel = "A" | "A-" | "B+" | "B" | "C";

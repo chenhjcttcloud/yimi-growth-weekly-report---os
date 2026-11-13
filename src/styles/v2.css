@@ -2104,7 +2104,7 @@ body {
     overflow: visible;
   }
 
-  .header-actions > .secondary-button:first-of-type {
+  .header-actions:not(:has(.session-perspective-control)) > .secondary-button:first-of-type {
     display: none;
   }
 

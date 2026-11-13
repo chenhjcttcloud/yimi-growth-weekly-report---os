@@ -277,6 +277,10 @@ See the Chinese sections above for architecture, setup, security boundaries, and
 npm run test:performance
 ```
 
+### 老板与本人视角切换
+
+飞书认证环境可在服务端通过 `BOSS_EMPLOYEE_PERSPECTIVE_USER_IDS` 配置允许切换的飞书 `user_id`，多个 ID 用逗号分隔。配置只对已拥有老板权限的账号生效。指定账号可从页面顶部切换「老板视角」和「员工视角」，在员工视角查看本人的周报和分数、处理本人的协作评分任务。刷新保留当前视角，重新登录默认进入老板视角。
+
 ### 开发视角切换
 
 在 `.env` 中设置 `DEV_VIEW_SWITCH_ENABLED=true`，且 `AUTH_MODE=mock` 时，页面顶部显示「开发视角」切换器，可切换统一管理视角和各个员工。切换通过服务端签名会话生效，刷新后保留；同时重载页面，清除上一身份的前端内存数据。员工视角使用真实权限限制，不能调用管理接口。

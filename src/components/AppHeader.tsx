@@ -4,7 +4,7 @@ import { Bell, CheckCircle2, Send, ShieldCheck } from "lucide-react";
 import { DevViewSwitcher } from "./DevViewSwitcher";
 import { PerspectiveSwitcher } from "./PerspectiveSwitcher";
 import { bootstrapData as appData } from "../lib/bootstrap-data";
-import type { PageKey } from "../lib/types";
+import type { PageKey, SessionPerspective } from "../lib/types";
 
 const titles: Record<PageKey, string> = {
   departments: "部门管理",
@@ -28,6 +28,7 @@ interface AppHeaderProps {
   externalView: boolean;
   canViewBossDashboard: boolean;
   managementRole?: string;
+  sessionPerspective?: SessionPerspective;
   adminPerspective?: string;
   previewEmployees?: Array<{userId:string;name:string;department?:string}>;
   onChangeAdminPerspective?: (value:string)=>void;
@@ -57,6 +58,7 @@ export function AppHeader({
   externalView,
   canViewBossDashboard,
   managementRole,
+  sessionPerspective,
   adminPerspective,
   previewEmployees=[],
   onChangeAdminPerspective,
@@ -72,6 +74,8 @@ export function AppHeader({
   const [notifications, setNotifications] = useState<NotificationItem[]>([]);
   const [unreadCount, setUnreadCount] = useState(0);
   const [notificationOpen, setNotificationOpen] = useState(false);
+  const [perspectiveBusy, setPerspectiveBusy] = useState(false);
+  const [perspectiveError, setPerspectiveError] = useState("");
   const scoreResultsPage = activePage === "quality-scores" || activePage === "collaboration-scores";
 
   useEffect(() => {
@@ -124,6 +128,26 @@ export function AppHeader({
     }
   }
 
+  async function changeSessionPerspective(next: string) {
+    if (perspectiveBusy || next === sessionPerspective || (next !== "boss" && next !== "employee")) return;
+    if (!window.dispatchEvent(new Event("organization-before-leave", { cancelable: true }))) return;
+
+    setPerspectiveBusy(true);
+    setPerspectiveError("");
+    const response = await fetch("/api/session/perspective", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ perspective: next }),
+    }).catch(() => null);
+    if (!response?.ok) {
+      setPerspectiveError(response?.status === 401 ? "登录已过期，请刷新页面后重试。" : "视角切换失败，请重试。");
+      setPerspectiveBusy(false);
+      return;
+    }
+    // Load a new document so data from the prior perspective is discarded.
+    window.location.replace("/");
+  }
+
   return (
     <header className="app-header">
       <div>
@@ -148,6 +172,16 @@ export function AppHeader({
       </div>
 
       <div className="header-actions">
+        {sessionPerspective && (
+          <div className="session-perspective-control">
+            <AppSelect aria-label="切换视角" value={sessionPerspective} onValueChange={next => void changeSessionPerspective(next)} disabled={perspectiveBusy}>
+              <option value="boss">老板视角</option>
+              <option value="employee">员工视角</option>
+            </AppSelect>
+            {perspectiveBusy && <span className="session-perspective-feedback" role="status">正在切换视角…</span>}
+            {perspectiveError && <span className="session-perspective-feedback is-error" role="alert">{perspectiveError}</span>}
+          </div>
+        )}
         {adminPerspective && <PerspectiveSwitcher value={adminPerspective} employees={previewEmployees} onChange={onChangeAdminPerspective} />}
           <DevViewSwitcher employees={previewEmployees} />
         {canViewBossDashboard ? <div className="notification-anchor">
@@ -181,7 +215,7 @@ export function AppHeader({
         </div> : null}
         {canViewBossDashboard && activePage !== "growth" && activePage !== "scores" && activePage !== "settings" && activePage !== "departments" && !scoreResultsPage ? (
           <>
-            {!adminPerspective && (<button className="secondary-button management-role-badge" type="button" onClick={externalView ? exitReadonlyView : undefined}>
+            {!adminPerspective && !sessionPerspective && (<button className="secondary-button management-role-badge" type="button" onClick={externalView ? exitReadonlyView : undefined}>
               <ShieldCheck size={16} />
               <span>{externalView ? "退出只读视图" : "管理视角"}</span>
             </button>)}

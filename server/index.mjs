@@ -118,6 +118,7 @@ if(config.authMode!=='mock'&&(!process.env.SESSION_SECRET||config.sessionSecret=
 const textHeaders = { "content-type": "text/plain; charset=utf-8" };
 
 const defaultBossViewMembers = [];
+const bossEmployeePerspectiveUserIds = new Set(parseCsvList(process.env.BOSS_EMPLOYEE_PERSPECTIVE_USER_IDS));
 
 const managementSourceNames=['prototypeData','kimiInsights','kimiInsightsByPeriod','monthlyMeetingInsights','scoring360'];
 const sourceDataCache=createSourceDataCache({directory:config.dataDir});
@@ -292,7 +293,8 @@ async function route(req, res) {
 
   const sessionForPolicy = getSession(req);
   // Cookie renewal preserves the original server-enforced absolute expiry.
-  if (sessionForPolicy && !isExternalSession(sessionForPolicy) && !sessionForPolicy.devView && url.pathname !== "/auth/logout") {
+  if (sessionForPolicy && !isExternalSession(sessionForPolicy) && !sessionForPolicy.devView &&
+      !["/auth/logout", "/api/session/perspective"].includes(url.pathname)) {
     setSession(res, sessionForPolicy);
     res.setHeader("Cache-Control", "private, no-store");
   }
@@ -301,6 +303,7 @@ async function route(req, res) {
     const employee=(await querySqlRows(`SELECT is_active FROM employees WHERE user_id=${sqlValue(userForPolicy.userId)} LIMIT 1;`))[0];
     if(employee && Number(employee.is_active)===0) return sendJson(res,403,{ok:false,error:'account_inactive'});
   }
+  if (url.pathname === '/api/session/perspective') return switchSessionPerspective(req, res, sessionForPolicy);
   const managerForPolicy = Boolean(userForPolicy && !isExternalSession(sessionForPolicy) && isScoring360ConfigManagerSession(sessionForPolicy));
   if(url.pathname.startsWith('/api/operations')){
     if(!managerForPolicy)return sendJson(res,403,{ok:false,error:'manager_only'});
@@ -461,6 +464,7 @@ async function route(req, res) {
   if(url.pathname==='/api/manager-reviews'){
     if(!userForPolicy||isExternalSession(sessionForPolicy))return sendJson(res,401,{ok:false,error:'unauthorized'});
     res.setHeader('cache-control','no-store');
+    if(sessionForPolicy?.employeePerspective)return sendJson(res,403,{ok:false,error:'manager_only'});
     try{
       if(req.method==='GET')return sendJson(res,200,{ok:true,...await managerReviews.tasks(userForPolicy,url.searchParams.get('month'))});
       if(req.method==='POST'){
@@ -563,7 +567,8 @@ async function route(req, res) {
     const validMonth=value=>typeof value==='string'&&/^\d{4}-(0[1-9]|1[0-2])$/.test(value);
     const validId=value=>typeof value==='string'&&value.length>0&&value.length<=200&&value.trim()===value;
     let supervisorScope;
-    const getSupervisorScope=()=>supervisorScope??=managerReviews.qualityReviewEmployees(userForPolicy.userId);
+    const getSupervisorScope=()=>supervisorScope??=(sessionForPolicy?.employeePerspective
+      ? [] : managerReviews.qualityReviewEmployees(userForPolicy.userId));
     const canReviewQuality=async employeeId=>managerForPolicy||(await getSupervisorScope()).some(employee=>employee.userId===employeeId);
     if (url.pathname === '/api/performance/me' && req.method === 'GET') {
       if(url.searchParams.has('employeeId')&&url.searchParams.get('employeeId')!==userForPolicy.userId)return sendJson(res,403,{ok:false,error:'self_only'});
@@ -723,11 +728,14 @@ async function route(req, res) {
       });
     }
     const access = buildAccessProfile(session, user);
-    access.canReviewWeeklyQuality=managerForPolicy||(await managerReviews.qualityReviewEmployees(user.userId)).length>0;
+    access.canReviewWeeklyQuality=!session?.employeePerspective &&
+      (managerForPolicy||(await managerReviews.qualityReviewEmployees(user.userId)).length>0);
+    const canSwitchPerspective = canSwitchSessionPerspective(session);
     sendJson(res, 200, {
       ok: true,
       authenticated: true,
       devView: config.devViewSwitchEnabled ? (session?.devView || {id:"boss",role:"boss"}) : null,
+      ...(canSwitchPerspective ? {canSwitchPerspective, activePerspective: session.employeePerspective ? 'employee' : 'boss'} : {}),
       user: {
         ...user,
         role: access.role,
@@ -827,6 +835,7 @@ async function route(req, res) {
     await feishuUserTokens.revoke(getSession(req));
     await sessionPolicy.revoke(getSession(req),parseCookies(req).wos_session);
     clearCookie(res, "wos_session");
+    if (parseCookies(req).wos_perspective) clearCookie(res, "wos_perspective");
     sendJson(res, 200, { ok: true });
     return;
   }
@@ -4619,7 +4628,7 @@ function buildAccessProfile(session, user) {
     currentEmployee,
     visibilityMode: fullVisibility
       ? "all_company"
-      : currentEmployee?.department
+      : currentEmployee?.department && !session?.employeePerspective
         ? "self_department_and_reports"
         : "self_only",
     visibleEmployees,
@@ -5116,14 +5125,15 @@ function timingSafeEqual(a, b) {
 }
 
 function setSession(res, session, options = {}) {
-  const {userAccessToken,refreshToken,...safeSession}=session;
+  const {userAccessToken,refreshToken,employeePerspective,...safeSession}=session;
   if(userAccessToken)safeSession.feishuGrant=true;
   const issued=sessionPolicy.issue(safeSession),remaining=Math.max(1,Math.floor((Date.parse(issued.expiresAt)-Date.now())/1000));
   setCookie(res, "wos_session", signPayload(issued), { maxAge: Math.min(options.maxAge??remaining,remaining), httpOnly: true });
 }
 
 function getSession(req) {
-  const token = parseCookies(req).wos_session;
+  const cookies = parseCookies(req);
+  const token = cookies.wos_session;
   const session = verifyPayload(token);
   if (!sessionPolicy.valid(session,token)) return null;
   if(session.user){const user=employeeIdentity.sessionUser(session.user);if(!user)return null;session.user=user;}
@@ -5132,7 +5142,41 @@ function getSession(req) {
   if(config.devViewSwitchEnabled && session.devView?.role==='hr' && !employeeDirectory.some(e=>e.userId===session.user?.userId&&e.active!==false)) {
     session.user=developmentManagerIdentity();
   }
+  const preference = canSwitchSessionPerspective(session) && verifyPayload(cookies.wos_perspective);
+  session.employeePerspective = preference?.purpose === 'session-perspective' &&
+    preference.sessionId === session.sessionId && preference.perspective === 'employee';
   return session;
+}
+
+function canSwitchSessionPerspective(session) {
+  return config.authMode === 'feishu' && Boolean(session?.sessionId && !session.devView &&
+    !isExternalSession(session) && bossEmployeePerspectiveUserIds.has(session.user?.userId) &&
+    bossAccessState.userIds.has(session.user?.userId));
+}
+
+async function switchSessionPerspective(req, res, session) {
+  res.setHeader('Cache-Control', 'private, no-store');
+  if (req.method !== 'POST') return sendJson(res,405,{ok:false,error:'method_not_allowed'});
+  if (!session?.user) return sendJson(res,401,{ok:false,error:'unauthorized'});
+  if (!canSwitchSessionPerspective(session)) return sendJson(res,403,{ok:false,error:'perspective_forbidden'});
+  if (!/^application\/json(?:\s*;|$)/i.test(req.headers['content-type'] || '')) {
+    return sendJson(res,415,{ok:false,error:'json_required'});
+  }
+  let body;
+  try {
+    body = await readJsonBody(req,{limitBytes:4096});
+  } catch {
+    return sendJson(res,400,{ok:false,error:'invalid_perspective'});
+  }
+  if (!body || !['boss','employee'].includes(body.perspective) || Object.keys(body).length !== 1) {
+    return sendJson(res,400,{ok:false,error:'invalid_perspective'});
+  }
+  if (!canSwitchSessionPerspective(getSession(req))) return sendJson(res,403,{ok:false,error:'perspective_forbidden'});
+  const maxAge = Math.max(1,Math.floor((Date.parse(session.expiresAt)-Date.now())/1000));
+  setCookie(res,'wos_perspective',signPayload({
+    purpose:'session-perspective',sessionId:session.sessionId,perspective:body.perspective,
+  }),{httpOnly:true,maxAge});
+  return sendJson(res,200,{ok:true,activePerspective:body.perspective});
 }
 
 function isExternalSession(session) {
@@ -5140,6 +5184,7 @@ function isExternalSession(session) {
 }
 
 function isBossIdentity(session) {
+  if (session?.employeePerspective) return false;
   if(!session && config.devViewSwitchEnabled && !process.env.MOCK_USER_ID)return true;
   if (session?.devView && config.devViewSwitchEnabled) return session.devView.role === "boss";
   const user = session?.user || (config.authMode === "mock" ? mockUser() : null);
@@ -5154,11 +5199,13 @@ function isBossIdentity(session) {
 
 // Boss and administrator share management capabilities but keep distinct identities.
 function isBossSession(session) {
+  if (session?.employeePerspective) return false;
   if(session?.devView && config.devViewSwitchEnabled)return ['boss','hr'].includes(session.devView.role);
   return isBossIdentity(session)||isScoring360ConfiguredManagerUser(session?.user||(config.authMode==='mock'?mockUser():null));
 }
 
 function isScoring360ConfigManagerSession(session) {
+  if (session?.employeePerspective) return false;
   if (session?.devView && config.devViewSwitchEnabled) return ["boss","hr"].includes(session.devView.role);
   const user = session?.user || (config.authMode === "mock" ? mockUser() : null);
   return isBossSession(session) || isScoring360ConfiguredManagerUser(user);
