@@ -14,7 +14,7 @@ const schema=await readFile('db/schema.sql','utf8');
 const sql=value=>value==null?'NULL':"'"+String(value).replaceAll("'","''")+"'";
 const results=[];
 
-async function fixture(name,mode='complete') {
+async function fixture(name,mode='complete',{beforeFetch=()=>{},afterWrite=()=>{}}={}) {
   const db=path.join(directory,name+'.sqlite'),requests=[],identities=[],employment=[],writes=[];
   const run=(statement,json=false)=>{
     const response=spawnSync('sqlite3',['-bail',...(json?['-json']:[]),db],{input:statement,encoding:'utf8'});
@@ -66,6 +66,7 @@ async function fixture(name,mode='complete') {
     assert.equal(url.origin,'https://open.feishu.cn','only fixture Feishu routes are allowed');
     requests.push({pathname:url.pathname,query:Object.fromEntries(url.searchParams),method:options.method||'GET'});
     if(requests.length>100)throw Error('fixture_request_limit');
+    beforeFetch(url,options);
     if(url.pathname==='/open-apis/auth/v3/tenant_access_token/internal')return response({code:0,tenant_access_token:'fixture-tenant-token'});
     assert.equal(url.searchParams.get('user_id_type'),'user_id','all directory user references must use user_id');
     assert.equal(url.searchParams.get('department_id_type'),'open_department_id','all department references must use open_department_id');
@@ -144,7 +145,7 @@ async function fixture(name,mode='complete') {
   const realLifecycle=createEmployeeLifecycle({query:async statement=>run(statement,true),exec:async statement=>run(statement),sql,now:()=>new Date('2026-10-28T02:00:00Z')});
   const service=createDirectorySync({
     query:async statement=>run(statement,true),
-    exec:async statement=>{assert(!/\bDELETE\b|\bDROP\b|\bTRUNCATE\b/i.test(statement),'synchronization must not delete historical data');writes.push(statement);return run(statement);},
+    exec:async statement=>{assert(!/\bDELETE\b|\bDROP\b|\bTRUNCATE\b/i.test(statement),'synchronization must not delete historical data');writes.push(statement);const result=run(statement);afterWrite(statement);return result;},
     sql,config:{feishuAppId:'cli_directory_fixture',feishuAppSecret:'fixture-secret'},fetcher,
     registerIdentity:async identity=>identities.push(identity),
     lifecycle:{
@@ -207,6 +208,42 @@ await check('partial visibility or upstream refusal is not reported as complete 
   assert.equal(result.expectedCompanyTotal,7);assert(result.total<7);
   assert.equal(test.run("SELECT is_active FROM employees WHERE user_id='not-returned';"),'1');
   assert.equal(test.run("SELECT is_active FROM employees WHERE user_id='stopped';"),'0');
+  test.unchangedHistory();
+});
+
+await check('aborting directory discovery preserves the last complete roster and permits a fresh sync',async()=>{
+  const controller=new AbortController(),reason=Error('fixture collection deadline');
+  let requestWasAborted=false;
+  const test=await fixture('discovery-aborted','complete',{beforeFetch:(url,options)=>{
+    if(url.pathname.endsWith('/users/not-returned')&&!controller.signal.aborted){
+      controller.abort(reason);
+      requestWasAborted=options.signal.aborted;
+      options.signal.throwIfAborted();
+    }
+  }});
+  test.run(`INSERT INTO app_settings(key,value_json) VALUES('employee_directory_sync','{"finishedAt":"2026-10-01T00:00:00Z"}');`);
+  const previous=await test.service.status();
+  await assert.rejects(test.service.run({signal:AbortSignal.abort(reason)}),error=>error===reason);
+  assert.equal(test.requests.length,0,'an expired sync must not call Feishu');
+  await assert.rejects(test.service.run({signal:controller.signal}),error=>error===reason);
+  assert.equal(requestWasAborted,true,'the deadline must cancel the in-progress Feishu request');
+  assert.equal(test.writes.length,0,'an interrupted scan must not write a partial roster');
+  assert.deepEqual(await test.service.status(),previous);
+  assert.equal((await test.service.run()).scopeComplete,true,'manual sync can proceed after an aborted automatic scan');
+  test.unchangedHistory();
+});
+
+await check('the collection deadline does not interrupt employment updates after the roster has committed',async()=>{
+  const controller=new AbortController();
+  const test=await fixture('abort-after-commit','upstream-inactive',{afterWrite:statement=>{
+    if(statement.startsWith('BEGIN IMMEDIATE;'))controller.abort();
+  }});
+  const result=await test.service.run({signal:controller.signal});
+  assert.equal(controller.signal.aborted,true);
+  assert.equal(result.scopeComplete,true);
+  assert.equal(test.run("SELECT is_active FROM employees WHERE user_id='same-2';"),'0');
+  assert.equal(test.run("SELECT end_date FROM employee_employment_periods WHERE employee_user_id='same-2';"),'2026-10-28');
+  assert.deepEqual((await test.service.status()).lastSync,result);
   test.unchangedHistory();
 });
 

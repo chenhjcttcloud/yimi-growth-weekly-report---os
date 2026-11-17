@@ -6,14 +6,18 @@ export function createDirectorySync({query,exec,sql,config,lifecycle,registerIde
     try {lastSync=rows[0]?.value_json?JSON.parse(rows[0].value_json):null;} catch {}
     return {running,lastSync};
   }
-  async function run() {
+  async function run({signal}={}) {
     if(running)throw Error('directory_sync_running');
     running=true;
     try {
+      signal?.throwIfAborted();
       if(!config.feishuAppId||!config.feishuAppSecret)throw Error('feishu_not_configured');
       const call=async(route,options={})=>{
-        const response=await fetcher('https://open.feishu.cn/open-apis'+route,{...options,signal:AbortSignal.timeout(30000)});
+        signal?.throwIfAborted();
+        const requestTimeout=AbortSignal.timeout(30000);
+        const response=await fetcher('https://open.feishu.cn/open-apis'+route,{...options,signal:signal?AbortSignal.any([signal,requestTimeout]):requestTimeout});
         const value=await response.json();
+        signal?.throwIfAborted();
         if(!response.ok||value.code!==0)throw Error('directory_permission_or_scope_required');
         return value;
       };
@@ -51,10 +55,13 @@ export function createDirectorySync({query,exec,sql,config,lifecycle,registerIde
       try {await pages('/contact/v3/scopes',{},data=>{
         for(const id of data.department_ids||[])if(typeof id==='string')scopeDepartments.add(id);
         for(const id of data.user_ids||[])if(typeof id==='string')scopeUsers.add(id);
-      });scopeRead=true;} catch { /* The root total can independently verify full coverage. */ }
+      });scopeRead=true;} catch {
+        // The root total can independently verify full coverage.
+        signal?.throwIfAborted();
+      }
       try {const root=(await get('/contact/v3/departments/0?user_id_type=user_id&department_id_type=open_department_id'))?.department;
         if(Number.isInteger(root?.member_count)&&root.member_count>=0)expectedCompanyTotal=root.member_count;
-      } catch {}
+      } catch {signal?.throwIfAborted();}
       const discoveredDepartments=new Set(['0',...scopeDepartments]);
       try {await pages('/contact/v3/departments/0/children',{fetch_child:'true'},data=>{
         if(data.items!==undefined&&!Array.isArray(data.items)||data.items===undefined&&data.has_more)throw Error('directory_invalid_response');
@@ -64,7 +71,7 @@ export function createDirectorySync({query,exec,sql,config,lifecycle,registerIde
           if(department.name)departments.set(department.open_department_id,department.name);
           if(department.leader_user_id&&department.leader_name)knownNames.set(department.leader_user_id,department.leader_name);
         }
-      });departmentScanComplete=true;} catch {failedDepartments.add('department_tree');}
+      });departmentScanComplete=true;} catch {signal?.throwIfAborted();failedDepartments.add('department_tree');}
       // Cached departments provide a safe additional discovery path when scope is
       // restricted. Absence alone is never interpreted as termination.
       for(const id of departments.keys())discoveredDepartments.add(id);
@@ -87,19 +94,19 @@ export function createDirectorySync({query,exec,sql,config,lifecycle,registerIde
           // Parent departments can still have many users in their children.
           if(data.items!==undefined&&!Array.isArray(data.items)||data.items===undefined&&data.has_more)throw Error('directory_invalid_response');
           for(const person of data.items||[])accept(person,id);
-        });} catch {failedDepartments.add(id);}
+        });} catch {signal?.throwIfAborted();failedDepartments.add(id);}
       });
       await parallel([...scopeUsers].filter(id=>!people.has(id)),async id=>{
         try {const person=(await get('/contact/v3/users/'+encodeURIComponent(id)+'?user_id_type=user_id&department_id_type=open_department_id'))?.user;
           if(person?.user_id!==id)throw Error('directory_invalid_identity');accept(person);
-        } catch {failedUsers.add(id);}
+        } catch {signal?.throwIfAborted();failedUsers.add(id);}
       });
       if(!people.size&&!(expectedCompanyTotal===0&&departmentScanComplete&&!failedDepartments.size&&!invalidIdentities))throw Error(invalidIdentities?'directory_user_id_permission_required':'directory_scope_empty');
       // Fill missing names once, only for identities with no known display name.
       await parallel([...people.values()].filter(person=>!person.name&&!knownNames.has(person.user_id)),async person=>{
         try {const current=(await get('/contact/v3/users/'+encodeURIComponent(person.user_id)+'?user_id_type=user_id&department_id_type=open_department_id'))?.user;
           if(current?.user_id!==person.user_id)throw Error('directory_invalid_identity');accept({...person,...current});
-        } catch {failedUsers.add(person.user_id);}
+        } catch {signal?.throwIfAborted();failedUsers.add(person.user_id);}
       });
       // A departed employee can disappear from the departmental lists before the
       // next sync. Verify the exact former user_id separately, without adding it
@@ -112,7 +119,7 @@ export function createDirectorySync({query,exec,sql,config,lifecycle,registerIde
           const person=(await get('/contact/v3/users/'+encodeURIComponent(previous.user_id)+'?user_id_type=user_id&department_id_type=open_department_id'))?.user;
           if(person?.user_id!==previous.user_id||!isInactive(person)) {if(Number(previous.is_active)===1)unverifiedMissing.add(previous.user_id);}
           else missingInactive.set(previous.user_id,person);
-        } catch {if(Number(previous.is_active)===1)unverifiedMissing.add(previous.user_id);}
+        } catch {signal?.throwIfAborted();if(Number(previous.is_active)===1)unverifiedMissing.add(previous.user_id);}
       });
       let created=0,updated=0,preservedInactive=0,missingNames=0;
       const prepared=[],confirmedInactive=new Set(),statements=['BEGIN IMMEDIATE;'],finishedAt=new Date().toISOString();
@@ -145,6 +152,8 @@ export function createDirectorySync({query,exec,sql,config,lifecycle,registerIde
         if(Number(localById.get(id)?.is_active)===1)confirmedInactive.add(id);
         prepared.push({person,active:0});
       }
+      // Once the roster transaction begins, finish applying its local changes.
+      signal?.throwIfAborted();
       statements.push('COMMIT;');await exec(statements.join('\n'));
       const currentById=new Map((await query('SELECT user_id,is_active FROM employees;')).map(person=>[person.user_id,person]));
       for(const {person,active} of prepared) {

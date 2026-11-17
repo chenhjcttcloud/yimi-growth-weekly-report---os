@@ -64,7 +64,7 @@ export function validateAnalysis(value,facts,qualityOptions){
   }).slice(0,4);
  return {...quality,summary:a.summary.slice(0,6000),questions:(Array.isArray(a.questions)?a.questions:[]).filter(x=>typeof x==='string').slice(0,5),anomalies:(Array.isArray(a.anomalies)?a.anomalies:[]).filter(x=>typeof x==='string').slice(0,10),tasks};
 }
-export function createLiveReportSync({query,exec,sql,config,settings,refreshDirectory,writeStatus,reserveAiRequest=async()=>true,measureAiRequest=(_model,operation)=>operation(),onComplete=async()=>{},observeEmployee=async()=>{},calendar=()=>({}),fetcher=fetch,pause=ms=>new Promise(resolve=>setTimeout(resolve,ms))}){
+export function createLiveReportSync({query,exec,sql,config,settings,refreshDirectory,syncEmployeeDirectory,writeStatus,reserveAiRequest=async()=>true,measureAiRequest=(_model,operation)=>operation(),onComplete=async()=>{},observeEmployee=async()=>{},calendar=()=>({}),fetcher=fetch,pause=ms=>new Promise(resolve=>setTimeout(resolve,ms))}){
  let running=false,statusWrites=Promise.resolve(),projection=Promise.resolve(),collectionStartDate='';
  let collecting=null;
  let modelQueue=Promise.resolve(),modelCooldownUntil=0;
@@ -204,6 +204,24 @@ export function createLiveReportSync({query,exec,sql,config,settings,refreshDire
   if(!analysisBatch.apiKey)throw Error('ai_not_configured');
   const stat={ok:true,running:true,mode:rescore?'rescore':'sync',...(rescore?{targetMonth:options.targetMonth}:{}),phase:rescore?'prepare':'pull',message:rescore?'正在读取所选月份未完成评分':'正在读取飞书汇报',startedAt:new Date().toISOString(),rowCount:0,analyzed:0,failed:0,cached:0,retryHeld:0,remaining:0,active:0,aiRequestBudget:0,aiRequests:0,skippedInactive:0,skippedInactiveAnalysis:0,skippedSourceChanged:0,historicalInactiveReports:0,errors:[],diagnostics:[],byMonth:{}};
   await emit(stat);
+  const notify=()=>{projection=projection.catch(()=>{}).then(async()=>{await project();await refreshDirectory();await onComplete();stat.publicationPending=false;}).catch(()=>{stat.publicationPending=true;stat.publicationFailures=(stat.publicationFailures||0)+1;stat.diagnostics=[...stat.diagnostics,{code:'publication_update_failed',path:'publication',retryable:true}].slice(-50);});return projection;};
+  async function syncRoster(){
+   if(rescore||selected!==undefined||!syncEmployeeDirectory)return false;
+   await emit({...stat,phase:'directory',message:'正在同步飞书通讯录'});
+   try{
+    const {incomplete,total,confirmedInactiveCount,unverifiedMissingCount}=await syncEmployeeDirectory();
+    stat.directorySync={status:incomplete||unverifiedMissingCount>0?'incomplete':'completed',total,confirmedInactiveCount,unverifiedMissingCount};
+    return true;
+   }catch(error){
+    stat.directorySync={status:error?.message==='directory_sync_running'?'skipped':'failed'};
+    return false;
+   }
+  }
+  async function finishWithoutReports(message){
+   if(!rescore)collecting=null;
+   if(await syncRoster())await notify();
+   await emit({...stat,ok:!stat.publicationPending,running:false,phase:stat.publicationPending?'partial':'done',message,finishedAt:new Date().toISOString()});
+  }
   const reports=new Map();
   if(rescore){
    const target=options.targetReportId?` AND w.id=${sql(options.targetReportId)} AND NOT EXISTS(SELECT 1 FROM weekly_reports newer WHERE newer.employee_user_id=w.employee_user_id AND newer.week_end=w.week_end AND newer.rowid>w.rowid)`:'';
@@ -230,7 +248,7 @@ export function createLiveReportSync({query,exec,sql,config,settings,refreshDire
     items.push(...(result.data?.items||[]));if(!result.data?.has_more)break;page=result.data.page_token;if(!page||seen.has(page))throw Error('invalid_pagination');seen.add(page);if(seen.size>=1000)throw Error('pagination_limit');
    }while(true);
    items=items.filter(item=>reportConfig.ruleId?item.rule_id===reportConfig.ruleId:item.rule_name===reportConfig.templateName);
-   if(!items.length){await emit({...stat,running:false,phase:'done',message:'指定日期内没有找到该模板的汇报',finishedAt:new Date().toISOString()});return;}
+   if(!items.length)return finishWithoutReports('指定日期内没有找到该模板的汇报');
    const inactiveIds=new Set((await query('SELECT user_id FROM employees WHERE is_active=0;')).map(employee=>employee.user_id));
    const accepted=[];
    for(const item of items){if(!inactiveIds.has(item.from_user_id)||historicalIds.has(item.from_user_id)&&await closedHistoryCovers(normalizeLiveReport(item,calendar())))accepted.push(item);else stat.skippedInactive++;}
@@ -248,7 +266,7 @@ export function createLiveReportSync({query,exec,sql,config,settings,refreshDire
    }
   }
   const skippedMessage=()=>`${stat.skippedInactive?`；已跳过 ${stat.skippedInactive} 份已停用人员汇报`:''}${stat.skippedInactiveAnalysis?`；已停止 ${stat.skippedInactiveAnalysis} 份停用人员的排队分析`:''}`;
-  if(!reports.size){await emit({...stat,running:false,phase:'done',message:rescore?'所选月份没有可补跑的在职员工周报':`本次没有需要导入的汇报${skippedMessage()}。`,finishedAt:new Date().toISOString()});return;}
+  if(!reports.size)return finishWithoutReports(rescore?'所选月份没有可补跑的在职员工周报':`本次没有需要导入的汇报${skippedMessage()}。`);
   const approvedOnTime=await readWeeklyOnTimeApprovals({query,sql,month:rescore?options.targetMonth:undefined});
   const work=[];let batch='';
   function monthCell(report){return stat.byMonth[report.end.slice(0,7)]??={total:0,completed:0,failed:0,cached:0,remaining:0,active:0,skipped:0};}
@@ -297,8 +315,7 @@ export function createLiveReportSync({query,exec,sql,config,settings,refreshDire
   if(!rescore)collecting=null;
   stat.aiRequestBudget=work.length*MAX_ANALYSIS_ATTEMPTS;
   updateRemaining();
-  if(!stat.rowCount){await emit({...stat,running:false,phase:'done',message:`本次没有需要导入的汇报${skippedMessage()}。`,finishedAt:new Date().toISOString()});return;}
-  const notify=()=>{projection=projection.catch(()=>{}).then(async()=>{await project();await refreshDirectory();await onComplete();stat.publicationPending=false;}).catch(()=>{stat.publicationPending=true;stat.publicationFailures=(stat.publicationFailures||0)+1;stat.diagnostics=[...stat.diagnostics,{code:'publication_update_failed',path:'publication',retryable:true}].slice(-50);});return projection;};
+  if(!stat.rowCount)return finishWithoutReports(`本次没有需要导入的汇报${skippedMessage()}。`);
   stat.phase='analysis';await notify();await emit({...stat});let index=0;
   async function persist(report,content){
    const target=report.stored?`id=${sql(report.stored.id)}`:`employee_user_id=${sql(report.userId)} AND week_end=${sql(report.end)}`;
@@ -344,7 +361,10 @@ export function createLiveReportSync({query,exec,sql,config,settings,refreshDire
     }
    }
   }));
-  await projection;await notify();
+  // Let this batch finish processing reports before applying newly confirmed departures.
+  await projection;
+  await syncRoster();
+  await notify();
   if(analysisBatch.blockedReason==='ai_scoring_paused')stat.message+='；AI 评分已暂停';
   const partial=Boolean(stat.failed||stat.retryHeld||stat.publicationPending);
   await emit({...stat,ok:!partial&&!analysisBatch.blockedReason,running:false,phase:analysisBatch.blockedReason?'paused':partial?'partial':'done',...(analysisBatch.blockedReason?{blockedReason:analysisBatch.blockedReason}:{}),finishedAt:new Date().toISOString()});

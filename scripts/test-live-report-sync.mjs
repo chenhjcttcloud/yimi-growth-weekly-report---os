@@ -23,6 +23,7 @@ try{
  assert.equal(normalizeLiveReport({...item,commit_time:Math.floor(Date.parse('2026-10-19T10:00:00+08:00')/1000)}).end,'2026-10-16');
  assert.throws(()=>validateAnalysis({scores:[101,0,0,0],summary:'invalid'}));
  let calls=0,pages=0,status,failAi=false,forgeQuotes=false,lowConfidence=false,incoming=[item,{...item,task_id:'other',rule_id:'other',rule_name:'日报'}],stopOnPause='',stopBeforeImport='',stopAfterAi='',invalidateHistoryOnPause='',invalidateHistoryAfterAi='';
+ let directoryCalls=0,directoryIncomplete=false,failDirectory=false,failPull=false,directoryStopUser='';
  const observed=[],settings={overview:async()=>({report:{templateName:item.rule_name,ruleId:'r1'}}),policyFor:async()=>({deadlineTime:'20:00'})};
  const config={dataDir:dir,feishuAppId:'cli_test',feishuAppSecret:'secret',moonshotApiKey:'key',moonshotBaseUrl:'https://api.example.com/v1',kimiFollowupModel:'test'};
  const fetcher=async(url,options)=>{
@@ -30,6 +31,7 @@ try{
   if(url==='https://open.feishu.cn/open-apis/auth/v3/tenant_access_token/internal')value={code:0,tenant_access_token:'token'};
   else if(url==='https://open.feishu.cn/open-apis/report/v1/tasks/query?user_id_type=user_id'){
    pages++;const next=JSON.parse(options.body).page_token;
+   if(failPull)return {ok:false,status:503,json:async()=>({})};
    value={code:0,data:{items:next?[]:incoming,has_more:!next,page_token:'next'}};
   }else{
    assert.equal(url,'https://api.example.com/v1/chat/completions','all upstream requests remain fixture-only');
@@ -52,6 +54,12 @@ try{
    if(stopBeforeImport&&statement===`SELECT is_active FROM employees WHERE user_id=${sql(stopBeforeImport)};`){run(`UPDATE employees SET is_active=0 WHERE user_id=${sql(stopBeforeImport)};`);stopBeforeImport='';}
    return run(statement,true);
   },exec:async statement=>run(statement),sql,config,settings,
+  syncEmployeeDirectory:async()=>{
+   directoryCalls++;
+   if(failDirectory)throw Error('directory fixture failure');
+   if(directoryStopUser)run(`UPDATE employees SET is_active=0 WHERE user_id=${sql(directoryStopUser)};`);
+   return {incomplete:directoryIncomplete,total:1,confirmedInactiveCount:directoryStopUser?1:0,unverifiedMissingCount:directoryIncomplete?1:0};
+  },
   observeEmployee:async userId=>{observed.push(userId);},refreshDirectory:async()=>{},writeStatus:async value=>{status=value;},
   pause:async()=>{if(stopOnPause){run(`UPDATE employees SET is_active=0 WHERE user_id=${sql(stopOnPause)};`);stopOnPause='';}if(invalidateHistoryOnPause){run(`UPDATE employee_employment_periods SET end_date='2026-10-15' WHERE employee_user_id=${sql(invalidateHistoryOnPause)};`);invalidateHistoryOnPause='';}},fetcher
  });
@@ -60,6 +68,8 @@ try{
  const savedReports=userId=>run(`SELECT * FROM weekly_reports WHERE employee_user_id=${sql(userId)} ORDER BY id;`,true);
  await sync.run(options);
  assert.equal(status.ok,true);assert.equal(pages,2);assert.equal(calls,1);assert.equal(count('weekly_reports'),1);
+ assert.equal(directoryCalls,1,'a complete paginated pull triggers one directory check');
+ assert.equal(status.directorySync.status,'completed');
  assert.equal(status.aiRequestBudget,2,'only matching templates enter the analysis budget');assert.equal(status.aiRequests,1);
  let data=JSON.parse(await readFile(path.join(dir,'prototypeData.json')));
  assert.equal(data.weekly_scores.length,1);assert.equal(data.weekly_scores[0]['总分'],83.3);
@@ -67,6 +77,7 @@ try{
  assert.equal(insights['period-2026-10-16'].employeeInsights[0].coachSummary,'AI 测试点评');
  assert.equal(insights['period-2026-10-16'].attentionQueue.length,1);
  await sync.run(options);assert.equal(calls,1,'unchanged reports reuse cached analysis');assert.equal(count('weekly_reports'),1);
+ assert.equal(directoryCalls,2,'a new pull checks the directory even when cached scores are reused');
  assert.equal(status.aiRequestBudget,0);assert.equal(status.aiRequests,0);
  const firstContent=JSON.parse(savedReports('ou_1')[0].content_json);
  assert.equal(firstContent.aiPromptVersion,REPORT_QUALITY_PROMPT_VERSION);assert.equal(firstContent.ai.version,REPORT_QUALITY_VERSION);assert.equal(firstContent.ai.modules.length,4);assert(firstContent.ai.modules[0].criteria[0].reason);assert.equal(firstContent.ai.modules[0].criteria[0].evidence[0].quote,'完成3项验收');
@@ -77,7 +88,17 @@ try{
  await sync.run(options);assert.equal(status.phase,'partial');assert.equal(status.failed,1);assert.equal(count('weekly_reports'),1,'AI failure retains the source report');
  const pendingProjection=JSON.parse(await readFile(path.join(dir,'prototypeData.json')));assert.equal(pendingProjection.weekly_scores[0]['总分'],null,'failed AI is projected as pending, never zero');
  failAi=false;await sync.run(options);assert.equal(status.ok,true);assert.equal(status.analyzed,1,'retry completes previously failed analysis');
+ const beforeUnsuccessfulPull=directoryCalls;
  await assert.rejects(sync.run({start:'bad',end:'2026-10-23'}),/invalid_sync_dates/);
+ failPull=true;
+ try{await assert.rejects(sync.run(options));}finally{failPull=false;}
+ assert.equal(directoryCalls,beforeUnsuccessfulPull,'invalid and failed pulls leave the directory untouched');
+
+ incoming=[];directoryIncomplete=true;
+ await sync.run(options);
+ assert.equal(directoryCalls,beforeUnsuccessfulPull+1,'an empty successful pull still checks for departures');
+ assert.equal(status.ok,true);assert.equal(status.rowCount,0);assert.equal(status.directorySync.status,'incomplete');
+ directoryIncomplete=false;
 
  // Retain a real historical fixture, then stop its account. A fresh report from
  // that account must not update its history or trigger another analysis.
@@ -87,9 +108,11 @@ try{
  const retained=savedReports('stopped-member'),stoppedEmployee=run("SELECT * FROM employees WHERE user_id='stopped-member';",true);
  const changedStopped={...stopped,task_id:'stopped-new',commit_time:item.commit_time,form_contents:[...item.form_contents,{field_name:'额外内容',field_value:'不应进入系统'}]};
  const newActive={...item,task_id:'active-new',from_user_id:'new-member',from_user_name:'新员工'};
- incoming=[item,newActive,changedStopped];const beforeMixed=calls,observedBefore=observed.length;
- await sync.run(options);
+ incoming=[item,newActive,changedStopped];const beforeMixed=calls,observedBefore=observed.length,beforeDirectoryFailure=directoryCalls;
+ failDirectory=true;
+ try{await sync.run(options);}finally{failDirectory=false;}
  assert.equal(status.ok,true);assert.equal(status.rowCount,2);assert.equal(status.skippedInactive,1);assert.equal(status.skippedInactiveAnalysis,0);
+ assert.equal(directoryCalls,beforeDirectoryFailure+1);assert.equal(status.directorySync.status,'failed','directory failures are tracked separately from completed collection');
  assert.equal(calls,beforeMixed+1,'active cache is reused and only the new active member needs AI');
  assert.equal(status.aiRequestBudget,2,'the cached and inactive reports add no requests to the new employee’s analysis budget');assert.equal(status.aiRequests,1);
  assert.deepEqual(savedReports('stopped-member'),retained,'stopped history is preserved without new rows');
@@ -150,6 +173,7 @@ try{
  const historyBefore={calls,batches:count('import_batches'),observed:observed.length};
  await sync.run(options);assert.equal(status.rowCount,0);assert.equal(status.skippedInactive,6);assert.equal(calls,historyBefore.calls);assert.equal(count('import_batches'),historyBefore.batches,'default sync still ignores every inactive account');
  const historyOptions={...options,historicalInactiveUserIds:historicalIds.filter(id=>id!=='history-unselected')};
+ const beforeHistoryDirectory=directoryCalls;
  await sync.run(historyOptions);
  assert.equal(status.ok,true);assert.equal(status.rowCount,1);assert.equal(status.analyzed,1);assert.equal(status.historicalInactiveReports,1);assert.equal(status.skippedInactive,5);assert.equal(calls,historyBefore.calls+1);
  assert(JSON.parse(savedReports('history-selected')[0].content_json).ai,'selected closed history receives valid AI scores');
@@ -158,6 +182,7 @@ try{
  assert.deepEqual(run("SELECT * FROM employee_employment_periods WHERE employee_user_id LIKE 'history-%' ORDER BY id;",true),historicalPeriods,'backfill cannot reopen or rewrite employment history');
  assert.equal(observed.length,historyBefore.observed,'historical backfill never observes a new employment interval');
  await sync.run(historyOptions);assert.equal(status.rowCount,1);assert.equal(status.analyzed,0);assert.equal(status.historicalInactiveReports,1);assert.equal(calls,historyBefore.calls+1,'explicit backfill reuses validated cached scores');
+ assert.equal(directoryCalls,beforeHistoryDirectory,'historical maintenance does not alter the current employee directory');
  const beforeMalformed={calls,pages,reports:count('weekly_reports')};
  for(const historicalInactiveUserIds of [null,'history-selected',{},[''],[' history-selected'],[1],Array(501).fill('history-selected')])await assert.rejects(sync.run({...options,historicalInactiveUserIds}),/invalid_historical_inactive_users/);
  assert.equal(calls,beforeMalformed.calls);assert.equal(pages,beforeMalformed.pages);assert.equal(count('weekly_reports'),beforeMalformed.reports,'malformed overrides fail before any source read or write');
@@ -177,7 +202,9 @@ try{
  // A valid low-confidence result from an explicit rescore still publishes.
  incoming=[{...item,task_id:'quality-evidence',from_user_id:'quality-evidence',from_user_name:'证据校验样本'}];forgeQuotes=true;
  const beforeForgery=calls;await sync.run(options);assert.equal(status.retryHeld,1);assert.equal(calls,beforeForgery+2,'invalid quoted evidence stops automatic retries after one correction attempt');assert.equal(savedReports('quality-evidence').length,1);assert.equal(JSON.parse(savedReports('quality-evidence')[0].content_json).ai,undefined);
+ const beforeRescore=directoryCalls;
  forgeQuotes=false;lowConfidence=true;await sync.run({mode:'rescore',targetMonth:savedReports('quality-evidence')[0].week_end.slice(0,7)});assert.equal(status.ok,true);const lowContent=JSON.parse(savedReports('quality-evidence')[0].content_json);assert.deepEqual(lowContent.ai.scores,[40,40,40,40]);assert.equal(lowContent.ai.modules[0].confidence,.1);assert(lowContent.ai.anomalies.includes('数据矛盾待补充说明'));
+ assert.equal(directoryCalls,beforeRescore,'rescoring stored reports does not fetch the employee directory');
  data=JSON.parse(await readFile(path.join(dir,'prototypeData.json')));assert.equal(data.weekly_scores.find(r=>r.user_id==='quality-evidence')['总分'],40,'low scores, confidence and anomalies do not create an approval gate');
 
  // A manager can approve one employee and week before the actual report arrives.
@@ -224,6 +251,22 @@ try{
  assert.equal(row.timeliness.late,1);
  assert(!JSON.stringify(row).includes('仅供审计的测试延期原因'));
 
+ // The final report in the same collection as a departure still receives its score.
+ const leavingId='departed-in-collection';
+ incoming=[{...item,task_id:leavingId,from_user_id:leavingId,from_user_name:'采集时确认离职的同事'}];
+ directoryStopUser=leavingId;
+ const beforeDepartureDirectory=directoryCalls;
+ try{await sync.run(options);}finally{directoryStopUser='';}
+ assert.equal(directoryCalls,beforeDepartureDirectory+1);
+ assert.equal(status.ok,true);assert.equal(status.analyzed,1);
+ assert.equal(status.directorySync.confirmedInactiveCount,1);
+ assert.equal(run(`SELECT is_active FROM employees WHERE user_id=${sql(leavingId)};`,true)[0].is_active,0);
+ const finalReport=JSON.parse(savedReports(leavingId)[0].content_json);
+ assert.equal(finalReport.ai.version,REPORT_QUALITY_VERSION);
+ data=JSON.parse(await readFile(path.join(dir,'prototypeData.json')));
+ assert(data.weekly_scores.some(report=>report.user_id===leavingId&&report['总分']===finalReport.ai.totalScore),'the just-scored report remains visible in history');
+ assert(!data.employee_summary.some(employee=>employee.user_id===leavingId),'the final projection reflects the departure');
+
  assert.equal(run('PRAGMA integrity_check;').trim(),'ok');
- console.log('live report sync tests passed: pagination, templates, normalization, AI validation, persistence, historical projections, cache/retry, inactive mixed/all batches, no empty imports, pre-import/queued/in-flight stop, closed-history maintenance allowlist and rechecks, no reactivation, zero real upstream requests');
+ console.log('live report sync tests passed: pagination, templates, normalization, directory checks on successful pulls, directory failure isolation, AI validation, persistence, historical projections, cache/retry, inactive mixed/all batches, no empty imports, pre-import/queued/in-flight stop, closed-history maintenance allowlist and rechecks, no reactivation, zero real upstream requests');
 }finally{console.log('Test artifacts retained:',dir);}

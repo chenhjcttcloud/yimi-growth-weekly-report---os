@@ -82,6 +82,10 @@ interface LarkReportSyncStatus {
   startedAt?: string;
   finishedAt?: string;
   rowCount?: number;
+  directorySync?: {
+    status: 'completed' | 'incomplete' | 'failed' | 'skipped';
+    confirmedInactiveCount?: number;
+  };
   importOutputPath?: string;
   period?: {
     id?: string;
@@ -906,7 +910,7 @@ export function SettingsPage({ access,onOpenScoringSetup }: SettingsPageProps) {
           </span>
         </div>
         <div className="sync-flow-copy">
-          <strong>完整流程：读取飞书汇报 → 保存原文 → Kimi 评分 → 自动更新月度结果</strong>
+          <strong>完整流程：读取飞书汇报 → 保存原文 → Kimi 评分 → 同步通讯录 → 更新月度汇总</strong>
           <span>自动收集跟随周报截止时间，也可以立即手动同步。首次手动同步按配置日期读取，留空时读取本月。未变化的 AI 分析会复用，多次未通过引文或格式校验的周报可手动补跑。</span>
         </div>
         <div className="sync-status-box">
@@ -919,6 +923,10 @@ export function SettingsPage({ access,onOpenScoringSetup }: SettingsPageProps) {
           </div>
           <small>{syncStatus?.updatedAt ? `更新于 ${formatDateTime(syncStatus.updatedAt)}` : "等待首次同步"}</small>
         </div>
+        {syncStatus?.directorySync?.status === 'completed' && <p className="settings-hint">飞书通讯录已同步。{Boolean(syncStatus.directorySync.confirmedInactiveCount) && `本次自动停用 ${syncStatus.directorySync.confirmedInactiveCount} 人。`}</p>}
+        {syncStatus?.directorySync?.status === 'incomplete' && <p className="company-roster-warning" role="status">通讯录同步有待核查项，可在「员工管理」查看。</p>}
+        {syncStatus?.directorySync?.status === 'failed' && <p className="company-roster-warning" role="status">通讯录同步失败，可在「员工管理」重试。周报处理结果见上方。</p>}
+        {syncStatus?.directorySync?.status === 'skipped' && <p className="settings-hint">本批采集期间已有通讯录同步在运行，可在「员工管理」查看结果。</p>}
         <div className="sync-actions">
           <button
             className="primary-button"
