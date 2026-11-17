@@ -28,6 +28,10 @@ const groupedEmployees=[
   ...departments.flatMap(department=>employees.filter(person=>person.department?.startsWith(department))),
   employees[34],
 ];
+const productPeople=employees.filter(person=>person.department?.includes(departments[0]));
+const researchPeople=employees.filter(person=>person.department===departments[1]);
+const supportPeople=employees.filter(person=>person.department?.includes(departments[2]));
+const departmentCounts=[['全部部门',employees.length],[departments[0],productPeople.length],[departments[1],researchPeople.length],[departments[2],supportPeople.length],['未分配部门',1]];
 const manager={userId:'pagination-fixture-manager',name:'虚构分页管理员',department:'虚构管理部'};
 const timing={expected:1,submitted:1,onTime:1,late:0,missing:0,pendingTimestamp:0,pendingCalendar:0,rate:100};
 const evidence=(focus,person,month)=>`${person.name} ${month} 的虚构${focus==='quality'?'周报证据':'协作评价'}`;
@@ -100,16 +104,16 @@ try{
   const next=()=>pagination().getByRole('button',{name:'下一页员工',exact:true});
   const back=()=>pagination().getByRole('button',{name:'上一页员工',exact:true});
   const search=()=>page.getByLabel('搜索员工或部门',{exact:true});
-  const departmentFilter=()=>directory().getByRole('combobox',{name:'按部门筛选',exact:true});
+  const departmentFilter=()=>page.getByRole('group',{name:'按部门筛选',exact:true});
+  const departmentButton=department=>departmentFilter().getByRole('button',{name:department,exact:true});
   const departmentHeading=department=>directory().getByRole('heading',{name:new RegExp('^'+department)});
-  let directoryOrder=employees;
   async function title(value){await page.waitForFunction(text=>document.querySelector('.app-header h1')?.textContent===text,value);}
   async function urlValue(key,value){await page.waitForFunction(({key,value})=>new URL(location.href).searchParams.get(key)===value,{key,value});}
   async function selected(person){
     await page.waitForFunction(name=>document.querySelector('.pf-person-heading h3')?.textContent?.startsWith(name),person.name);
     await urlValue('scoreEmployeeId',person.userId);
   }
-  async function assertPage(number,expected=directoryOrder.slice((number-1)*8,number*8),total=5){
+  async function assertPage(number,expected=groupedEmployees.slice((number-1)*8,number*8),total=5){
     await pagination().getByText(`第 ${number} / ${total} 页`,{exact:true}).waitFor();
     assert.deepEqual(await people().locator('strong').allTextContents(),expected.map(person=>person.name),'only the expected employees on this page are rendered, in order');
     assert.equal(await back().isDisabled(),number===1,'previous is disabled only at the first page');
@@ -123,10 +127,21 @@ try{
     await page.getByRole('combobox',{name:'选择绩效月份',exact:true}).click();
     await page.getByRole('option',{name:monthName(month),exact:true}).click();await urlValue('scoreMonth',month);
   }
+  async function assertDepartment(department){
+    assert.equal(await departmentButton(department).getAttribute('aria-pressed'),'true');
+    assert.equal(await departmentFilter().getByRole('button',{pressed:true}).count(),1,'only the chosen department is pressed');
+  }
   async function chooseDepartment(department){
-    await departmentFilter().click();
-    await page.getByRole('option',{name:department,exact:true}).click();
-    assert(await departmentFilter().getByText(department,{exact:true}).isVisible());
+    await departmentButton(department).click();await assertDepartment(department);
+  }
+  async function assertDepartmentHeader(){
+    await assertDepartment('全部部门');
+    assert.equal(await directory().getByRole('group',{name:'按部门筛选',exact:true}).count(),0,'department buttons are outside the employee sidebar');
+    for(const [department,count] of departmentCounts){
+      assert.deepEqual((await departmentButton(department).innerText()).match(/\d+/g),[String(count)],'each department has a visible count that includes secondary members');
+    }
+    const header=await departmentFilter().boundingBox(),sidebar=await directory().boundingBox();
+    assert(header&&sidebar&&header.width>sidebar.width&&header.y+header.height<=sidebar.y+1,'departments occupy a shared row above the employee directory and detail');
   }
   async function showEvidence(focus,person,month,absent=[]){
     await page.getByRole('tab',{name:focus==='quality'?'周报与证据':'协作明细',exact:true}).click();
@@ -135,21 +150,21 @@ try{
     for(const [oldPerson,oldMonth] of absent)assert.equal(await page.getByText(evidence(focus,oldPerson,oldMonth),{exact:true}).count(),0,'evidence from a different employee or month must not be reused');
   }
 
-  for(const [route,focus,label] of [['quality-scores','quality','周报质量'],['collaboration-scores','collaboration','360 协同得分']]){
-    const grouped=focus==='collaboration';
-    directoryOrder=grouped?groupedEmployees:employees;
-    await page.goto(`${base}/?page=${route}&scoreMonth=${currentMonth}`);await title(label);await assertPage(1);await selected(employees[0]);await assertActive(employees[0]);
-    if(grouped)assert(await departmentHeading(departments[0]).isVisible());
-    else assert.equal(await departmentFilter().count(),0,'department grouping is confined to collaboration results');
+  for(const [route,focus,label] of [['quality-scores','quality','周报质量'],['collaboration-scores','collaboration','360 协同得分'],['scores','quality','评分工作台']]){
+    const resultUrl=`${base}/?page=${route}&scoreMonth=${currentMonth}${route==='scores'?'&scoreTab=results':''}`;
+    await page.goto(resultUrl);await title(label);await assertPage(1);await selected(employees[0]);await assertActive(employees[0]);
+    if(route==='scores')assert.equal(await page.getByRole('tab',{name:'得分结果',exact:true}).getAttribute('aria-selected'),'true');
+    await assertDepartmentHeader();
+    assert(await departmentHeading(departments[0]).isVisible());
     assert.equal(await directory().getByText('虚构员工35',{exact:true}).count(),0,'35-person directory does not render the whole roster');
     const requestsBeforePaging=detailRequests.length;
     for(let number=2;number<=5;number++){
       await next().click();await assertPage(number);await selected(employees[0]);
-      if(grouped&&number===2){
+      if(number===2){
         assert(await departmentHeading(departments[0]).isVisible(),'a department heading repeats when its employee list spans pages');
         assert(await departmentHeading(departments[1]).isVisible());
       }
-      if(grouped&&number===5)assert(await departmentHeading('未分配部门').isVisible(),'employees without departments remain visible');
+      if(number===5)assert(await departmentHeading('未分配部门').isVisible(),'employees without departments remain visible');
       assert.equal(await page.locator('.pf-person[aria-pressed="true"]').count(),0,'paging does not silently select a different employee');
     }
     assert.equal(detailRequests.length,requestsBeforePaging,'paging alone never loads a different employee detail');
@@ -157,11 +172,11 @@ try{
     await assertActive(employees[0]);
 
     // An explicit bookmark and refresh reveal employee 20 on page 3.
-    await page.goto(`${base}/?page=${route}&scoreMonth=${currentMonth}&scoreEmployeeId=${employees[19].userId}&scoreDetailTab=review`);
+    await page.goto(`${resultUrl}&scoreEmployeeId=${employees[19].userId}&scoreDetailTab=review`);
     await title(label);await assertPage(3);await selected(employees[19]);await assertActive(employees[19]);
     await page.reload();await title(label);await assertPage(3);await selected(employees[19]);await assertActive(employees[19]);
     await showEvidence(focus,employees[19],currentMonth);
-    const nextPerson=grouped?employees[22]:employees[20];
+    const nextPerson=employees[22];
     await personButton(nextPerson).click();await assertPage(3);await selected(nextPerson);await assertActive(nextPerson);
     await showEvidence(focus,nextPerson,currentMonth,[[employees[19],currentMonth]]);
 
@@ -171,7 +186,6 @@ try{
     await page.getByText(evidence(focus,nextPerson,currentMonth),{exact:true}).waitFor();
     await personButton(employees[34]).click();await selected(employees[34]);await assertActive(employees[34]);
     assert.equal(await people().count(),1,'choosing a search match does not discard the filter');
-    const researchPeople=employees.filter(person=>person.department===departments[1]);
     await search().fill(departments[1]);await assertPage(1,researchPeople.slice(0,8),2);await selected(employees[34]);
     await next().click();await assertPage(2,researchPeople.slice(8),2);await selected(employees[34]);
     await search().fill('完全不存在的虚构姓名');
@@ -181,47 +195,57 @@ try{
     await directory().getByRole('button',{name:'清除搜索',exact:true}).click();await assertPage(1);await selected(employees[34]);
     assert.equal(await search().inputValue(),'','the empty-state action clears the filter');
     for(let number=2;number<=4;number++){await next().click();await assertPage(number);await selected(employees[34]);}
-    const fourthPagePerson=directoryOrder[24];
-    await personButton(fourthPagePerson).click();await assertPage(4);await selected(fourthPagePerson);await assertActive(fourthPagePerson);
+    const multiDepartmentPerson=employees[5];
+    await personButton(multiDepartmentPerson).click();await assertPage(4);await selected(multiDepartmentPerson);await assertActive(multiDepartmentPerson);
     assert.equal(await people().count(),8,'selecting a person keeps the chosen page at eight employees');
 
-    if(grouped){
-      const contacts=employees.filter(person=>person.department?.startsWith(departments[0])||person===employees[5]);
-      const beforeFilter=detailRequests.length;
-      await chooseDepartment(departments[0]);await assertPage(1,contacts.slice(0,8),2);await selected(fourthPagePerson);
-      assert(await personButton(employees[5]).isVisible(),'a secondary department membership matches the department filter');
-      await next().click();await assertPage(2,contacts.slice(8),2);
-      await search().fill(employees[5].name);await assertPage(1,[employees[5]],1);await selected(fourthPagePerson);
-      await chooseDepartment(departments[1]);
-      await page.getByText('未找到匹配员工',{exact:true}).waitFor();
-      assert.equal(await people().count(),0,'name and department filters intersect');
-      await search().fill('');
-      await chooseDepartment('未分配部门');await assertPage(1,[employees[34]],1);
-      assert.equal(detailRequests.length,beforeFilter,'department and name filters never request a different employee detail');
-      await chooseDepartment(departments[1]);
-    }
+    await search().fill(multiDepartmentPerson.name);await assertPage(1,[multiDepartmentPerson],1);
+    const beforeFilter=detailRequests.length;
+    await chooseDepartment(departments[1]);await assertPage(1,researchPeople.slice(0,8),2);await selected(researchPeople[0]);await assertActive(researchPeople[0]);
+    assert.equal(await search().inputValue(),'','changing departments clears the previous search');
+    await search().fill(multiDepartmentPerson.name);
+    await directory().getByText('未找到匹配员工',{exact:true}).waitFor();
+    assert.equal(await people().count(),0,'employee search intersects with the selected department');
+    await selected(researchPeople[0]);
+    await chooseDepartment(departments[0]);await assertPage(1,productPeople.slice(0,8),2);await selected(productPeople[0]);await assertActive(productPeople[0]);
+    assert(await personButton(multiDepartmentPerson).isVisible(),'a secondary membership appears in the selected department');
+    await next().click();await assertPage(2,productPeople.slice(8),2);
+    await search().fill(multiDepartmentPerson.name);await assertPage(1,[multiDepartmentPerson],1);await selected(productPeople[0]);
+    assert.equal(detailRequests.length,beforeFilter,'department and search changes only open the normal result review');
+
+    await personButton(multiDepartmentPerson).click();await selected(multiDepartmentPerson);
+    await showEvidence(focus,multiDepartmentPerson,currentMonth);
+    const beforeKeepingSelection=detailRequests.length;
+    await chooseDepartment(departments[2]);await assertPage(1,supportPeople.slice(0,8),2);await selected(multiDepartmentPerson);await assertActive(multiDepartmentPerson);
+    assert.equal(await search().inputValue(),'','switching between the employee’s departments clears stale search');
+    await chooseDepartment('全部部门');await assertPage(4);await selected(multiDepartmentPerson);await assertActive(multiDepartmentPerson);
+    await page.getByText(evidence(focus,multiDepartmentPerson,currentMonth),{exact:true}).waitFor();
+    await chooseDepartment('未分配部门');await assertPage(1,[employees[34]],1);await selected(employees[34]);await assertActive(employees[34]);
+    assert.equal(await page.getByRole('tab',{name:'结果概览',exact:true}).getAttribute('aria-selected'),'true','selecting a department without the current employee opens normal result review');
+    assert.equal(detailRequests.length,beforeKeepingSelection,'compatible filters keep evidence, and a replacement opens review without another evidence request');
+    await chooseDepartment(departments[1]);
     await search().fill(departments[1]);await chooseMonth(historical);await assertPage(1);await selected(employees[0]);await assertActive(employees[0]);
     assert.equal(await search().inputValue(),'','changing month clears a stale directory filter');
-    if(grouped)assert(await departmentFilter().getByText('全部部门',{exact:true}).isVisible(),'changing month clears a stale department');
+    await assertDepartment('全部部门');
     await showEvidence(focus,employees[0],historical,[[nextPerson,currentMonth]]);
-    await page.screenshot({path:path.join(dir,focus+'-desktop.png'),fullPage:true,animations:'disabled'});
+    await page.screenshot({path:path.join(dir,route+'-desktop.png'),fullPage:true,animations:'disabled'});
 
     await page.setViewportSize({width:390,height:844});
     assert(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth+1),'phone layout must not overflow the viewport horizontally');
+    assert(await departmentFilter().evaluate(element=>element.getBoundingClientRect().right<=innerWidth+1),'department buttons fit within the phone viewport');
     assert(await directory().evaluate(element=>element.scrollWidth<=element.clientWidth+1),'employee directory must fit within phone width');
     assert(await pagination().evaluate(element=>element.scrollWidth<=element.clientWidth+1),'pagination controls must fit within phone width');
     await next().click();await assertPage(2);await selected(employees[0]);
-    const mobilePerson=directoryOrder[8];
+    const mobilePerson=groupedEmployees[8];
     await personButton(mobilePerson).click();await selected(mobilePerson);await assertPage(2);await assertActive(mobilePerson);
     await directory().scrollIntoViewIfNeeded();
-    await page.screenshot({path:path.join(dir,focus+'-mobile.png'),fullPage:true,animations:'disabled'});
+    await page.screenshot({path:path.join(dir,route+'-mobile.png'),fullPage:true,animations:'disabled'});
     await page.setViewportSize({width:1440,height:1000});
-    checks.push({route,employees:35,pageSize:8,pages:5,pagingPreservesDetail:true,deepLinkAndRefreshLocateEmployee:true,nameAndDepartmentSearch:true,departmentGrouping:grouped,departmentFilter:grouped,emptySearchRetainsDetail:true,monthReset:true,evidenceIsolation:true,mobileWidth:390});
+    checks.push({route,employees:35,pageSize:8,pages:5,pagingPreservesDetail:true,deepLinkAndRefreshLocateEmployee:true,nameAndDepartmentSearch:true,departmentGrouping:true,departmentHeaderAndCounts:true,departmentSelectionPreservesOrReplacesDetail:true,emptySearchRetainsDetail:true,monthReset:true,evidenceIsolation:true,mobileWidth:390});
   }
 
   // Browser-history targets must win over a directory filter left by the
   // previous view, including a simultaneous employee/month restoration.
-  directoryOrder=employees;
   await page.goto(`${base}/?page=quality-scores&scoreMonth=${currentMonth}&scoreEmployeeId=${employees[0].userId}&scoreDetailTab=review`);
   await title('周报质量');await assertPage(1);await selected(employees[0]);
   async function restoreHistoryTarget(person,month){
@@ -247,16 +271,17 @@ try{
   await page.goto(`${base}/?page=quality-scores&scoreMonth=${historical}&scoreEmployeeId=${employees[19].userId}&scoreDetailTab=review`);
   await title('周报质量');await assertPage(3);await next().click();await assertPage(4);await selected(employees[19]);
   const nav=page.getByRole('navigation',{name:'主导航',exact:true});
-  directoryOrder=groupedEmployees;
   await nav.getByRole('button',{name:'360 协同得分',exact:true}).click();await title('360 协同得分');await assertPage(3);await selected(employees[19]);await assertActive(employees[19]);
   await chooseDepartment(departments[0]);
-  await search().fill(employees[5].name);await assertPage(1,[employees[5]],1);await selected(employees[19]);
+  await search().fill(employees[5].name);await assertPage(1,[employees[5]],1);await selected(productPeople[0]);
   await restoreHistoryTarget(employees[22],historical);
-  assert(await departmentFilter().getByText('全部部门',{exact:true}).isVisible(),'a history target hidden by the department filter clears that filter');
+  await assertDepartment('全部部门');
   await restoreHistoryTarget(employees[19],historical);
-  await next().click();await assertPage(4);await selected(employees[19]);
-  directoryOrder=employees;
+  await chooseDepartment(departments[1]);await assertPage(1,researchPeople.slice(0,8),2);await selected(employees[19]);
+  await search().fill(departments[1]);await next().click();await assertPage(2,researchPeople.slice(8),2);await selected(employees[19]);
   await nav.getByRole('button',{name:'周报质量',exact:true}).click();await title('周报质量');await assertPage(3);await selected(employees[19]);await assertActive(employees[19]);
+  await assertDepartment('全部部门');
+  assert.equal(await search().inputValue(),'','switching modules clears directory filters');
   await page.screenshot({path:path.join(dir,'module-switch-restored-selection.png'),fullPage:true,animations:'disabled'});
 
   const pendingSubjects=employees.slice(0,4);

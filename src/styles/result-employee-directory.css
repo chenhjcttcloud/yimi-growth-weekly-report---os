@@ -1,3 +1,104 @@
+.pf-department-switcher {
+  grid-column: 1 / -1;
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  align-items: start;
+  gap: 10px 16px;
+  min-width: 0;
+  padding: 14px 0;
+  border-bottom: 1px solid var(--v2-line-soft);
+}
+
+.pf-department-switcher-label {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 36px;
+  color: var(--v2-ink-2);
+  font-size: 12px;
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.pf-department-switcher-label svg {
+  color: var(--v2-brand);
+}
+
+.pf-department-options {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 7px;
+  min-width: 0;
+}
+
+.pf-department-options button {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  max-width: 100%;
+  min-height: 36px;
+  padding: 6px 10px;
+  border: 1px solid var(--v2-line);
+  border-radius: 8px;
+  background: var(--v2-surface);
+  color: var(--v2-ink-2);
+  cursor: pointer;
+  font: inherit;
+  font-size: 12px;
+  line-height: 1.4;
+  text-align: left;
+}
+
+.pf-department-options button > span {
+  overflow-wrap: anywhere;
+}
+
+.pf-department-options small {
+  flex-shrink: 0;
+  min-width: 22px;
+  padding: 2px 5px;
+  border-radius: 4px;
+  background: var(--v2-bg-soft);
+  color: var(--v2-ink-2);
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+  text-align: center;
+}
+
+.pf-department-options button:hover {
+  border-color: var(--v2-brand);
+  color: var(--v2-brand-deep);
+}
+
+.pf-department-options button[aria-pressed="true"] {
+  border-color: var(--v2-brand);
+  background: var(--v2-brand-softer);
+  color: var(--v2-brand-deep);
+  font-weight: 600;
+}
+
+.pf-department-options button[aria-pressed="true"] small {
+  background: var(--v2-brand-soft);
+  color: var(--v2-brand-deep);
+}
+
+.pf-department-options button:focus-visible {
+  outline: 2px solid var(--v2-brand);
+  outline-offset: 2px;
+}
+
+@media (max-width: 540px) {
+  .pf-department-switcher {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 6px;
+  }
+
+  .pf-department-switcher-label {
+    min-height: 24px;
+  }
+}
+
 .pf-people.pf-employee-directory{min-width:0;align-self:start;flex-direction:column;gap:12px;overflow:visible}
 .pf-employee-search{display:flex;align-items:center;gap:7px;min-width:0;border:1px solid var(--v2-line);border-radius:8px;padding:9px 10px;color:var(--v2-ink-3);background:#fff}
 .pf-employee-search:focus-within{border-color:var(--v2-brand);box-shadow:0 0 0 2px var(--v2-brand-softer)}
