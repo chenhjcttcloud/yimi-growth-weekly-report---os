@@ -24,14 +24,19 @@ const departments=['虚构产品部','虚构研发部','虚构支持部'];
 const employees=Array.from({length:35},(_,index)=>({userId:'pagination-fixture-'+String(index+1).padStart(2,'0'),name:'虚构员工'+String(index+1).padStart(2,'0'),department:departments[index%departments.length]}));
 employees[5].department='虚构支持部 / 虚构产品部';
 employees[34].department=null;
+const departedDepartment='离职 / 停用';
+const departed=employees[32];
+Object.assign(departed,{active:false,employmentPeriods:[{start_date:historical+'-01',end_date:historical+'-15',source:'manual'}]});
+Object.assign(employees[31],{active:true,employmentPeriods:[...departed.employmentPeriods,{start_date:currentMonth+'-01',end_date:null,source:'manual'}]});
+const activeEmployees=employees.filter(person=>person.active!==false);
 const groupedEmployees=[
-  ...departments.flatMap(department=>employees.filter(person=>person.department?.startsWith(department))),
-  employees[34],
+  ...departments.flatMap(department=>activeEmployees.filter(person=>person.department?.startsWith(department))),
+  employees[34],departed,
 ];
-const productPeople=employees.filter(person=>person.department?.includes(departments[0]));
-const researchPeople=employees.filter(person=>person.department===departments[1]);
-const supportPeople=employees.filter(person=>person.department?.includes(departments[2]));
-const departmentCounts=[['全部部门',employees.length],[departments[0],productPeople.length],[departments[1],researchPeople.length],[departments[2],supportPeople.length],['未分配部门',1]];
+const productPeople=activeEmployees.filter(person=>person.department?.includes(departments[0]));
+const researchPeople=activeEmployees.filter(person=>person.department===departments[1]);
+const supportPeople=activeEmployees.filter(person=>person.department?.includes(departments[2]));
+const departmentCounts=[['全部部门',employees.length],[departments[0],productPeople.length],[departments[1],researchPeople.length],[departments[2],supportPeople.length],['未分配部门',1],[departedDepartment,1]];
 const manager={userId:'pagination-fixture-manager',name:'虚构分页管理员',department:'虚构管理部'};
 const timing={expected:1,submitted:1,onTime:1,late:0,missing:0,pendingTimestamp:0,pendingCalendar:0,rate:100};
 const evidence=(focus,person,month)=>`${person.name} ${month} 的虚构${focus==='quality'?'周报证据':'协作评价'}`;
@@ -41,7 +46,7 @@ function report(person,month,full=false){const w=week(month);return {
   submittedAt:w.end+'T09:00:00Z',status:'准时',submitted:true,candidate:82,detailsDeferred:!full,scoringPolicy:{weights:[30,25,25,20]},
   ...(full?{evidence:[{module:'本周成果',text:evidence('quality',person,month)}],anomalies:[],suggestions:'补充虚构交付依据',content:{results:person.name+'的虚构完整原文'}}:{}),
 };}
-const monthly=months.flatMap(month=>employees.map(person=>({...person,month,reports:[report(person,month)],timeliness:timing,peerCandidate:91,
+const monthly=months.flatMap(month=>[departed,...activeEmployees].map(person=>({...person,month,reports:[report(person,month)],timeliness:timing,peerCandidate:91,
   collaborationExpected:1,collaborationSubmitted:1,managerProgress:{kind:'manager',submitted:1,expected:1,complete:true,score:90}})));
 function cycle(month,person){return {id:month+'-fixture',month,label:month+'虚构协同互评',expected:35,submitted:35,pending:[],
   ...(person?{assignments:[{id:month+'-'+person.userId,evaluee_user_id:person.userId,evaluator_name:'虚构评分人',score:91,comment:evidence('collaboration',person,month),submitted_at:month+'-28T09:00:00Z'}]}:{}),
@@ -140,8 +145,11 @@ try{
     for(const [department,count] of departmentCounts){
       assert.deepEqual((await departmentButton(department).innerText()).match(/\d+/g),[String(count)],'each department has a visible count that includes secondary members');
     }
-    const header=await departmentFilter().boundingBox(),sidebar=await directory().boundingBox();
-    assert(header&&sidebar&&header.width>sidebar.width&&header.y+header.height<=sidebar.y+1,'departments occupy a shared row above the employee directory and detail');
+    assert(await departmentFilter().getByRole('button').last().getByText(departedDepartment,{exact:true}).isVisible(),'the departed group follows the department buttons');
+    assert(await departmentFilter().evaluate(element=>{
+      const header=element.getBoundingClientRect(),sidebar=document.querySelector('.pf-employee-directory')?.getBoundingClientRect();
+      return sidebar&&header.width>sidebar.width&&header.bottom<=sidebar.top+1;
+    }),'departments occupy a shared row above the employee directory and detail');
   }
   async function showEvidence(focus,person,month,absent=[]){
     await page.getByRole('tab',{name:focus==='quality'?'周报与证据':'协作明细',exact:true}).click();
@@ -164,7 +172,10 @@ try{
         assert(await departmentHeading(departments[0]).isVisible(),'a department heading repeats when its employee list spans pages');
         assert(await departmentHeading(departments[1]).isVisible());
       }
-      if(number===5)assert(await departmentHeading('未分配部门').isVisible(),'employees without departments remain visible');
+      if(number===5){
+        assert(await departmentHeading('未分配部门').isVisible(),'employees without departments remain visible');
+        assert(await directory().getByRole('region',{name:departedDepartment,exact:true}).getByText(departed.name,{exact:true}).isVisible(),'the all-departments list places departed employees in their own group');
+      }
       assert.equal(await page.locator('.pf-person[aria-pressed="true"]').count(),0,'paging does not silently select a different employee');
     }
     assert.equal(detailRequests.length,requestsBeforePaging,'paging alone never loads a different employee detail');
@@ -241,7 +252,13 @@ try{
     await directory().scrollIntoViewIfNeeded();
     await page.screenshot({path:path.join(dir,route+'-mobile.png'),fullPage:true,animations:'disabled'});
     await page.setViewportSize({width:1440,height:1000});
-    checks.push({route,employees:35,pageSize:8,pages:5,pagingPreservesDetail:true,deepLinkAndRefreshLocateEmployee:true,nameAndDepartmentSearch:true,departmentGrouping:true,departmentHeaderAndCounts:true,departmentSelectionPreservesOrReplacesDetail:true,emptySearchRetainsDetail:true,monthReset:true,evidenceIsolation:true,mobileWidth:390});
+    await search().fill('离职');await assertPage(1,[departed],1);await selected(mobilePerson);
+    await chooseDepartment(departedDepartment);await assertPage(1,[departed],1);await selected(departed);await assertActive(departed);
+    assert(await page.locator('.pf-person-heading').getByText(departed.department,{exact:true}).isVisible(),'the historical detail retains the original department');
+    await showEvidence(focus,departed,historical);
+    await page.getByRole('tab',{name:'结果记录',exact:true}).click();
+    await page.locator('.pf-review-main').getByText(focus==='quality'?'83.2 分':'93.2 分',{exact:true}).waitFor();
+    checks.push({route,employees:35,pageSize:8,pages:5,pagingPreservesDetail:true,deepLinkAndRefreshLocateEmployee:true,nameAndDepartmentSearch:true,departmentGrouping:true,departmentHeaderAndCounts:true,departmentSelectionPreservesOrReplacesDetail:true,departedDepartmentAndHistory:true,emptySearchRetainsDetail:true,monthReset:true,evidenceIsolation:true,mobileWidth:390});
   }
 
   // Browser-history targets must win over a directory filter left by the

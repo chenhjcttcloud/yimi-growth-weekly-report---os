@@ -106,7 +106,7 @@ export function PerformanceResults({scoreFocus}:{scoreFocus?:'quality'|'collabor
  },[scoreFocus,request,month]);
  const rows:any[]=(data?.monthly||[]).filter((r:any)=>r.month===month);
  const matchingNames=legacyName?rows.filter((r:any)=>r.name===legacyName):[];
- const selected=selectedName?rows.find((r:any)=>r.userId===selectedName):explicitTarget?(matchingNames.length===1?matchingNames[0]:undefined):rows[0];
+ const selected=selectedName?rows.find((r:any)=>r.userId===selectedName):explicitTarget?(matchingNames.length===1?matchingNames[0]:undefined):rows.find(r=>r.active!==false)??rows[0];
  const requestedWeekEnd=/\d{4}-\d{2}-\d{2}/.exec(weekId)?.[0]||'';
  useEffect(()=>{if(!month)return;rememberLocation('scoreTarget',explicitTarget?'1':'');rememberLocation('scoreMonth',month);rememberLocation('scoreEmployeeId',selected?.userId||selectedName);rememberLocation('scoreEmployeeName',selected?.name||legacyName);rememberLocation('scoreDetailTab',tab);rememberLocation('scoreWeekId',weekId);},[month,selected?.userId,selectedName,legacyName,explicitTarget,tab,weekId]);
  const activeCycles:any[]=(data?.collaborations||[]).filter((c:any)=>c.month===month);
@@ -207,7 +207,7 @@ export function PerformanceResults({scoreFocus}:{scoreFocus?:'quality'|'collabor
      const count=published.filter((p:any)=>p.employee_user_id===r.userId).length,focusedResult=scoreFocus?published.find((p:any)=>p.employee_user_id===r.userId&&p.kind===scoreFocus):undefined;
      const focusedScore=focusedResult?.result.score,quality=monthlyQualityView(r.quality);
      const scoreLabel=scoreFocus==='quality'?`${quality.value!=null?`${scoreText(quality.value)} 分 · `:''}${quality.status}`:focusedScore!=null?`${scoreText(focusedScore)} 分`:'待评分';
-     return {userId:r.userId,name:r.name,department:r.department,summary:scoreFocus?scoreLabel:`${count}/3 项已生成`};
+     return {userId:r.userId,name:r.name,department:r.department,active:r.active,summary:scoreFocus?scoreLabel:`${count}/3 项已生成`};
     })} onSelect={userId=>{setSelectedName(userId);setLegacyName('');setExplicitTarget(false);setWeekId('');setReportWeek(null);setTab('review');setDetailState(null);}}/>
     {selected ? <div className="pf-review-main">
      <div className="pf-person-heading"><div><h3>{selected.name}<span>{selected.department}</span></h3><p>月度结果 · {monthText(month)}{requestedWeekEnd&&` · 来源周次 ${requestedWeekEnd}`}</p></div><ResultStatus confirmed={scoreFocus==='quality'?selectedQuality.confirmed:Boolean(locked('collaboration'))} label={scoreFocus==='quality'?selectedQuality.status:locked('collaboration')?'月度评分已发布':'等待评分完成'}/></div>

@@ -2,11 +2,12 @@ import {useEffect,useRef,useState} from 'react';
 import {Building2,ChevronLeft,ChevronRight,Search,X} from 'lucide-react';
 import '../styles/result-employee-directory.css';
 
-type EmployeeEntry={userId:string;name:string;department?:string|null;summary:string};
+type EmployeeEntry={userId:string;name:string;department?:string|null;active?:boolean;summary:string};
 type DirectoryEntry=EmployeeEntry & {departments:string[]};
 const PAGE_SIZE=8;
 const pageFor=(rows:EmployeeEntry[],userId?:string)=>Math.floor(Math.max(0,rows.findIndex(row=>row.userId===userId))/PAGE_SIZE)+1;
 const unassignedDepartment='未分配部门';
+const inactiveGroup='离职 / 停用';
 
 function employeeDepartments(department?:string|null) {
  const names=(department??'').split(/[,，、]|\s+\/\s+/).map(name=>name.trim()).filter(Boolean);
@@ -15,7 +16,9 @@ function employeeDepartments(department?:string|null) {
 
 function groupEmployees(entries:DirectoryEntry[], includeAllMemberships=false) {
  const groups=new Map<string,DirectoryEntry[]>();
+ const inactive:DirectoryEntry[]=[];
  for(const entry of entries) {
+  if(entry.active===false){inactive.push(entry);continue;}
   const names=includeAllMemberships?entry.departments:entry.departments.slice(0,1);
   for(const name of names){
    const group=groups.get(name);
@@ -23,6 +26,7 @@ function groupEmployees(entries:DirectoryEntry[], includeAllMemberships=false) {
    else groups.set(name,[entry]);
   }
  }
+ if(inactive.length)groups.set(inactiveGroup,inactive);
  return groups;
 }
 
@@ -37,7 +41,7 @@ export function ResultEmployeeDirectory({employees,selectedUserId,contextKey,onS
  const [page,setPage]=useState(()=>pageFor(allEmployees,selectedUserId));
  const query=search.trim().toLocaleLowerCase();
  const departmentEmployees=departmentMembers.get(selectedDepartment)??allEmployees;
- const matching=departmentEmployees.filter(employee=>!query||`${employee.name} ${employee.departments.join(' ')}`.toLocaleLowerCase().includes(query));
+ const matching=departmentEmployees.filter(employee=>!query||`${employee.name} ${employee.departments.join(' ')} ${employee.active===false?inactiveGroup:''}`.toLocaleLowerCase().includes(query));
  const pageCount=Math.max(1,Math.ceil(matching.length/PAGE_SIZE)),currentPage=Math.min(page,pageCount);
  const visible=matching.slice((currentPage-1)*PAGE_SIZE,currentPage*PAGE_SIZE);
  const previousContext=useRef(contextKey);
@@ -61,7 +65,7 @@ export function ResultEmployeeDirectory({employees,selectedUserId,contextKey,onS
   if(!keepsSelection&&nextUserId)onSelect(nextUserId);
  }
  function renderEmployee(employee:DirectoryEntry){
-  const description=employee.departments.length>1?`${employee.departments.join(' / ')} · ${employee.summary}`:employee.summary;
+  const description=employee.active===false||employee.departments.length>1?`${employee.departments.join(' / ')} · ${employee.summary}`:employee.summary;
   return <button type="button" key={employee.userId} className={`pf-person ${selectedUserId===employee.userId?'is-active':''}`} aria-pressed={selectedUserId===employee.userId} onClick={()=>onSelect(employee.userId)}>
    <span className="pf-avatar">{employee.name.slice(-2)}</span>
    <span className="pf-person-info"><strong>{employee.name}</strong><small>{description}</small></span>
