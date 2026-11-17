@@ -7,6 +7,9 @@
 .pf-employee-search button{display:grid;place-items:center;flex-shrink:0;border:0;padding:0;background:transparent;color:var(--v2-ink-3);cursor:pointer}
 .pf-employee-count{margin:0;font-size:10px;color:var(--v2-ink-3);line-height:1.5}
 .pf-employee-list{display:flex;flex-direction:column;gap:6px;min-width:0}
+.pf-employee-department{display:grid;grid-template-columns:minmax(0,1fr);gap:6px;min-width:0}
+.pf-employee-department + .pf-employee-department{margin-top:6px}
+.pf-employee-department h4{grid-column:1 / -1;margin:0;padding:5px 8px;border-radius:6px;background:var(--v2-bg-soft);color:var(--v2-ink-2);font-size:11px;font-weight:600;line-height:1.5;overflow-wrap:anywhere}
 .pf-employee-directory .pf-person{width:100%;min-width:0;flex-shrink:1;padding:8px 10px}
 .pf-employee-directory .pf-person>svg{flex-shrink:0}
 .pf-employee-directory .pf-person-info strong,.pf-employee-directory .pf-person-info small{overflow-wrap:anywhere}
@@ -21,6 +24,8 @@
 @media(max-width:760px){
  .pf-people.pf-employee-directory{padding:16px 0}
  .pf-employee-list{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:6px}
+ .pf-employee-department{grid-column:1 / -1;grid-template-columns:repeat(2,minmax(0,1fr))}
+ .pf-employee-empty{grid-column:1 / -1}
  .pf-employee-directory .pf-person{padding:10px 8px;gap:7px}
  .pf-employee-directory .pf-avatar{width:30px;height:30px;font-size:11px}
  .pf-employee-directory .pf-person-info strong{font-size:12px}

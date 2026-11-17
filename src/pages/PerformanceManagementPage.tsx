@@ -187,7 +187,7 @@ export function PerformanceResults({scoreFocus}:{scoreFocus?:'quality'|'collabor
   <section className="v2-card pf-workspace">
    <div className="v2-card-head"><div><h3 className="v2-card-title">{scoreFocus==='quality'?'员工周报质量':scoreFocus==='collaboration'?'员工协同得分':'员工月度结果'}</h3><p className="v2-card-sub">{scoreFocus==='quality'?'在「周报与证据」查看逐周评分依据和人工复核记录。':scoreFocus==='collaboration'?'选择员工查看最终分和完成进度，并在「协作明细」查看评分记录。':'选择员工查看月度结果和周报评分依据。'}</p></div><span className="pf-subtle-tag">{rows.length} 位员工</span></div>
    <div className="pf-review-layout">
-    <ResultEmployeeDirectory contextKey={(scoreFocus||'all')+'|'+month} selectedUserId={selected?.userId} employees={rows.map((r:any)=>{
+    <ResultEmployeeDirectory contextKey={(scoreFocus||'all')+'|'+month} selectedUserId={selected?.userId} groupByDepartment={scoreFocus==='collaboration'} employees={rows.map((r:any)=>{
      const count=published.filter((p:any)=>p.employee_user_id===r.userId).length,focusedResult=scoreFocus?published.find((p:any)=>p.employee_user_id===r.userId&&p.kind===scoreFocus):undefined;
      const focusedScore=focusedResult?.result.score,quality=monthlyQualityView(r.quality);
      const scoreLabel=scoreFocus==='quality'?`${quality.value!=null?`${scoreText(quality.value)} 分 · `:''}${quality.status}`:focusedScore!=null?`${scoreText(focusedScore)} 分`:'待评分';
