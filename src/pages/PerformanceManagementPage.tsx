@@ -149,7 +149,13 @@ export function PerformanceResults({scoreFocus}:{scoreFocus?:'quality'|'collabor
  const kinds=[['quality','周报质量'],['timeliness','提交及时率'],['collaboration','月度综合评分']].filter(([kind])=>!scoreFocus||kind===scoreFocus);
  const selectedQuality=monthlyQualityView(selected?.quality);
  const reloadOverview=()=>{setOverview(null);setFailedRequest(null);setRequest(current=>current===request?{month}:{...current});};
- const pendingPeople=[...new Set(activeCycles.flatMap((c:any)=>c.pending))] as string[];
+ const publishedCollaborationIds=new Set(published.filter(result=>result.kind==='collaboration'&&result.result.score!=null).map(result=>result.employee_user_id));
+ const unpublishedEmployees=rows.filter(row=>!publishedCollaborationIds.has(row.userId));
+ const pendingPeerEmployees=unpublishedEmployees.filter(row=>row.collaborationExpected>row.collaborationSubmitted).length;
+ const pendingManagerEmployees=unpublishedEmployees.filter(row=>row.managerProgress.expected>0&&!row.managerProgress.complete).length;
+ const peerCycleWaiting=pendingPeerEmployees>0
+  &&activeCycles.some(cycle=>cycle.status==='draft'||cycle.status==='scheduled')
+  &&!activeCycles.some(cycle=>Boolean(cycle.launch_at)&&['open','active'].includes(cycle.status));
  const locked=(kind:string)=>published.find((x:any)=>x.employee_user_id===selected?.userId&&x.kind===kind);
  const pct=totals.expected?(totals.submitted/totals.expected*100).toFixed(1):'—';
  const timePct=rows.some((r:any)=>r.timeliness.pendingTimestamp||r.timeliness.pendingCalendar)?'—':totals.expected?(totals.onTime/totals.expected*100).toFixed(1):'—';
@@ -164,7 +170,18 @@ export function PerformanceResults({scoreFocus}:{scoreFocus?:'quality'|'collabor
   <section className={`pf-metrics ${scoreFocus?'pf-metrics-focused':''}`}>
    {scoreFocus!=='collaboration'&&<ResultMetric icon={Clock3} label="全员周报提交率" value={pct} unit="%" description={`准时提交率 ${timePct}${timePct==='—'?'':'%'}`}><span className="pf-caption">迟交 <b>{rows.filter((r:any)=>r.timeliness.late>0).length}</b> 人</span><span className="pf-caption">未交 <b>{rows.filter((r:any)=>r.timeliness.missing>0).length}</b> 人</span></ResultMetric>}
    {scoreFocus!=='collaboration'&&<ResultMetric icon={FileCheck2} label={allQualityConfirmed?'周报质量最终均分':provisional?'当前已完成分析均分':analyzed?'月度质量候选均分':'月度周报质量'} value={qualityMean} unit="分" description={allQualityConfirmed?'管理人员已确认的员工质量最终分':qualityBlock?qualityConfirmationBlockNotes[qualityBlock]:provisional?'汇总已完成分析的有效周报 · 暂定':analyzed?'汇总已完成分析的有效周报 · 待管理人员确认':'本月暂无可评分周报'}><span className="pf-caption">本月待完成 AI 分析</span><span className="pf-status">{pending} 份</span></ResultMetric>}
-   {scoreFocus!=='quality'&&<ResultMetric icon={UsersRound} label="月度综合最终均分" value={mean('collaboration')} unit="分" description="负责人/老板30%＋同事70%，全部完成后发布"><span className="pf-caption">同事待评 / 负责人待评</span><span className={`pf-status ${pendingPeople.length?'is-warning':'is-confirmed'}`}>{pendingPeople.length} / {rows.filter((r:any)=>r.managerProgress.expected>0&&!r.managerProgress.complete).length} 人</span></ResultMetric>}
+   {scoreFocus!=='quality'&&<ResultMetric icon={UsersRound} label="月度综合最终均分" value={mean('collaboration')} unit="分" description="负责人/老板30%＋同事70%，全部完成后发布">
+    <dl className="pf-collaboration-progress" aria-label="协同评分待完成人数">
+     <div>
+      <dt><span>同事互评未齐的员工</span>{peerCycleWaiting&&<small>尚未开放</small>}</dt>
+      <dd className={`pf-status ${pendingPeerEmployees?'is-warning':'is-confirmed'}`}>{pendingPeerEmployees} 人</dd>
+     </div>
+     <div>
+      <dt>负责人或老板评分未齐的员工</dt>
+      <dd className={`pf-status ${pendingManagerEmployees?'is-warning':'is-confirmed'}`}>{pendingManagerEmployees} 人</dd>
+     </div>
+    </dl>
+   </ResultMetric>}
   </section>
   {scoreFocus!=='collaboration'&&<div className="pf-policy"><span><Clock3 size={14}/>周五或放假前最后一个工作日 20:00 截止</span><span>直属上级点评、协同部门反馈：周一 12:00 前</span><span>北京时间</span></div>}
   <section className="v2-card pf-workspace">

@@ -209,8 +209,34 @@ try{
   await nav.getByRole('button',{name:'周报质量',exact:true}).click();await title('周报质量');await assertPage(3);await selected(employees[19]);await assertActive(employees[19]);
   await page.screenshot({path:path.join(dir,'module-switch-restored-selection.png'),fullPage:true,animations:'disabled'});
 
+  const pendingSubjects=employees.slice(0,4);
+  overview.results=results.filter(result=>result.month!==currentMonth||result.kind!=='collaboration'
+    ||!pendingSubjects.some(employee=>employee.userId===result.employee_user_id));
+  overview.monthly=monthly.map(row=>{
+    if(row.month!==currentMonth)return row;
+    const index=employees.findIndex(employee=>employee.userId===row.userId);
+    if(![0,1,2,3,4].includes(index))return row;
+    return {...row,
+      collaborationSubmitted:[0,1,4].includes(index)?0:row.collaborationSubmitted,
+      managerProgress:[0,2,3,4].includes(index)?{...row.managerProgress,submitted:0,complete:false,score:null}:row.managerProgress,
+    };
+  });
+  const currentCycle=overview.collaborations.find(value=>value.month===currentMonth);
+  Object.assign(currentCycle,{status:'draft',launch_at:'',pending:['虚构评分人甲','虚构评分人乙','虚构评分人丙','虚构评分人丁','虚构评分人戊']});
+  await page.goto(`${base}/?page=collaboration-scores&scoreMonth=${currentMonth}`);
+  const progress=page.locator('.pf-collaboration-progress');
+  await progress.getByText('尚未开放',{exact:true}).waitFor();
+  assert.equal(await progress.getByText('同事互评未齐的员工',{exact:true}).count(),1);
+  assert.equal(await progress.getByText('负责人或老板评分未齐的员工',{exact:true}).count(),1);
+  assert.deepEqual(await progress.locator('dd').allTextContents(),['2 人','3 人'],'both counts use unpublished employees being evaluated');
+  await progress.screenshot({path:path.join(dir,'collaboration-progress-draft.png'),animations:'disabled'});
+  Object.assign(currentCycle,{status:'open',launch_at:currentMonth+'-01T09:00:00+08:00'});
+  await page.reload();
+  await progress.getByText('2 人',{exact:true}).waitFor();
+  assert.equal(await progress.getByText('尚未开放',{exact:true}).count(),0,'an opened cycle has no draft label');
+
   assert.deepEqual(errors,[],'no browser runtime errors');assert.deepEqual(writes,[],'no business write requests');assert.deepEqual(unexpected,[],'no external or unmocked requests');
-  const result={ok:true,checks,historyTargetsClearStaleSearch:true,historyMonthAndEmployeeLocateSelection:true,moduleSwitchLocatesSelection:true,browserErrors:errors,businessWrites:writes,externalRequests:unexpected,detailRequests,realMessagesSent:0,artifacts:dir};
+  const result={ok:true,checks,historyTargetsClearStaleSearch:true,historyMonthAndEmployeeLocateSelection:true,moduleSwitchLocatesSelection:true,collaborationProgressUsesSamePopulation:true,browserErrors:errors,businessWrites:writes,externalRequests:unexpected,detailRequests,realMessagesSent:0,artifacts:dir};
   await writeFile(path.join(dir,'result.json'),JSON.stringify(result,null,2));console.log(JSON.stringify(result));
 }catch(error){
   const page=browser?.pages().at(-1);if(page)await page.screenshot({path:path.join(dir,'failure.png'),fullPage:true,animations:'disabled'}).catch(()=>{});

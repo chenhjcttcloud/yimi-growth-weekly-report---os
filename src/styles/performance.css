@@ -20,6 +20,11 @@
 .pf-caption { margin:0; font-size:12px; line-height:1.8; color:var(--v2-ink-3); }
 .pf-caption b { font-weight:600; color:var(--v2-ink-2); }
 .pf-metric-footer { display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:10px; margin-top:auto; padding-top:17px; border-top:1px solid var(--v2-line-soft); margin-block-start:20px; }
+.pf-collaboration-progress { display:grid; gap:10px; flex:1 1 100%; min-width:0; margin:0; }
+.pf-collaboration-progress > div { display:flex; justify-content:space-between; align-items:center; gap:8px 12px; }
+.pf-collaboration-progress dt { display:flex; align-items:center; flex-wrap:wrap; gap:2px 8px; color:var(--v2-ink-2); font-size:12px; }
+.pf-collaboration-progress dt small { color:var(--v2-ink-2); font-size:11px; }
+.pf-collaboration-progress dd { flex-shrink:0; margin:0; }
 .pf-inline-number { color:var(--v2-ink-2); font-family:var(--v2-num); font-size:20px; font-weight:600; }
 .pf-inline-number small { font-size:11px; font-weight:400; color:var(--v2-ink-3); }
 .pf-counts { display:grid; grid-template-columns:repeat(5,minmax(0,1fr)); width:100%; gap:10px; }
