@@ -46,7 +46,11 @@ const supervisor={userId:'fixture-supervisor',name:'虚构测试主管',departme
 const timeliness={expected:1,submitted:1,onTime:0,late:1,missing:0,pendingTimestamp:0,pendingCalendar:0,rate:0};
 const period={id:weekId,label:'2026年10月第3周',start:'2026-10-12',end:'2026-10-16',range:'10/12 — 10/16'};
 const reportHeader={id:'fixture-report',employeeUserId:employee.userId,name:employee.name,department:employee.department,month,start:period.start,end:period.end,submittedAt:'2026-10-16T13:00:00Z',status:'迟交',submitted:true,candidate:64,scoringPolicy:{weights},detailsDeferred:true};
-const monthly={...employee,month,reports:[reportHeader],timeliness,peerCandidate:null,collaborationExpected:0,collaborationSubmitted:0,managerProgress:{kind:'manager',expected:0,submitted:0,complete:false,score:null}};
+const fourthReport={...reportHeader,id:'fixture-fourth-report',start:'2026-10-19',end:'2026-10-23',submittedAt:'2026-10-23T11:00:00Z',status:'准时'};
+const unsubmittedReport={...reportHeader,id:'fixture-unsubmitted',start:'2026-10-26',end:'2026-10-30',submittedAt:'',status:'未交',submitted:false,candidate:null};
+const monthly={...employee,month,reports:[reportHeader,unsubmittedReport,fourthReport],timeliness,peerCandidate:null,collaborationExpected:0,collaborationSubmitted:0,managerProgress:{kind:'manager',expected:0,submitted:0,complete:false,score:null}};
+const fourWeekMonth='2026-11';
+const emptyMonthOverview={scopeMonth:fourWeekMonth,months:[fourWeekMonth],employees:[employee],monthly:[{...monthly,month:fourWeekMonth,reports:[],timeliness:{...timeliness,expected:0,submitted:0,late:0}}],collaborations:[],results:[]};
 const version='a'.repeat(64);
 const reportVersion='b'.repeat(64);
 let mode='management',state='ready',qualityState='pending_ai',detailRequests=0,confirmedScore=null;
@@ -79,13 +83,13 @@ try{
         const user=mode==='supervisor'?supervisor:employee;
         body={user,access:{role:mode==='management'?'hr':'member',currentEmployee:user,visibleEmployees:[user],canManageScoring360:mode==='management',canReviewWeeklyQuality:mode==='supervisor',canViewSettings:mode==='management',canManagePersonnel:mode==='management',canViewBossDashboard:false}};break;
       }
-      case '/api/performance/manage':assert.equal(mode,'management');body=overview();break;
+      case '/api/performance/manage':assert.equal(mode,'management');body=url.searchParams.get('month')===fourWeekMonth?emptyMonthOverview:overview();break;
       case '/api/performance/quality-scope':assert.equal(mode,'supervisor');assert.equal(url.searchParams.get('month'),month);body={employees:[employee],months:[month]};break;
       case '/api/performance/employee-month':{
         detailRequests++;
         assert.equal(url.searchParams.get('employeeId'),employee.userId);
         assert.equal(url.searchParams.get('month'),month);
-        body={monthly:{...monthly,quality:quality(),reports:[{...reportHeader,candidate:currentScore(),qualityAssessment:currentAssessment(),qualityReviewVersion:reportVersion,qualityReviews,contentDeferred:true,contentVersion:'fixture-v1',evidence:[{module:'本周成果摘要',text:quote}],anomalies:['测试异常：分数波动仅作提示'],suggestions:'请在后续周报中补充目标贡献说明。'}]},collaborations:[],results:resultRows()};break;
+        body={monthly:{...monthly,quality:quality(),reports:[{...reportHeader,candidate:currentScore(),qualityAssessment:currentAssessment(),qualityReviewVersion:reportVersion,qualityReviews,contentDeferred:true,contentVersion:'fixture-v1',evidence:[{module:'本周成果摘要',text:quote}],anomalies:['测试异常：分数波动仅作提示'],suggestions:'请在后续周报中补充目标贡献说明。'},{...unsubmittedReport,evidence:[],anomalies:[]},{...fourthReport,evidence:[{module:'本周成果摘要',text:'第四周虚构成果'}],anomalies:[]}]},collaborations:[],results:resultRows()};break;
       }
       case '/api/performance/quality-review':{
         assert.equal(mode,'management');
@@ -127,7 +131,32 @@ try{
   await page.getByRole('heading',{name:'员工月度结果',exact:true}).waitFor();
   await page.getByRole('tab',{name:'周报与证据',exact:true}).click();
   const assessmentPanel=page.getByRole('region',{name:'四模块评分依据'});
+  await page.getByText('第四周虚构成果',{exact:true}).waitFor();
+  const weekButtons=page.getByRole('group',{name:'周报周次'});
+  const weekButton=week=>weekButtons.getByRole('button',{name:`第 ${week} 周`,exact:true});
+  const reportCards=page.locator('[data-report-week]:visible');
+  assert.equal(await weekButtons.getByRole('button').count(),5);
+  assert.equal(await weekButton(4).getAttribute('aria-pressed'),'true');
+  assert.equal(await reportCards.count(),1);
+  assert.equal(await reportCards.getAttribute('data-report-week'),fourthReport.end);
+  const requestsBeforeSwitch=detailRequests;
+  await weekButton(1).click();
+  await page.getByText('本周暂无周报记录',{exact:true}).waitFor();
+  assert.equal(await reportCards.count(),0);
+  await weekButton(5).click();
+  await reportCards.getByText('未交',{exact:true}).waitFor();
+  assert.equal(await reportCards.count(),1);
+  assert.equal(await reportCards.getAttribute('data-report-week'),unsubmittedReport.end);
+  await weekButton(3).click();
+  assert.equal(detailRequests,requestsBeforeSwitch);
+  await page.setViewportSize({width:390,height:844});
+  assert(await weekButtons.evaluate(element=>element.scrollWidth<=element.clientWidth));
+  await page.setViewportSize({width:1440,height:1100});
+  const linkedWeekUrl=new URL(page.url());
+  linkedWeekUrl.searchParams.set('scoreWeekId',period.id);
+  await page.goto(linkedWeekUrl.href);
   await assessmentPanel.getByText('AI 候选',{exact:true}).waitFor();
+  assert.equal(await weekButton(3).getAttribute('aria-pressed'),'true');
   assert(await assessmentPanel.getByText(anomaly,{exact:true}).isVisible(),'management must display the non-blocking anomaly');
   assert(detailRequests>0,'the management detail endpoint must provide the assessment');
   assert.equal(await assessmentPanel.locator('[data-quality-module]').count(),4);
@@ -154,10 +183,22 @@ try{
   await page.getByLabel('评分子项').selectOption('results-0');
   assert.equal(await page.getByLabel('已核验的周报原文').inputValue(),quote);
   await page.getByLabel('复核原因').fill(reviewReason);
+  await weekButton(4).click();
+  await reportCards.getByText('第四周虚构成果',{exact:true}).waitFor();
+  assert(await page.getByLabel('复核原因').isHidden());
+  await weekButton(3).click();
+  assert.equal(await page.getByLabel('复核原因').inputValue(),reviewReason);
+  assert.equal(await page.getByLabel('已核验的周报原文').inputValue(),quote);
   await page.getByRole('button',{name:'保存复核'}).click();
   await page.getByText('人工复核记录（1）',{exact:true}).click();
   assert(await page.getByText(reviewReason,{exact:true}).isVisible());
   assert.deepEqual(reviewRequests,[{reportId:reportHeader.id,userId:employee.userId,month,version:reportVersion,action:'validate_evidence',reason:reviewReason,moduleId:'results',criterionId:'results-0',quote}]);
+
+  await page.goto(base+'/?'+new URLSearchParams({page:'quality-scores',scoreMonth:fourWeekMonth,scoreEmployeeId:employee.userId,scoreDetailTab:'reports'}));
+  await weekButtons.waitFor();
+  assert.deepEqual(await weekButtons.getByRole('button').allTextContents(),['第 1 周','第 2 周','第 3 周','第 4 周']);
+  assert.equal(await weekButton(1).getAttribute('aria-pressed'),'true');
+  await page.getByText('本周暂无周报记录',{exact:true}).waitFor();
 
   mode='personal';
   const personalUrl=base+'/?page=quality-scores&personalUser='+employee.userId+'&personalMonth='+month;

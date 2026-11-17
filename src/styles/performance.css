@@ -71,6 +71,10 @@
 .pf-tabs button { flex-shrink:0; position:relative; border:0; padding:0 0 13px; background:transparent; color:var(--v2-ink-3); font-size:12px; }
 .pf-tabs button.is-active { color:var(--v2-brand); font-weight:600; }
 .pf-tabs button.is-active:after { content:''; position:absolute; height:2px; background:var(--v2-brand); left:0; right:0; bottom:0; border-radius:2px; }
+.pf-report-weeks { display:flex; flex-wrap:wrap; gap:8px; margin-bottom:16px; }
+.pf-report-weeks button { min-height:36px; padding:7px 13px; border:1px solid var(--v2-line); border-radius:8px; background:#fff; color:var(--v2-ink-2); font:inherit; font-size:12px; white-space:nowrap; cursor:pointer; }
+.pf-report-weeks button:hover { background:var(--v2-bg-soft); }
+.pf-report-weeks button[aria-pressed="true"] { border-color:var(--v2-brand); background:var(--v2-brand-softer); color:var(--v2-brand-deep); font-weight:600; }
 .pf-review-stats { display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:12px; padding:18px; border-radius:10px; background:var(--v2-bg-soft); margin-bottom:20px; }
 .pf-review-stats div { display:flex; flex-direction:column; gap:10px; }
 .pf-review-stats span { font-size:11px; color:var(--v2-ink-3); }
