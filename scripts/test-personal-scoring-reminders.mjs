@@ -21,7 +21,7 @@ try {
  assert.equal((await service.status(user,'2026-10')).reason,'cooldown');
  await assert.rejects(service.send(user,'2026-10'),/reminder_not_due/);
  clock+=25*3600000;assert.equal((await service.send(user,'2026-10')).sent,1);
- run("INSERT INTO scoring360_responses(id,assignment_id,cycle_id,evaluee_name,evaluator_name,score,comment) VALUES('r','a','c','本人','待评人',88,'完整评价');");
+ run("INSERT INTO scoring360_responses(id,assignment_id,cycle_id,evaluee_name,evaluator_name,score,comment) VALUES('r','a','c','本人','待评人',0,'');");
  assert.equal((await service.status(user,'2026-10')).complete,true);await assert.rejects(service.send(user,'2026-10'),/reminder_not_due/);
  assert.equal((await service.status({userId:'unknown',name:'陌生人'},'2026-10')).expected,0);
  await assert.rejects(service.status(user,'bad-month'),/invalid_month/);

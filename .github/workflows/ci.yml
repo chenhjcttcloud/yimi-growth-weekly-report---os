@@ -35,6 +35,8 @@ jobs:
       - run: node scripts/test-month-end-score-reminders.mjs
       - run: node scripts/test-china-work-calendar.mjs
       - run: node scripts/test-weighted-monthly.mjs
+      - run: node scripts/test-scoring360-api.mjs
+      - run: node scripts/test-peer-comment-policy-upgrade-preparation.mjs
       - run: node scripts/test-performance-policy-reads.mjs
       - run: node scripts/test-product-management-score-api.mjs
       - run: node scripts/test-automatic-score-history-stability.mjs

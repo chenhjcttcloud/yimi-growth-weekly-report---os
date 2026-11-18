@@ -14,13 +14,15 @@ try{
  const tasks=await call('/api/manager-reviews?month='+month,'head');assert.equal(tasks.status,200);assert(tasks.body.tasks.some(t=>t.employeeUserId==='staff'));assert.equal((await call('/api/manager-reviews?month='+month,'peer')).body.canReview,false);
  const rating={month,employeeUserId:'staff',score:80,comment:'真实交付评价测试'};assert.equal((await call('/api/manager-reviews','peer',{...rating,evaluatorUserId:'head'})).status,403);assert.equal((await call('/api/manager-reviews','admin',rating)).status,403);assert.equal((await call('/api/manager-reviews','boss',rating)).status,403);
  assert.equal((await call('/api/admin/employee-preview/manager-reviews?employeeId=head&month='+month,'head')).status,403);const preview=await call('/api/admin/employee-preview/manager-reviews?employeeId=head&month='+month,'admin');assert.equal(preview.status,200);assert(preview.body.readOnly);assert.equal((await call('/api/admin/employee-preview/manager-reviews?employeeId=head','admin',rating)).status,405);
+ const emptyManagerComment=await call('/api/manager-reviews','head',{...rating,comment:''});assert.equal(emptyManagerComment.status,409);assert.equal(emptyManagerComment.body.error,'score_and_comment_required');
  assert.equal((await call('/api/manager-reviews','head',rating)).status,200);assert.equal((await call('/api/performance/me','staff')).body.history.find(r=>r.month===month)?.collaboration??null,null);assert.equal((await call('/api/manager-reviews','head',rating)).status,409);
- assert.equal((await call('/api/scoring360/submit','head',{cycleId:'cycle',scores:[{assignmentId:'a',score:90,comment:'有效协作'}]})).body.saved,1);assert.equal((await call('/api/performance/me','staff')).body.history.find(r=>r.month===month)?.collaboration??null,null);
- assert.equal((await call('/api/scoring360/submit','peer',{cycleId:'cycle',scores:[{assignmentId:'b',score:100,comment:'协作结果'}]})).body.saved,1);
+ assert.equal((await call('/api/scoring360/submit','head',{cycleId:'cycle',scores:[{assignmentId:'a',score:90,comment:''}]})).body.saved,1);assert.equal((await call('/api/performance/me','staff')).body.history.find(r=>r.month===month)?.collaboration??null,null);
+ assert.equal((await call('/api/scoring360/submit','peer',{cycleId:'cycle',scores:[{assignmentId:'b',score:100}]})).body.saved,1);
  const personal=(await call('/api/performance/me','staff')).body;assert.equal(personal.history[0].collaboration,90.5);assert(!JSON.stringify(personal).includes('真实交付评价测试'));assert(!JSON.stringify(personal).includes('evaluator'));assert.equal((await call('/api/scoring360/submit','peer',{cycleId:'cycle',scores:[{assignmentId:'b',score:20,comment:'不应修改'}]})).body.skipped[0].reason,'result_locked');
- await call('/api/scoring360/submit','peer',{cycleId:'cycle',scores:[{assignmentId:'c',score:85,comment:'负责人协作'}]});assert.equal((await call('/api/performance/me','head')).body.history.find(r=>r.month===month)?.collaboration??null,null);
+ await call('/api/scoring360/submit','peer',{cycleId:'cycle',scores:[{assignmentId:'c',score:85,comment:''}]});assert.equal((await call('/api/performance/me','head')).body.history.find(r=>r.month===month)?.collaboration??null,null);
  const bossRating={leaderUserId:'head',month,score:70,comment:'老板月度评价'};
  assert.equal((await call('/api/departments/score','admin',bossRating)).status,403);
+ const emptyBossComment=await call('/api/departments/score','boss',{...bossRating,comment:''});assert.equal(emptyBossComment.status,409);assert.equal(emptyBossComment.body.error,'score_and_comment_required');
  const competing=await Promise.all([
   call('/api/departments/score','boss',bossRating),
   call('/api/departments/score','boss',{...bossRating,departmentId:'support',comment:'兼任部门入口提交'}),

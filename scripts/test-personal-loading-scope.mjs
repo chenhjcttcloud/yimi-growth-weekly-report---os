@@ -91,15 +91,16 @@ if(baselinePerformance&&baselineWorkspace){const baseline=harness(initialDb,base
 const db=path.join(directory,'scoped.sqlite');await copyFile(initialDb,db);
 const current=harness(db);
 const full=await current.performance.overview();
-// The historical version treated automatic quality as a final result. Compare
-// the unaffected data on both sides and test the new quality contract below.
-function unaffectedOverview({monthly,results,...view}){
- return {...view,monthly:monthly.map(({quality,qualityCandidate,reports,...row})=>({...row,reports:reports.map(({aiCandidate,qualityExcluded,qualityReanalysisPending,qualityReviewVersion,qualityReviews,...report})=>report)})),results:results.filter(r=>r.kind!=='quality'||r.scoring_rule==='legacy').map(({month,employee_user_id,employee_name,kind,result,scoring_rule})=>({month,employee_user_id,employee_name,kind,result,scoring_rule}))};
+// The historical version treated automatic quality as a final result and
+// required peer comments. Compare the unaffected fields; assert both changed
+// contracts below against real scoped and global SQL calculations.
+function unaffectedOverview({monthly,results,collaborations,...view}){
+ return {...view,collaborations:collaborations.map(({submitted,pending,...cycle})=>cycle),monthly:monthly.map(({quality,qualityCandidate,collaborationSubmitted,reports,...row})=>({...row,reports:reports.map(({aiCandidate,qualityExcluded,qualityReanalysisPending,qualityReviewVersion,qualityReviews,...report})=>report)})),results:results.filter(r=>r.kind!=='quality'||r.scoring_rule==='legacy').map(({month,employee_user_id,employee_name,kind,result,scoring_rule})=>({month,employee_user_id,employee_name,kind,result,scoring_rule}))};
 }
 function unaffectedWorkspace({history,rollingQuality,rollingMonths,weeks,...workspace}){
  return {...workspace,weeks:weeks.map(({qualityCandidate,...week})=>week),history:history.map(({quality,qualityStatus,monthlyQuality,...row})=>row)};
 }
-if(globalBefore)assert.deepEqual(unaffectedOverview(full),unaffectedOverview(globalBefore),'the global overview preserves fields outside quality publication');
+if(globalBefore)assert.deepEqual(unaffectedOverview(full),unaffectedOverview(globalBefore),'the global overview preserves fields outside quality publication and optional peer comments');
 current.reset();assert.deepEqual(await current.performance.overview(),full,'default global/full remains stable on repeated reads');
 assert.equal(current.log.writes.length,0,'unchanged global results must not acquire a write transaction');
 current.reset();
@@ -144,7 +145,10 @@ assert.deepEqual(scoped.months,full.months,'global publication/period month boun
 assert.deepEqual(scoped.monthly,full.monthly.filter(r=>r.userId==='a'));
 for(const cycle of scoped.collaborations){const original=full.collaborations.find(c=>c.id===cycle.id);assert.equal(cycle.expected,original.expected);assert.equal(cycle.submitted,original.submitted);assert.deepEqual(cycle.pending,original.pending);assert(cycle.assignments.every(a=>a.evaluee_user_id==='a'));}
 assert.equal(scoped.collaborations.find(c=>c.id==='2026-10').expected,4,'whole-cycle progress must not become single-person totals');
-assert(scoped.collaborations.find(c=>c.id==='2026-10').pending.includes('负责人'),'Unicode-only comments are still incomplete');
+assert.equal(scoped.collaborations.find(c=>c.id==='2026-10').submitted,3,'a scored peer response is complete even with a Unicode-only comment');
+assert.deepEqual(scoped.collaborations.find(c=>c.id==='2026-10').pending,['同名员工'],'the peer without a response must remain pending');
+assert.equal(full.monthly.find(r=>r.userId==='b'&&r.month==='2026-10').collaborationSubmitted,1);
+assert.equal(full.monthly.find(r=>r.userId==='b'&&r.month==='2026-10').peerComplete,false,'an optional comment must not complete an unsubmitted peer task');
 function assertHistoryMatchesOverview(personal,view){
  const rows=view.results.filter(row=>row.employee_user_id==='a');
  const monthly=view.monthly.filter(row=>row.userId==='a');

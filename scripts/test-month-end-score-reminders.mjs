@@ -23,7 +23,7 @@ run(`INSERT INTO employees(user_id,name,department,is_active) VALUES('head','负
 INSERT INTO organization_departments VALUES('team','团队','head',datetime('now'));
 INSERT INTO scoring360_cycles(id,label,start_date,status,launch_at) VALUES('oct','十月','2026-10-01','open','2026-10-20'),('sep','九月','2026-09-01','open','2026-09-20'),('draft','草稿','2026-10-01','draft',NULL),('closed','关闭','2026-10-01','closed','2026-10-20');
 INSERT INTO scoring360_assignments(id,cycle_id,evaluee_name,evaluator_name,evaluee_user_id,evaluator_user_id) VALUES('p-head','oct','员工','负责人','staff','head'),('p-peer','oct','员工','同名','staff','peer'),('p-peer2','oct','负责人','同名','head','peer2'),('p-inactive','oct','员工','停职','staff','inactive'),('target-inactive','oct','停职','同名','inactive','peer'),('old','sep','员工','同名','staff','peer'),('draft-a','draft','员工','同名','staff','peer'),('closed-a','closed','员工','同名','staff','peer'),('self','oct','同名','同名','peer','peer');
-INSERT INTO scoring360_responses(id,assignment_id,cycle_id,evaluee_name,evaluator_name,score,comment) VALUES('r-zero','p-peer2','oct','负责人','同名',0,'已评分，零分也完成');`);
+INSERT INTO scoring360_responses(id,assignment_id,cycle_id,evaluee_name,evaluator_name,score,comment) VALUES('r-zero','p-peer2','oct','负责人','同名',0,'');`);
 const employees=async()=> (await query('SELECT * FROM employees WHERE is_active=1;')).map(p=>({userId:p.user_id,name:p.name,department:p.department,managerUserId:p.manager_user_id}));
 const departments=createDepartments({query,exec,sql,employees}),reviews=createManagerReviews({query,exec,sql,organization:departments.overview,isBossUserId:id=>id==='boss'});
 let time=new Date('2026-10-29T02:00:00Z'),enabled=false,failPeer=true,completeOnReserve=false;
@@ -46,7 +46,7 @@ await createMonthEndScoreReminders(options).tick();assert.equal(calls.length,3,'
 time=new Date('2026-10-29T02:16:00Z');failPeer=false;await service.tick();assert.equal(calls.length,4);assert.equal(calls[1]?.uuid?.length,32);assert.equal(calls.filter(c=>c.id==='peer')[0].uuid,calls.filter(c=>c.id==='peer')[1].uuid,'retry uses same Feishu UUID');
 
 // Submit peer and boss tasks between the two reminder days; only the manager remains.
-run(`INSERT INTO scoring360_responses(id,assignment_id,cycle_id,evaluee_name,evaluator_name,score,comment) VALUES('r1','p-head','oct','员工','负责人',90,'完整评价'),('r2','p-peer','oct','员工','同名',80,'完整评价'); INSERT INTO department_leader_scores(department_id,month,leader_user_id,score,comment,scorer_user_id,scorer_name,created_at) VALUES('team','2026-10','head',80,'月度评价','boss','老板',datetime('now')); `);
+run(`INSERT INTO scoring360_responses(id,assignment_id,cycle_id,evaluee_name,evaluator_name,score,comment) VALUES('r1','p-head','oct','员工','负责人',90,''),('r2','p-peer','oct','员工','同名',80,''); INSERT INTO department_leader_scores(department_id,month,leader_user_id,score,comment,scorer_user_id,scorer_name,created_at) VALUES('team','2026-10','head',80,'月度评价','boss','老板',datetime('now')); `);
 time=new Date('2026-10-30T02:00:00Z');assert.deepEqual(await service.tick(),{sent:1,failed:0});assert.equal(calls.at(-1).id,'head');assert(!calls.at(-1).text.includes('同事互评：'));
 assert.equal(run("SELECT count(*) AS n FROM monthly_score_reminder_deliveries WHERE status='sent';",true)[0].n,4);
 

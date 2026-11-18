@@ -29,7 +29,7 @@ export function createMonthEndScoreReminders({query,exec,sql,managerReviews,boss
    if(!groups.has(id))groups.set(id,{userId:id,name:byId.get(id)?.name||name||id,peer:[],manager:[],boss:[]});
    const list=groups.get(id)[kind];if(!list.includes(key))list.push(key);
   }
-  const assignments=await query(`SELECT a.id,a.evaluee_user_id,a.evaluator_user_id FROM scoring360_assignments a JOIN scoring360_cycles c ON c.id=a.cycle_id LEFT JOIN scoring360_responses r ON r.assignment_id=a.id WHERE substr(c.start_date,1,7)=${sql(month)} AND c.status IN ('open','active') AND COALESCE(c.launch_at,'')<>'' AND COALESCE(a.status,'active')='active' AND (r.id IS NULL OR r.score IS NULL OR r.score<0 OR r.score>100 OR trim(COALESCE(r.comment,''))='');`);
+  const assignments=await query(`SELECT a.id,a.evaluee_user_id,a.evaluator_user_id FROM scoring360_assignments a JOIN scoring360_cycles c ON c.id=a.cycle_id LEFT JOIN scoring360_responses r ON r.assignment_id=a.id WHERE substr(c.start_date,1,7)=${sql(month)} AND c.status IN ('open','active') AND COALESCE(c.launch_at,'')<>'' AND COALESCE(a.status,'active')='active' AND (r.id IS NULL OR r.score IS NULL OR r.score<0 OR r.score>100);`);
   for(const a of assignments)if(active(a.evaluee_user_id)&&active(a.evaluator_user_id)&&a.evaluee_user_id!==a.evaluator_user_id&&!published.has(a.evaluee_user_id))add(a.evaluator_user_id,'peer',a.id);
   const state=await managerReviews.snapshot();
   const bosses=await bossMembers();
@@ -59,7 +59,7 @@ export function createMonthEndScoreReminders({query,exec,sql,managerReviews,boss
   if(recipient.counts.peer)lines.push(`同事互评：${recipient.counts.peer} 项待评（占最终分70%）。`);
   if(recipient.counts.manager)lines.push(`下属月度评分：${recipient.counts.manager} 项待评（占最终分30%）。`);
   if(recipient.counts.boss)lines.push(`部门负责人评分：${recipient.counts.boss} 项待评（占最终分30%）。`);
-  lines.push('请提交分数和评价；所有必需评分完成后，系统自动合成发布最终分。',`本月最后两个工作日为 ${dates.join('、')}，每天仅提醒仍未完成的人员。`);
+  lines.push('请完成相应评分；同事互评的协作评价选填，负责人／老板评分仍需填写评价。所有必需评分完成后，系统自动合成发布最终分。',`本月最后两个工作日为 ${dates.join('、')}，每天仅提醒仍未完成的人员。`);
   if(recipient.counts.peer||recipient.counts.manager)lines.push(`评分工作台：${baseUrl}/?page=scores`);
   if(recipient.counts.boss)lines.push(`部门负责人评分：${baseUrl}/?page=scores&scoreTab=leaders&scoreMonth=${clock.month}`);
   return lines.join('\n');

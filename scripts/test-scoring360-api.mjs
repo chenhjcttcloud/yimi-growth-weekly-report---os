@@ -114,10 +114,28 @@ try {
   const opened = await ok('/api/scoring360/cycle', { action: 'open' });
   assert.equal(opened.cycle.status, 'open'); assert.equal(opened.messagesSent, 0);
   assert.equal((await ok('/api/scoring360/my-tasks?cycleId=' + cycleId)).tasks.length, 2);
+  const beforeScores = snapshot();
+  for (const score of [undefined, null, '', ' \t', false, true, [], {}, -1, 101, 'invalid']) {
+    const invalid = await ok('/api/scoring360/submit', { cycleId, scores: [{ assignmentId: assignments[0], score, comment: '' }] });
+    assert.equal(invalid.saved, 0, 'missing or invalid scores must never become zero');
+    assert.deepEqual(invalid.skipped, [{ assignmentId: assignments[0], reason: 'invalid_score' }]);
+    assert.equal(snapshot(), beforeScores, 'invalid scores must not create a response or mark a task submitted');
+  }
+  const forbidden = await ok('/api/scoring360/submit', { cycleId, scores: [{ assignmentId: assignments[0], score: 0 }] }, 'peer');
+  assert.equal(forbidden.saved, 0); assert.equal(forbidden.skipped[0].reason, 'assignment_not_found');
+  assert.equal(snapshot(), beforeScores, 'an optional comment must not change evaluator authorization');
+  const zero = await ok('/api/scoring360/submit', { cycleId, scores: [{ assignmentId: assignments[0], score: 0 }] });
+  assert.equal(zero.saved, 1); assert.deepEqual(zero.skipped, []);
+  assert.deepEqual(sql(`SELECT score,COALESCE(comment,'') AS comment FROM scoring360_responses WHERE assignment_id='${assignments[0]}';`, true), [{ score: 0, comment: '' }]);
+  const submittedTask = (await ok('/api/scoring360/my-tasks?cycleId=' + cycleId)).tasks.find(task => task.id === assignments[0]);
+  assert.equal(submittedTask.submitted, true); assert.equal(submittedTask.score, 0);
+  const withoutComment = await ok('/api/scoring360/submit', { cycleId, scores: [{ assignmentId: assignments[1], score: 90, comment: ' \t' }] }, 'peer');
+  assert.equal(withoutComment.saved, 1); assert.deepEqual(withoutComment.skipped, []);
+  assert.equal(sql(`SELECT COALESCE(comment,'') AS comment FROM scoring360_responses WHERE assignment_id='${assignments[1]}';`, true)[0].comment, '');
   assert.equal(sql("SELECT count(*) AS n FROM scoring360_reminder_sends WHERE status IN('sent','pending','uncertain');", true)[0].n, 0);
   assert.equal(await readFile(dir + '/network.log', 'utf8').catch(error => { if (error.code === 'ENOENT') return ''; throw error; }), '');
   assert.equal(sql('PRAGMA integrity_check;'), 'ok');
-  const result = { ok: true, isolatedFeishuSessions: true, ssoRosterOnly: true, manualAssignmentsOnly: true, unconfiguredPreviewReadOnly: true, targetedPreview: true, draftSubmissionRejected: true, explicitOpen: true, externalRequests: 0, realMessagesSent: 0, artifacts: dir };
+  const result = { ok: true, isolatedFeishuSessions: true, ssoRosterOnly: true, manualAssignmentsOnly: true, unconfiguredPreviewReadOnly: true, targetedPreview: true, draftSubmissionRejected: true, explicitOpen: true, optionalPeerComment: true, zeroScorePreserved: true, missingScoresRejected: true, evaluatorAuthorizationPreserved: true, externalRequests: 0, realMessagesSent: 0, artifacts: dir };
   await writeFile(dir + '/result.json', JSON.stringify(result, null, 2)); console.log(JSON.stringify(result));
 } catch (error) { console.error(logs); throw error; }
 finally {

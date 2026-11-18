@@ -23,7 +23,7 @@ export function createPersonalScoringReminders({query,exec,sql,enabled,deliver,p
    const published=await query(`SELECT 1 FROM all_monthly_weighted_results WHERE month=${sql(month)} AND employee_user_id=${sql(user.userId)} UNION SELECT 1 FROM performance_results WHERE month=${sql(month)} AND employee_user_id=${sql(user.userId)} AND kind='collaboration';`);
    if(published.length)return {assignments,pending:[],aged:[],eligible:[],sends:[],handoffRequired:false};
   }
-  const pending=assignments.filter(a=>a.score===''||!String(a.comment||'').trim());
+  const pending=assignments.filter(a=>!(typeof a.score==='number'||typeof a.score==='string'&&Boolean(a.score.trim()))||!Number.isFinite(Number(a.score))||Number(a.score)<0||Number(a.score)>100);
   const aged=pending.filter(a=>active(a.evaluator_user_id)&&['open','active'].includes(a.status)&&now()-Math.max(timestamp(a.launch_at||a.cycle_created_at)||now(),timestamp(a.created_at)||0)>=waitMs);
   const sends=await query(`SELECT recipient_user_id,created_at,status FROM personal_scoring_reminders WHERE requester_user_id=${sql(user.userId)} AND month=${sql(month)} AND status IN ('pending','sent','uncertain','failed');`);
   const eligible=aged.filter(a=>a.evaluator_user_id&&!sends.some(s=>s.recipient_user_id===a.evaluator_user_id&&now()-timestamp(s.created_at)<cooldownMs));
@@ -48,7 +48,7 @@ export function createPersonalScoringReminders({query,exec,sql,enabled,deliver,p
      // Recheck after reserving: do not notify a rater who completed in the meantime.
      const current=await details(user,month);
      if(!await isEnabled(month)||!current.aged.some(a=>a.evaluator_user_id===recipient)){await exec(`UPDATE personal_scoring_reminders SET status='cancelled' WHERE id=${sql(id)};`);continue;}
-     const text=`【成长 OS 协作评分提醒】${user.name}提醒你：${month} 月对其的月度评分尚未完成，请登录成长 OS 的「评分工作台」提交分数和评价。负责人或老板占30%，同事互评占70%；全部完成后系统自动公布最终分。`;
+     const text=`【成长 OS 协作评分提醒】${user.name}提醒你：${month} 月对其的月度评分尚未完成，请登录成长 OS 的「评分工作台」提交评分。同事互评的协作评价选填，负责人／老板评分仍需填写评价。负责人或老板占30%，同事互评占70%；全部完成后系统自动公布最终分。`;
      const messageId=await deliver(recipient,text,id);if(!messageId)throw Error('missing_message_id');delivered=true;
      await exec(`UPDATE personal_scoring_reminders SET status='sent',message_id=${sql(messageId||'')} WHERE id=${sql(id)};`);sent++;
     }catch(error){const status=!delivered&&error.retryable===false?'rejected':'uncertain';await exec(`UPDATE personal_scoring_reminders SET status=${sql(status)} WHERE id=${sql(id)};`);failed++;}

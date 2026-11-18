@@ -550,10 +550,12 @@ BEGIN SELECT RAISE(ABORT, 'result_locked'); END;
 CREATE TRIGGER IF NOT EXISTS scoring360_assignments_published_delete BEFORE DELETE ON scoring360_assignments
 WHEN EXISTS(SELECT 1 FROM performance_results p JOIN scoring360_cycles c ON substr(c.start_date,1,7)=p.month WHERE p.kind='collaboration' AND c.id=OLD.cycle_id AND p.employee_user_id=OLD.evaluee_user_id)
 BEGIN SELECT RAISE(ABORT, 'result_locked'); END;
+-- Peer comments are optional. Existing databases need the reviewed scoring-rule
+-- upgrade: CREATE TRIGGER IF NOT EXISTS does not replace an installed trigger.
 CREATE TRIGGER IF NOT EXISTS performance_collaboration_complete BEFORE INSERT ON performance_results
 WHEN NEW.kind='collaboration' AND (
   NOT EXISTS(SELECT 1 FROM scoring360_assignments a JOIN scoring360_cycles c ON c.id=a.cycle_id WHERE substr(c.start_date,1,7)=NEW.month AND a.evaluee_user_id=NEW.employee_user_id AND COALESCE(a.status,'active')='active')
-  OR EXISTS(SELECT 1 FROM scoring360_assignments a JOIN scoring360_cycles c ON c.id=a.cycle_id LEFT JOIN scoring360_responses r ON r.assignment_id=a.id WHERE substr(c.start_date,1,7)=NEW.month AND a.evaluee_user_id=NEW.employee_user_id AND (COALESCE(a.status,'active')='active' OR r.id IS NOT NULL) AND (r.id IS NULL OR trim(COALESCE(r.comment,''))=''))
+  OR EXISTS(SELECT 1 FROM scoring360_assignments a JOIN scoring360_cycles c ON c.id=a.cycle_id LEFT JOIN scoring360_responses r ON r.assignment_id=a.id WHERE substr(c.start_date,1,7)=NEW.month AND a.evaluee_user_id=NEW.employee_user_id AND (COALESCE(a.status,'active')='active' OR r.id IS NOT NULL) AND (r.id IS NULL OR r.score IS NULL OR r.score<0 OR r.score>100))
   OR (SELECT ROUND(AVG(r.score),1) FROM scoring360_responses r JOIN scoring360_cycles c ON c.id=r.cycle_id WHERE substr(c.start_date,1,7)=NEW.month AND r.assignment_id IN (SELECT id FROM scoring360_assignments WHERE evaluee_user_id=NEW.employee_user_id)) != json_extract(NEW.result_json,'$.score')
 )
 BEGIN SELECT RAISE(ABORT, 'scoring_incomplete_or_changed'); END;
@@ -707,7 +709,7 @@ BEGIN SELECT RAISE(ABORT,'result_locked'); END;
 CREATE TRIGGER IF NOT EXISTS weighted_result_validation BEFORE INSERT ON monthly_weighted_results
 WHEN
  NOT EXISTS(SELECT 1 FROM scoring360_assignments a JOIN scoring360_cycles c ON c.id=a.cycle_id WHERE substr(c.start_date,1,7)=NEW.month AND a.evaluee_user_id=NEW.employee_user_id AND COALESCE(a.status,'active')='active')
- OR EXISTS(SELECT 1 FROM scoring360_assignments a JOIN scoring360_cycles c ON c.id=a.cycle_id LEFT JOIN scoring360_responses r ON r.assignment_id=a.id WHERE substr(c.start_date,1,7)=NEW.month AND a.evaluee_user_id=NEW.employee_user_id AND (COALESCE(a.status,'active')='active' OR r.id IS NOT NULL) AND (r.id IS NULL OR trim(COALESCE(r.comment,''))=''))
+ OR EXISTS(SELECT 1 FROM scoring360_assignments a JOIN scoring360_cycles c ON c.id=a.cycle_id LEFT JOIN scoring360_responses r ON r.assignment_id=a.id WHERE substr(c.start_date,1,7)=NEW.month AND a.evaluee_user_id=NEW.employee_user_id AND (COALESCE(a.status,'active')='active' OR r.id IS NOT NULL) AND (r.id IS NULL OR r.score IS NULL OR r.score<0 OR r.score>100))
  OR COALESCE(json_array_length(NEW.evidence_json,'$.managerProgress.expectedIds'),0)=0
  OR (CASE json_extract(NEW.evidence_json,'$.managerProgress.kind') WHEN 'boss' THEN (SELECT count(*) FROM department_leader_scores WHERE month=NEW.month AND leader_user_id=NEW.employee_user_id AND department_id IN(SELECT value FROM json_each(NEW.evidence_json,'$.managerProgress.expectedIds'))) ELSE (SELECT count(*) FROM monthly_manager_scores WHERE month=NEW.month AND employee_user_id=NEW.employee_user_id AND evaluator_user_id IN(SELECT value FROM json_each(NEW.evidence_json,'$.managerProgress.expectedIds'))) END) != json_array_length(NEW.evidence_json,'$.managerProgress.expectedIds')
  OR ABS(COALESCE(json_extract(NEW.result_json,'$.peerScore'),-1000)-(SELECT ROUND(AVG(r.score),1) FROM scoring360_assignments a JOIN scoring360_cycles c ON c.id=a.cycle_id JOIN scoring360_responses r ON r.assignment_id=a.id WHERE substr(c.start_date,1,7)=NEW.month AND a.evaluee_user_id=NEW.employee_user_id))>0.001
@@ -788,7 +790,7 @@ BEGIN SELECT RAISE(ABORT,'result_locked'); END;
 CREATE TRIGGER IF NOT EXISTS person_weighted_result_validation BEFORE INSERT ON monthly_person_weighted_results
 WHEN
  NOT EXISTS(SELECT 1 FROM scoring360_assignments a JOIN scoring360_cycles c ON c.id=a.cycle_id WHERE substr(c.start_date,1,7)=NEW.month AND a.evaluee_user_id=NEW.employee_user_id AND COALESCE(a.status,'active')='active')
- OR EXISTS(SELECT 1 FROM scoring360_assignments a JOIN scoring360_cycles c ON c.id=a.cycle_id LEFT JOIN scoring360_responses r ON r.assignment_id=a.id WHERE substr(c.start_date,1,7)=NEW.month AND a.evaluee_user_id=NEW.employee_user_id AND (COALESCE(a.status,'active')='active' OR r.id IS NOT NULL) AND (r.id IS NULL OR trim(COALESCE(r.comment,''))=''))
+ OR EXISTS(SELECT 1 FROM scoring360_assignments a JOIN scoring360_cycles c ON c.id=a.cycle_id LEFT JOIN scoring360_responses r ON r.assignment_id=a.id WHERE substr(c.start_date,1,7)=NEW.month AND a.evaluee_user_id=NEW.employee_user_id AND (COALESCE(a.status,'active')='active' OR r.id IS NOT NULL) AND (r.id IS NULL OR r.score IS NULL OR r.score<0 OR r.score>100))
  OR COALESCE(json_array_length(NEW.evidence_json,'$.managerProgress.expectedIds'),0)=0
  OR (CASE json_extract(NEW.evidence_json,'$.managerProgress.kind') WHEN 'boss' THEN (SELECT count(*) FROM all_department_leader_scores WHERE month=NEW.month AND leader_user_id=NEW.employee_user_id AND department_id IN(SELECT value FROM json_each(NEW.evidence_json,'$.managerProgress.expectedIds'))) ELSE (SELECT count(*) FROM monthly_manager_scores WHERE month=NEW.month AND employee_user_id=NEW.employee_user_id AND evaluator_user_id IN(SELECT value FROM json_each(NEW.evidence_json,'$.managerProgress.expectedIds'))) END) != json_array_length(NEW.evidence_json,'$.managerProgress.expectedIds')
  OR ABS(COALESCE(json_extract(NEW.result_json,'$.peerScore'),-1000)-(SELECT ROUND(AVG(r.score),1) FROM scoring360_assignments a JOIN scoring360_cycles c ON c.id=a.cycle_id JOIN scoring360_responses r ON r.assignment_id=a.id WHERE substr(c.start_date,1,7)=NEW.month AND a.evaluee_user_id=NEW.employee_user_id))>0.001

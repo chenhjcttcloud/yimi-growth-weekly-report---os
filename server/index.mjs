@@ -1891,9 +1891,10 @@ async function submitScoring360(req, res) {
   const skipped = [];
   for (const item of scores) {
     const assignmentId = String(item?.assignmentId || "").trim();
+    const scoreProvided = typeof item?.score === "number" || typeof item?.score === "string" && Boolean(item.score.trim());
     const score = Number(item?.score);
     const comment = String(item?.comment || "").trim().slice(0, 1000);
-    if (!assignmentId || !comment || !Number.isFinite(score) || score < 0 || score > 100) {
+    if (!assignmentId || !scoreProvided || !Number.isFinite(score) || score < 0 || score > 100) {
       skipped.push({ assignmentId, reason: "invalid_score" });
       continue;
     }
@@ -1926,7 +1927,7 @@ async function submitScoring360(req, res) {
     const changed=await execSql(`
       INSERT INTO scoring360_responses (id, assignment_id, cycle_id, evaluee_name, evaluator_name, score, comment, submitted_at)
       SELECT ${sqlValue(randomUUID())}, ${sqlValue(assignment.id)}, ${sqlValue(cycleId)}, ${sqlValue(assignment.evaluee_name)},
-              ${sqlValue(evaluator)}, ${sqlValue(Math.round(score))}, ${sqlValue(comment)}, datetime('now')
+              ${sqlValue(evaluator)}, ${sqlValue(Math.round(score))}, COALESCE(${sqlValue(comment)},''), datetime('now')
       WHERE NOT EXISTS(SELECT 1 FROM employees WHERE user_id IN (${sqlValue(assignment.evaluee_user_id)},${sqlValue(evaluatorUserId)}) AND is_active=0)
         AND EXISTS(SELECT 1 FROM scoring360_assignments WHERE id=${sqlValue(assignment.id)} AND COALESCE(status,'active')='active')
       ON CONFLICT(assignment_id) DO UPDATE SET
@@ -2351,7 +2352,7 @@ function buildScoring360ReminderMessage({ cycle, recipient, kind }) {
   const pendingNames = recipient.pendingNames.slice(0, 6).join("、");
   const more = recipient.pendingNames.length > 6 ? `等 ${recipient.pendingNames.length} 位同事` : "";
   const action = kind === "followup" ? "温柔提醒一下，你还有协同 360 评分没有完成。" : "协同 360 评分周期已经启动。";
-  const dueText = cycle.dueAt ? `本轮请在 ${formatChineseDateTime(cycle.dueAt)} 前完成。` : `请及时完成本月分数和评价；全部必需评分完成后自动发布结果。`;
+  const dueText = cycle.dueAt ? `本轮请在 ${formatChineseDateTime(cycle.dueAt)} 前完成。` : `请及时完成本月评分，协作评价选填；全部必需评分完成后自动发布结果。`;
   return `${recipient.evaluatorName}，${action}
 
 这不是人情分，也不是简单给同事排高低，而是帮助团队看见：谁在协作中持续贡献价值，谁可能变成信息孤岛，以及哪些协作关系需要被管理层及时补位。

@@ -8,6 +8,7 @@ import {encodeAutomaticEvidence,decodeAutomaticEvidence} from './automatic-evide
 import {applyQualityReviews,qualityAnalysisVersion,qualityReviewDetails,qualityRound,qualityVersion,summarizeMonthlyQuality} from './weekly-quality-review.mjs';
 
 const selected=(value,keys)=>value&&typeof value==='object'?Object.fromEntries(keys.filter(key=>value[key]!==undefined).map(key=>[key,value[key]])):null;
+const hasPeerScore=assignment=>(typeof assignment.score==='number'||typeof assignment.score==='string'&&Boolean(assignment.score.trim()))&&Number.isFinite(Number(assignment.score))&&Number(assignment.score)>=0&&Number(assignment.score)<=100;
 const assessmentBasis=value=>{
   if(!value)return null;
   const {generatedAt,...basis}=value;
@@ -292,15 +293,14 @@ WHERE COALESCE((SELECT calculation_hash FROM automatic_performance_results WHERE
     let cycleTotals=[];
     if(userId&&selectedCycles.length){
       // Keep the management view's whole-cycle progress while reading only this
-      // employee's assignment details. Match JavaScript String.trim whitespace.
-      const comment=`trim(COALESCE(r.comment,''),char(9,10,11,12,13,32,160,5760,8192,8193,8194,8195,8196,8197,8198,8199,8200,8201,8202,8232,8233,8239,8287,12288,65279))`;
-      cycleTotals=await query(`SELECT a.cycle_id,COUNT(*) AS expected,SUM(CASE WHEN r.score IS NOT NULL AND ${comment}<>'' THEN 1 ELSE 0 END) AS submitted,json_group_array(a.evaluator_name) FILTER (WHERE r.score IS NULL OR ${comment}='') AS pending_json FROM scoring360_assignments a LEFT JOIN scoring360_responses r ON r.assignment_id=a.id WHERE (COALESCE(a.status,'active')='active' OR r.id IS NOT NULL)${scoped?` AND a.cycle_id IN (${selectedCycles.map(c=>sql(c.id)).join(',')})`:''} GROUP BY a.cycle_id;`);
+      // employee's assignment details. Peer comments are optional.
+      cycleTotals=await query(`SELECT a.cycle_id,COUNT(*) AS expected,SUM(CASE WHEN r.score BETWEEN 0 AND 100 THEN 1 ELSE 0 END) AS submitted,json_group_array(a.evaluator_name) FILTER (WHERE r.score IS NULL OR r.score<0 OR r.score>100) AS pending_json FROM scoring360_assignments a LEFT JOIN scoring360_responses r ON r.assignment_id=a.id WHERE (COALESCE(a.status,'active')='active' OR r.id IS NOT NULL)${scoped?` AND a.cycle_id IN (${selectedCycles.map(c=>sql(c.id)).join(',')})`:''} GROUP BY a.cycle_id;`);
     }
     const collaborations=[];
     for(const c of selectedCycles){
       const assignments=await query(`SELECT a.*,r.score,r.comment,r.submitted_at FROM scoring360_assignments a LEFT JOIN scoring360_responses r ON r.assignment_id=a.id WHERE a.cycle_id=${sql(c.id)}${userId?` AND a.evaluee_user_id=${sql(userId)}`:''} AND (COALESCE(a.status,'active')='active' OR r.id IS NOT NULL);`);
       const totals=cycleTotals.find(t=>t.cycle_id===c.id);
-      collaborations.push({...c,month:monthOf(c.start_date),assignments,expected:userId?Number(totals?.expected||0):assignments.length,submitted:userId?Number(totals?.submitted||0):assignments.filter(a=>a.score!==''&&String(a.comment||'').trim()).length,pending:userId?JSON.parse(totals?.pending_json||'[]'):assignments.filter(a=>a.score===''||!String(a.comment||'').trim()).map(a=>a.evaluator_name)});
+      collaborations.push({...c,month:monthOf(c.start_date),assignments,expected:userId?Number(totals?.expected||0):assignments.length,submitted:userId?Number(totals?.submitted||0):assignments.filter(hasPeerScore).length,pending:userId?JSON.parse(totals?.pending_json||'[]'):assignments.filter(a=>!hasPeerScore(a)).map(a=>a.evaluator_name)});
     }
     const directory = new Map((data.employee_summary||[]).filter(e=>!userId||e.user_id===userId).map(e=>[e.user_id,{name:e['姓名'],department:e['部门'],userId:e.user_id}]));
     const roster=await query(`SELECT user_id,name,department,is_active FROM employees${userId?` WHERE user_id=${sql(userId)}`:''};`);
@@ -330,11 +330,11 @@ WHERE COALESCE((SELECT calculation_hash FROM automatic_performance_results WHERE
       const cyclesForMonth=collaborations.filter(c=>c.month===month);
       const assignments=cyclesForMonth.flatMap(c=>c.assignments.filter(a=>a.evaluee_user_id===employee.userId));
       const managerProgress=managerReviews.progress(managerState,month,employee.userId);
-      const peerCandidate=average(assignments.filter(a=>a.score!=='').map(a=>Number(a.score)));
-      const peerComplete=cyclesForMonth.length>0&&assignments.length>0&&assignments.some(a=>a.status==='active')&&assignments.every(a=>a.score!==''&&String(a.comment||'').trim());
+      const peerCandidate=average(assignments.filter(hasPeerScore).map(a=>Number(a.score)));
+      const peerComplete=cyclesForMonth.length>0&&assignments.length>0&&assignments.some(a=>a.status==='active')&&assignments.every(hasPeerScore);
       const complete=peerComplete&&managerProgress.complete;
       const quality=summarizeMonthlyQuality(employeeReports,confirmationBlocks.get(month));
-      monthly.push({...employee,month,reports:employeeReports,quality,qualityCandidate:quality.candidateScore,timeliness:{expected,submitted,onTime,late:counted.filter(r=>r.late).length,pendingTimestamp:counted.filter(r=>r.timestampUnknown).length,pendingCalendar:new Set([...weeks.filter(p=>readSchedule(p.end,monthPolicy.deadlineTime).calendarPending).map(p=>p.end),...counted.filter(r=>r.schedule.calendarPending).map(r=>r.end)]).size,missing:Math.max(0,expected-submitted),rate:expected?round(onTime/expected*100):null},peerCandidate,peerComplete,managerProgress,collaborationCandidate:complete?round(peerCandidate*.7+managerProgress.score*.3):null,collaborationComplete:complete,collaborationExpected:assignments.length,collaborationSubmitted:assignments.filter(a=>a.score!==''&&String(a.comment||'').trim()).length});
+      monthly.push({...employee,month,reports:employeeReports,quality,qualityCandidate:quality.candidateScore,timeliness:{expected,submitted,onTime,late:counted.filter(r=>r.late).length,pendingTimestamp:counted.filter(r=>r.timestampUnknown).length,pendingCalendar:new Set([...weeks.filter(p=>readSchedule(p.end,monthPolicy.deadlineTime).calendarPending).map(p=>p.end),...counted.filter(r=>r.schedule.calendarPending).map(r=>r.end)]).size,missing:Math.max(0,expected-submitted),rate:expected?round(onTime/expected*100):null},peerCandidate,peerComplete,managerProgress,collaborationCandidate:complete?round(peerCandidate*.7+managerProgress.score*.3):null,collaborationComplete:complete,collaborationExpected:assignments.length,collaborationSubmitted:assignments.filter(hasPeerScore).length});
     }
     const calculations=monthly.flatMap(row=>calculateReportResults(row,results));
     if(calculations.length)await exec(`BEGIN IMMEDIATE;${calculations.join('\n')}COMMIT;`);
