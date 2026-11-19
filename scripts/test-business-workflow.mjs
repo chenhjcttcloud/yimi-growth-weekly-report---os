@@ -3,6 +3,7 @@ import {mkdir,mkdtemp,writeFile,readFile} from 'node:fs/promises';
 import {spawn,spawnSync} from 'node:child_process';
 import path from 'node:path';
 import {chromium} from 'playwright';
+import {ACTIVE_REPORT_QUALITY_VERSION,ACTIVE_REPORT_QUALITY_PROMPT_VERSION,ACTIVE_REPORT_QUALITY_REVIEW_PROMPT_VERSION} from '../server/report-quality-active.mjs';
 
 // Runs the real HTTP server and UI. Every provider request is intercepted in that
 // process; an unexpected request fails closed. Artifacts are deliberately retained.
@@ -23,12 +24,17 @@ const log=dir+'/providers.jsonl',control=dir+'/control.json';await writeFile(con
 const report={task_id:'report-staff',from_user_id:'staff',from_user_name:names.staff,department_name:'团队',rule_id:'weekly',rule_name:'周报（聚焦结果与协作）',commit_time:Date.parse('2026-10-23T19:00:00+08:00')/1000,form_contents:[{field_name:'本周成果',field_value:'完成3项验收，保留验收记录'},{field_name:'问题与挑战',field_value:'跨部门接口需核实验收口径'},{field_name:'下周工作计划与目标',field_value:'与负责人共同完成接口验证'},{field_name:'思考与复盘',field_value:'提前确认验收标准，减少返工'}]};
 await writeFile(dir+'/providers.mjs',`
 import {appendFile,readFile} from 'node:fs/promises';
-import {makeReportQualityAnalysis} from ${JSON.stringify(new URL('./report-quality-test-fixtures.mjs',import.meta.url).href)};
+import {makeActiveReportQualityAnalysis} from ${JSON.stringify(new URL('./report-quality-active-test-fixtures.mjs',import.meta.url).href)};
 ${clockSource('Number(process.env.BUSINESS_FIXTURE_NOW)')}
 const names=${JSON.stringify(names)},report=${JSON.stringify(report)};let rotations=0;const expired=new Set();
 globalThis.fetch=async(url,options={})=>{
- const u=new URL(String(url)),body=JSON.parse(options.body||'{}'),flags=JSON.parse(await readFile(${JSON.stringify(control)},'utf8'));let value,status=200,kind='';
- if(u.hostname==='fixture-ai.invalid'){kind='ai';const fields=report.form_contents.map(f=>f.field_value),facts={results:fields[0],problems:fields[1],nextPlan:fields[2],reflection:fields[3]};value={choices:[{message:{content:JSON.stringify(makeReportQualityAnalysis(facts,{summary:'完成实际验收，接口口径需要确认。',questions:['如何验证接口验收标准？'],tasks:[{title:'确认接口验收',description:'与负责人核实验收口径',priority:'P1',metric:'形成验收记录',evidence:'接口需核实验收口径'}]}))}}]};}
+ const u=new URL(String(url)),body=JSON.parse(options.body||'{}'),flags=JSON.parse(await readFile(${JSON.stringify(control)},'utf8'));let value,status=200,kind='',stage;
+ if(u.hostname==='fixture-ai.invalid'){
+  kind='ai';let input;try{input=JSON.parse(body.messages.find(message=>message.role==='user').content);}catch{}
+  stage=input?.report?(input.candidate?'review':'initial'):'coach';
+  const fields=report.form_contents.map(f=>f.field_value),facts=input?.report||{results:fields[0],problems:fields[1],nextPlan:fields[2],reflection:fields[3]};
+  value={choices:[{message:{content:JSON.stringify(makeActiveReportQualityAnalysis(facts,{summary:'完成实际验收，接口口径需要确认。',questions:['如何验证接口验收标准？'],tasks:[{title:'确认接口验收',description:'与负责人核实验收口径',priority:'P1',metric:'形成验收记录',evidenceRef:'problems-1'}]}))}}]};
+ }
  else if(u.hostname!=='open.feishu.cn')throw Error('UNEXPECTED_PROVIDER_BLOCKED');
  else if(u.pathname.includes('/auth/v3/app_access_token')){kind='app_token';value={code:0,app_access_token:'fixture-app'};}
  else if(u.pathname.includes('/auth/v3/tenant_access_token')){kind='tenant_token';value={code:0,tenant_access_token:'fixture-tenant',expire:7200};}
@@ -46,7 +52,7 @@ globalThis.fetch=async(url,options={})=>{
   if(flags.messageTimeout&&kind==='direct_message'){await appendFile(${JSON.stringify(log)},JSON.stringify({kind,recipient:body.receive_id,uuid:body.uuid,timeout:true})+'\\n');throw Error('simulated lost acknowledgement');}
   if(flags.alwaysExpire&&kind==='company_message'){status=401;value={code:99991677,msg:'token expire'};}else value={code:0,data:{message_id:'fixture-message-'+body.uuid}};
  }else throw Error('UNEXPECTED_PROVIDER_BLOCKED '+u.pathname);
- await appendFile(${JSON.stringify(log)},JSON.stringify({kind,recipient:body.receive_id,uuid:body.uuid,status})+'\\n');
+ await appendFile(${JSON.stringify(log)},JSON.stringify({kind,stage,recipient:body.receive_id,uuid:body.uuid,status})+'\\n');
  return {ok:status===200,status,json:async()=>value,text:async()=>JSON.stringify(value)};
 };`);
 const port=12400+Math.floor(Math.random()*300),base='http://127.0.0.1:'+port;
@@ -68,6 +74,10 @@ try{
  const month='2026-10',ownMonth=async()=> (await call('/api/performance/me')).body.history.find(row=>row.month===month);
  const adminQuality=async()=> (await call(`/api/performance/employee-month?employeeId=staff&month=${month}`,'admin')).body.monthly.quality;
  assert.equal(run('SELECT count(*) FROM weekly_reports;').trim(),'1');const history=await ownMonth();
+ const scored=JSON.parse(run('SELECT content_json FROM weekly_reports;').trim());
+ assert.equal(scored.ai.version,ACTIVE_REPORT_QUALITY_VERSION);assert.equal(scored.aiPromptVersion,ACTIVE_REPORT_QUALITY_PROMPT_VERSION);assert.equal(scored.aiReviewPromptVersion,ACTIVE_REPORT_QUALITY_REVIEW_PROMPT_VERSION);
+ assert.equal(scored.ai.totalScore,83.3);assert.equal(Math.round(scored.ai.modules.reduce((total,module)=>total+module.criteria.reduce((sum,criterion)=>sum+criterion.score,0),0)*10)/10,83.3,'the candidate comes from actual active criterion points');
+ assert.deepEqual((await providerCalls()).filter(call=>call.kind==='ai').map(call=>call.stage),['initial','review']);assert.equal(sync.status.aiRequests,2);assert.equal(sync.status.aiRequestBudget,4);
  assert.equal(history.quality,null);assert.equal(history.qualityStatus,'pending_ai');assert.equal(history.collaboration,null);
  for(const quality of [history.monthlyQuality,await adminQuality()]){
    assert.equal(quality.currentAverage,83.3);assert.equal(quality.candidateScore,null);
