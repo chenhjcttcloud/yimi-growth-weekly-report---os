@@ -1,4 +1,5 @@
 import {createHash} from 'node:crypto';
+import {ACTIVE_REPORT_QUALITY_VERSION} from './report-quality-active.mjs';
 
 export const qualityRound = value => Math.round((value+Number.EPSILON)*10)/10;
 
@@ -28,7 +29,7 @@ export function applyQualityReviews(report,records) {
   const qualityReanalysisPending=active.some(review=>review.action==='reanalyze');
   const override=active.findLast(review=>review.action==='adjust_score');
   let moduleScores=report.qualityAssessment?.scores;
-  if(moduleScores&&active.some(review=>review.action==='mark_not_applicable')){
+  if(moduleScores&&report.qualityAssessment.version!==ACTIVE_REPORT_QUALITY_VERSION&&active.some(review=>review.action==='mark_not_applicable')){
     moduleScores=report.qualityAssessment.modules.map(module=>{
       const excluded=new Set(active.filter(review=>review.action==='mark_not_applicable'&&review.details.moduleId===module.id).map(review=>review.details.criterionId));
       const applicable=module.criteria.filter(criterion=>criterion.applicable!==false&&!excluded.has(criterion.id));
@@ -77,6 +78,7 @@ export function qualityReviewDetails(report,body) {
     if(typeof score!=='number'||!Number.isFinite(score)||score<0||score>100)throw Error('invalid_quality_score');
     return {score:qualityRound(score)};
   }
+  if(action==='mark_not_applicable'&&report.qualityAssessment?.version===ACTIVE_REPORT_QUALITY_VERSION)throw Error('quality_fixed_rubric');
   const module=report.qualityAssessment?.modules.find(item=>item.id===moduleId);
   const criterion=module?.criteria.find(item=>item.id===criterionId);
   if(!criterion)throw Error('invalid_quality_criterion');

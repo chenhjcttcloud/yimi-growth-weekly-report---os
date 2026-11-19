@@ -8,7 +8,8 @@ import {createLiveReportSync} from '../server/live-report-sync.mjs';
 import {createSystemSettings} from '../server/system-settings.mjs';
 import {createPerformance} from '../server/performance.mjs';
 import {REPORT_QUALITY_PROMPT_VERSION,REPORT_QUALITY_VERSION} from '../server/report-quality-scoring.mjs';
-import {makeReportQualityAnalysis} from './report-quality-test-fixtures.mjs';
+import {ACTIVE_REPORT_QUALITY_PROMPT_VERSION,ACTIVE_REPORT_QUALITY_VERSION} from '../server/report-quality-active.mjs';
+import {makeActiveReportQualityAnalysis} from './report-quality-active-test-fixtures.mjs';
 await mkdir('outputs/tests',{recursive:true});const dir=await mkdtemp(path.resolve('outputs/tests/report-automation-')),db=dir+'/test.sqlite';
 const sql=v=>v==null?'NULL':"'"+String(v).replaceAll("'","''")+"'";
 const run=(input,json=false,database=db)=>{const r=spawnSync('sqlite3',['-bail',...(json?['-json']:[]),database],{input,encoding:'utf8'});if(r.status)throw Error(r.stderr);return json?JSON.parse(r.stdout||'[]'):r.stdout;};
@@ -30,7 +31,7 @@ const fetcher=async(url,options)=>{
   if(providerFailure==='network')throw new TypeError('synthetic network failure');
   if(providerFailure==='permission')return {ok:false,status:403,json:async()=>({error:{type:'permission_denied_error'}})};
   if(providerFailure==='rate_limit')return {ok:false,status:429,json:async()=>({error:{type:'rate_limit_reached_error'}})};
-  const quality=makeReportQualityAnalysis(facts,{summary:'真实输入链路的模拟AI点评',questions:['如何验证交付？']});
+  const quality=makeActiveReportQualityAnalysis(facts,{summary:'真实输入链路的模拟AI点评',questions:['如何验证交付？']});
   if(invalidQuality)quality.modules[0].criteria[0].evidence=[{quote:'测试用的无效引文',type:'reported_fact'}];
   result={choices:[{message:{content:JSON.stringify(quality)}}]};
  }
@@ -73,7 +74,7 @@ now=new Date('2026-10-23T20:05:00+08:00');
 lock=true;
 assert.equal((await scheduler.tick()).skipped,'sync_running');
 lock=false;
-const results=await Promise.all([scheduler.tick(),createReportAutomation(options).tick()]);assert.equal(results.filter(r=>r.status==='started').length,1);assert.equal(aiCalls,1);assert.equal(queries,1);assert.equal(published,3,'initial queue, each completed report and final sync state project independently');
+const results=await Promise.all([scheduler.tick(),createReportAutomation(options).tick()]);assert.equal(results.filter(r=>r.status==='started').length,1);assert.equal(aiCalls,2,'a successful report receives initial scoring and an independent review');assert.equal(queries,1);assert.equal(published,3,'initial queue, each completed report and final sync state project independently');
 const history=async()=>(await performance.personal('测试员工','test-staff')).history[0];
 const personal=await history();
 assert.equal(personal.quality,null);assert.equal(personal.qualityStatus,'pending_ai');
@@ -101,14 +102,14 @@ assert.equal(followup.status,'started');
 assert.equal(followup.start,'2026-09-12','the existing 45-day lookback still covers earlier late reports');
 assert.equal(followup.end,'2026-10-26','the follow-up covers submissions made after the original deadline');
 assert.equal(reportContent().aiGeneratedAt,generatedAt,'cache retains original AI generation time');
-assert.equal(queries,2);assert.equal(aiCalls,2,'only the newly submitted late report gets scored');
+assert.equal(queries,2);assert.equal(aiCalls,4,'only the newly submitted late report gets initial scoring and review');
 assert.deepEqual(run("SELECT week_end,is_late FROM weekly_reports WHERE id='lark-report-test-late-task';",true),[{week_end:'2026-10-23',is_late:1}]);
 assert.equal(run("SELECT count(*) AS n FROM weekly_reports WHERE id='lark-report-test-late-duplicate';",true)[0].n,0,'only the latest submission contributes work');
 assert.equal(run("SELECT is_active FROM employees WHERE user_id='late-staff';",true)[0].is_active,1,'first-time submitter joins the active roster');
 assert.equal(status.rowCount,2);assert.equal(status.cached,1);assert.equal(status.analyzed,1);
-assert.equal(status.aiRequestBudget,2,'one new unique report can use an initial request and one retry');
-assert.equal(status.aiRequests,1,'successful first attempt uses only one request');
-assert.equal(await settings.reportAiRequestsToday(),65,'a previously saved cap of 64 does not defer the new employee');
+assert.equal(status.aiRequestBudget,4,'one new unique report budgets two attempts per scoring and review stage');
+assert.equal(status.aiRequests,2,'a successful report uses one initial request and one review request');
+assert.equal(await settings.reportAiRequestsToday(),66,'a previously saved cap of 64 does not defer the new employee');
 useStoredReservations=false;
 incoming=[item];
 await nextCheck(scheduler,'2026-10-30T20:05:00+08:00','deadline');
@@ -130,7 +131,7 @@ providerFailure='';await syncAt(15);
 const recovered=await history();assert.equal(recovered.quality,null);assert.equal(recovered.monthlyQuality.currentAverage,83.3);assert.equal(recovered.monthlyQuality.confirmationBlockedReason,'month_open');assert.equal(status.failed,0);
 const before=aiCalls;
 // Corrupt/incomplete cached analysis is retried instead of trusted as a complete grade.
-run("UPDATE weekly_reports SET content_json=json_set(content_json,'$.ai.modules',json('[]')) WHERE id='lark-report-test-task';");await syncAt(20);assert.equal(aiCalls,before+1);
+run("UPDATE weekly_reports SET content_json=json_set(content_json,'$.ai.modules',json('[]')) WHERE id='lark-report-test-task';");await syncAt(20);assert.equal(aiCalls,before+2);
 
 item.form_contents[0].field_value='更新周报，模拟评分引文失败';
 invalidQuality=true;
@@ -164,28 +165,37 @@ assert.equal(aiCalls,beforeValidationFailures+2,'manual continuation also respec
 assert.equal(status.blockedReason,'ai_scoring_paused');
 reservationsBeforePause=null;
 await sync.run({mode:'rescore',targetMonth:'2026-10'});
-assert.equal(aiCalls,beforeValidationFailures+3);
+assert.equal(aiCalls,beforeValidationFailures+4);
 assert.equal(status.analyzed,1);
 assert.equal(reportContent().qualityRefresh.state,'ready');
 await syncAt(40);
-assert.equal(aiCalls,beforeValidationFailures+3);
+assert.equal(aiCalls,beforeValidationFailures+4);
 assert.equal(status.cached,1,'successful manual recovery is reused by collection');
 
 const {ai, ...legacyReport}=reportContent();
 const legacyDiagnostic={code:'evidence_not_in_source',path:'modules.results.criteria.result.evidence.0.quote',retryable:true};
-// Four failures were possible in the old version and must still block another automatic attempt.
+// Historical engine failures retain their attribution and cannot exhaust a new engine's budget.
 legacyReport.aiAnalysisAttempts=Array.from({length:4},(_,index)=>({at:`2026-10-27T01:00:0${index}Z`,targetVersion:REPORT_QUALITY_VERSION,promptVersion:REPORT_QUALITY_PROMPT_VERSION,sourceHash:legacyReport.sourceHash,attempt:index+1,...legacyDiagnostic}));
 legacyReport.qualityRefresh={state:'failed',targetVersion:REPORT_QUALITY_VERSION,model:config.kimiFollowupModel,sourceHash:legacyReport.sourceHash,jobId:'old-job',attempts:4,diagnostic:legacyDiagnostic};
 run(`UPDATE weekly_reports SET content_json=${sql(JSON.stringify(legacyReport))} WHERE id='lark-report-test-task';`);
 sync=createSync();
 await syncAt(45);
-assert.equal(aiCalls,beforeValidationFailures+3,'legacy matching validation failures are held without issuing another request');
+assert.equal(aiCalls,beforeValidationFailures+6,'historical failures do not block the active scoring and review stages');
+assert.equal(status.analyzed,1);
+assert.deepEqual(reportContent().aiAnalysisAttempts.slice(0,4),legacyReport.aiAnalysisAttempts,'original historical attempt rows retain their versions');
+const {ai:activeAi,...matchingFailures}=reportContent();
+matchingFailures.aiAnalysisAttempts=[...matchingFailures.aiAnalysisAttempts,...Array.from({length:4},(_,index)=>({at:`2026-10-27T01:01:0${index}Z`,targetVersion:ACTIVE_REPORT_QUALITY_VERSION,promptVersion:ACTIVE_REPORT_QUALITY_PROMPT_VERSION,sourceHash:matchingFailures.sourceHash,attempt:index+1,...legacyDiagnostic}))];
+matchingFailures.qualityRefresh={state:'failed',targetVersion:ACTIVE_REPORT_QUALITY_VERSION,model:config.kimiFollowupModel,sourceHash:matchingFailures.sourceHash,jobId:'matching-old-format-job',attempts:4,diagnostic:legacyDiagnostic};
+run(`UPDATE weekly_reports SET content_json=${sql(JSON.stringify(matchingFailures))} WHERE id='lark-report-test-task';`);
+sync=createSync();
+await syncAt(46);
+assert.equal(aiCalls,beforeValidationFailures+6,'matching-version failures in the old diagnostic shape remain held');
 assert.equal(status.retryHeld,1);
 assert.equal(status.aiRequestBudget,0,'a report held after exhausting retries adds no planned requests');
 assert.equal(status.aiRequests,0);
 item.form_contents[0].field_value='再次更新周报，触发新的评分';
 await syncAt(50);
-assert.equal(aiCalls,beforeValidationFailures+4,'a different source hash starts a new validation budget');
+assert.equal(aiCalls,beforeValidationFailures+8,'a different source hash starts a new scoring and review budget');
 assert.equal(status.analyzed,1);
 
 const state=await scheduler.overview();assert.equal(state.config.enabled,true);assert.equal(state.lastAttemptAt,'2026-10-26T01:00:00.000Z');assert(state.nextCheckAt);
@@ -234,9 +244,9 @@ assert.equal(await restartedSettings.reportAiRequestsToday(),0);
 await settings.saveReportAutomation({enabled:true,scoringPaused:false},admin);
 assert.equal((await scheduler.overview()).config.scoringPaused,false,'an explicit resume overrides the saved legacy zero');
 await sync.run({mode:'rescore',targetMonth:'2026-10'});
-assert.equal(aiCalls,beforePause+1,'resuming scoring processes the pending report');
+assert.equal(aiCalls,beforePause+2,'resuming scoring completes both stages for the pending report');
 assert.equal(status.analyzed,1);
-assert.equal(await restartedSettings.reportAiRequestsToday(),1);
+assert.equal(await restartedSettings.reportAiRequestsToday(),2);
 
 const octoberBoundary={...item,task_id:'test-october-boundary',commit_time:Date.parse('2026-10-30T19:00:00+08:00')/1000,form_contents:structuredClone(item.form_contents)};
 incoming=[octoberBoundary];
@@ -254,10 +264,10 @@ await settings.saveReportAutomation({enabled:true,intervalMinutes:5,scoringStart
 now=new Date('2026-11-10T02:00:00Z');
 const beforeNovember=aiCalls;
 await sync.run({start:'2026-10-01',end:'2026-11-10'});
-assert.deepEqual(modelWeeks.slice(beforeNovember),['2026-11-06'],'a November submission belonging to October cannot trigger scoring');
+assert.deepEqual(modelWeeks.slice(beforeNovember),['2026-11-06','2026-11-06'],'only the November report receives initial scoring and review');
 assert.deepEqual(readOctober(),octoberBefore,'the scoring start month preserves all existing October report rows');
 await assert.rejects(sync.run({mode:'rescore',targetMonth:'2026-10'}),/rescore_before_start_month/);
-assert.equal(aiCalls,beforeNovember+1,'a historical rescore before the start month cannot consume an AI request');
+assert.equal(aiCalls,beforeNovember+2,'a historical rescore before the start month cannot consume an AI request');
 assert.deepEqual(readOctober(),octoberBefore);
 
 const novemberRange={start:'2026-11-01',end:'2026-11-10'};
@@ -288,7 +298,7 @@ for(let attempt=0;attempt<2;attempt++){
 assert.equal(aiCalls,beforePermissionFailures+2,'explicit permission errors do not retry in the same run');
 providerFailure='';
 await sync.run(novemberRange);
-assert.equal(aiCalls,beforePermissionFailures+3);
+assert.equal(aiCalls,beforePermissionFailures+4);
 assert.equal(status.analyzed,1,'the same source can recover after provider permissions are fixed');
 
 await settings.saveReportAutomation({enabled:false,intervalMinutes:5},admin);assert.equal((await scheduler.tick()).skipped,'disabled');assert.equal((await scheduler.overview()).nextCheckAt,null);

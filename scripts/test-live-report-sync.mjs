@@ -4,8 +4,8 @@ import path from 'node:path';
 import {spawnSync} from 'node:child_process';
 import {createLiveReportSync,normalizeLiveReport,validateAnalysis} from '../server/live-report-sync.mjs';
 import {createPerformance} from '../server/performance.mjs';
-import {REPORT_QUALITY_VERSION,REPORT_QUALITY_PROMPT_VERSION} from '../server/report-quality-scoring.mjs';
-import {makeReportQualityAnalysis} from './report-quality-test-fixtures.mjs';
+import {ACTIVE_REPORT_QUALITY_VERSION as REPORT_QUALITY_VERSION,ACTIVE_REPORT_QUALITY_PROMPT_VERSION as REPORT_QUALITY_PROMPT_VERSION} from '../server/report-quality-active.mjs';
+import {makeActiveReportQualityAnalysis as makeReportQualityAnalysis} from './report-quality-active-test-fixtures.mjs';
 
 // All upstream calls use fixtures. Databases and projections are retained.
 await mkdir('outputs/tests',{recursive:true});
@@ -41,9 +41,9 @@ try{
    if(failAi)return {ok:false,status:429,json:async()=>({error:{type:'rate_limit'}})};
    const messages=JSON.parse(options.body).messages,payload=JSON.parse(messages.find(message=>message.role==='user').content);
    assert(messages[0].content.includes(REPORT_QUALITY_VERSION));
-   assert.deepEqual(Object.keys(payload).sort(),['department','evidenceFragments','previousPlan','report','week'],'department provides work context without submission timing or employee identifiers');
+   assert.deepEqual(Object.keys(payload).sort(),payload.candidate?['candidate','department','evidenceFragments','facts','previousPlan','report','week']:['department','evidenceFragments','previousPlan','report','week'],'both stages provide work context without submission timing or employee identifiers');
    const facts=payload.report;
-   const analysis=makeReportQualityAnalysis(facts,{summary:'AI 测试点评',questions:['请核实接口验收标准'],tasks:[{title:'确认接口',description:'与负责人确认验收标准',priority:'P1',evidence:'接口待确认'}],...(lowConfidence?{scores:[40,40,40,40],confidence:.1,anomalies:['数据矛盾待补充说明']}:{})});
+   const analysis=makeReportQualityAnalysis(facts,{summary:'AI 测试点评',questions:['请核实接口验收标准'],tasks:[{title:'确认接口',description:'与负责人确认验收标准',priority:'P1',evidence:'接口待确认'}],...(lowConfidence?{scores:[40,40,40,40],confidence:.1}:{})});
    if(forgeQuotes)analysis.modules[0].criteria[0].evidence=[{quote:'不存在于原文的虚构证据',type:'reported_fact'}];
    value={choices:[{message:{content:JSON.stringify(analysis)}}]};
   }
@@ -67,25 +67,26 @@ try{
  const count=table=>run(`SELECT COUNT(*) AS n FROM ${table};`,true)[0].n;
  const savedReports=userId=>run(`SELECT * FROM weekly_reports WHERE employee_user_id=${sql(userId)} ORDER BY id;`,true);
  await sync.run(options);
- assert.equal(status.ok,true);assert.equal(pages,2);assert.equal(calls,1);assert.equal(count('weekly_reports'),1);
+ assert.equal(status.ok,true);assert.equal(pages,2);assert.equal(calls,2);assert.equal(count('weekly_reports'),1);
  assert.equal(directoryCalls,1,'a complete paginated pull triggers one directory check');
  assert.equal(status.directorySync.status,'completed');
- assert.equal(status.aiRequestBudget,2,'only matching templates enter the analysis budget');assert.equal(status.aiRequests,1);
+ assert.equal(status.aiRequestBudget,4,'only matching templates enter the initial plus review budget');assert.equal(status.aiRequests,2);
  let data=JSON.parse(await readFile(path.join(dir,'prototypeData.json')));
  assert.equal(data.weekly_scores.length,1);assert.equal(data.weekly_scores[0]['总分'],83.3);
  const insights=JSON.parse(await readFile(path.join(dir,'kimiInsightsByPeriod.json')));
  assert.equal(insights['period-2026-10-16'].employeeInsights[0].coachSummary,'AI 测试点评');
  assert.equal(insights['period-2026-10-16'].attentionQueue.length,1);
- await sync.run(options);assert.equal(calls,1,'unchanged reports reuse cached analysis');assert.equal(count('weekly_reports'),1);
+ await sync.run(options);assert.equal(calls,2,'unchanged reports reuse cached analysis');assert.equal(count('weekly_reports'),1);
  assert.equal(directoryCalls,2,'a new pull checks the directory even when cached scores are reused');
  assert.equal(status.aiRequestBudget,0);assert.equal(status.aiRequests,0);
  const firstContent=JSON.parse(savedReports('ou_1')[0].content_json);
  assert.equal(firstContent.aiPromptVersion,REPORT_QUALITY_PROMPT_VERSION);assert.equal(firstContent.ai.version,REPORT_QUALITY_VERSION);assert.equal(firstContent.ai.modules.length,4);assert(firstContent.ai.modules[0].criteria[0].reason);assert.equal(firstContent.ai.modules[0].criteria[0].evidence[0].quote,'完成3项验收');
  run("UPDATE weekly_reports SET content_json=json_set(content_json,'$.aiPromptVersion','old-prompt-version');");
- const beforePromptChange=calls;await sync.run(options);assert.equal(calls,beforePromptChange+1,'prompt version changes invalidate otherwise unchanged cached analysis');assert.equal(status.analyzed,1);
- const refreshedContent=JSON.parse(savedReports('ou_1')[0].content_json);assert(refreshedContent.aiAnalysisHistory.some(record=>record.ai.modules[0].criteria[0].reason===firstContent.ai.modules[0].criteria[0].reason&&record.sourceHash===firstContent.sourceHash),'reanalysis retains the prior explanation and source version');
+ const beforePromptChange=calls,retainedContent=savedReports('ou_1')[0].content_json;await sync.run(options);assert.equal(calls,beforePromptChange,'prompt version changes never automatically replace an existing score');assert.equal(status.cached,1);assert.equal(savedReports('ou_1')[0].content_json,retainedContent);
  config.kimiFollowupModel='new-test-model';failAi=true;
- await sync.run(options);assert.equal(status.phase,'partial');assert.equal(status.failed,1);assert.equal(count('weekly_reports'),1,'AI failure retains the source report');
+ await sync.run(options);assert.equal(calls,beforePromptChange,'model changes also retain existing scores');assert.equal(status.cached,1);assert.equal(savedReports('ou_1')[0].content_json,retainedContent);
+ await sync.run({mode:'rescore',targetMonth:'2026-10',targetReportId:savedReports('ou_1')[0].id});assert.equal(status.phase,'partial');assert.equal(status.failed,1);assert.equal(count('weekly_reports'),1,'an explicit rerun failure retains the source report');
+ const refreshedContent=JSON.parse(savedReports('ou_1')[0].content_json);assert(refreshedContent.aiAnalysisHistory.some(record=>record.ai.modules[0].criteria[0].reason===firstContent.ai.modules[0].criteria[0].reason&&record.sourceHash===firstContent.sourceHash),'explicit reanalysis retains the prior explanation and source version');
  const pendingProjection=JSON.parse(await readFile(path.join(dir,'prototypeData.json')));assert.equal(pendingProjection.weekly_scores[0]['总分'],null,'failed AI is projected as pending, never zero');
  failAi=false;await sync.run(options);assert.equal(status.ok,true);assert.equal(status.analyzed,1,'retry completes previously failed analysis');
  const beforeUnsuccessfulPull=directoryCalls;
@@ -113,11 +114,11 @@ try{
  try{await sync.run(options);}finally{failDirectory=false;}
  assert.equal(status.ok,true);assert.equal(status.rowCount,2);assert.equal(status.skippedInactive,1);assert.equal(status.skippedInactiveAnalysis,0);
  assert.equal(directoryCalls,beforeDirectoryFailure+1);assert.equal(status.directorySync.status,'failed','directory failures are tracked separately from completed collection');
- assert.equal(calls,beforeMixed+1,'active cache is reused and only the new active member needs AI');
- assert.equal(status.aiRequestBudget,2,'the cached and inactive reports add no requests to the new employee’s analysis budget');assert.equal(status.aiRequests,1);
+ assert.equal(calls,beforeMixed+2,'active cache is reused and only the new active member needs initial and review requests');
+ assert.equal(status.aiRequestBudget,4,'the cached and inactive reports add no requests to the new employee’s analysis budget');assert.equal(status.aiRequests,2);
  assert.deepEqual(savedReports('stopped-member'),retained,'stopped history is preserved without new rows');
  assert.deepEqual(run("SELECT * FROM employees WHERE user_id='stopped-member';",true),stoppedEmployee,'sync never reactivates the stopped member');
- assert.deepEqual(observed.slice(observedBefore),['ou_1','new-member'],'excluded reports do not observe employment dates');
+ assert.deepEqual(observed.slice(observedBefore),['new-member'],'cached and excluded reports do not rewrite employment observations');
  assert.equal(run('SELECT record_count FROM import_batches ORDER BY rowid DESC LIMIT 1;',true)[0].record_count,2);
  data=JSON.parse(await readFile(path.join(dir,'prototypeData.json')));
  assert(data.weekly_scores.some(row=>row.user_id==='stopped-member'&&row['结束日期']==='2026-10-09'),'existing historical projections are preserved');
@@ -147,7 +148,7 @@ try{
  // member still completes. Source rows already imported are retained.
  const queued={...item,task_id:'queue-stop',from_user_id:'queue-stop',from_user_name:'排队时停用'},otherQueued={...item,task_id:'queue-active',from_user_id:'queue-active',from_user_name:'继续分析的同事'};
  incoming=[queued,otherQueued];stopOnPause='queue-stop';const beforeQueue=calls;
- await sync.run(options);assert.equal(status.ok,true);assert.equal(status.failed,0);assert.equal(status.rowCount,2);assert.equal(status.skippedInactiveAnalysis,1);assert.equal(status.analyzed,1);assert.equal(calls,beforeQueue+1);
+ await sync.run(options);assert.equal(status.ok,true);assert.equal(status.failed,0);assert.equal(status.rowCount,2);assert.equal(status.skippedInactiveAnalysis,1);assert.equal(status.analyzed,1);assert.equal(calls,beforeQueue+2);
  assert.equal(savedReports('queue-stop').length,1,'already-imported source remains available');
  assert.equal(JSON.parse(savedReports('queue-stop')[0].content_json).ai,undefined,'stopped queued work never reaches AI');
  assert(JSON.parse(savedReports('queue-active')[0].content_json).ai,'active queued work completes');
@@ -175,13 +176,13 @@ try{
  const historyOptions={...options,historicalInactiveUserIds:historicalIds.filter(id=>id!=='history-unselected')};
  const beforeHistoryDirectory=directoryCalls;
  await sync.run(historyOptions);
- assert.equal(status.ok,true);assert.equal(status.rowCount,1);assert.equal(status.analyzed,1);assert.equal(status.historicalInactiveReports,1);assert.equal(status.skippedInactive,5);assert.equal(calls,historyBefore.calls+1);
+ assert.equal(status.ok,true);assert.equal(status.rowCount,1);assert.equal(status.analyzed,1);assert.equal(status.historicalInactiveReports,1);assert.equal(status.skippedInactive,5);assert.equal(calls,historyBefore.calls+2);
  assert(JSON.parse(savedReports('history-selected')[0].content_json).ai,'selected closed history receives valid AI scores');
  for(const id of historicalIds.filter(id=>id!=='history-selected'))assert.deepEqual(savedReports(id),[],'unlisted, open, partial and future history remain excluded: '+id);
  assert.deepEqual(run("SELECT * FROM employees WHERE user_id LIKE 'history-%' ORDER BY user_id;",true),historicalEmployees,'backfill cannot reactivate or modify historical staff');
  assert.deepEqual(run("SELECT * FROM employee_employment_periods WHERE employee_user_id LIKE 'history-%' ORDER BY id;",true),historicalPeriods,'backfill cannot reopen or rewrite employment history');
  assert.equal(observed.length,historyBefore.observed,'historical backfill never observes a new employment interval');
- await sync.run(historyOptions);assert.equal(status.rowCount,1);assert.equal(status.analyzed,0);assert.equal(status.historicalInactiveReports,1);assert.equal(calls,historyBefore.calls+1,'explicit backfill reuses validated cached scores');
+ await sync.run(historyOptions);assert.equal(status.rowCount,1);assert.equal(status.analyzed,0);assert.equal(status.historicalInactiveReports,1);assert.equal(calls,historyBefore.calls+2,'explicit backfill reuses validated cached scores');
  assert.equal(directoryCalls,beforeHistoryDirectory,'historical maintenance does not alter the current employee directory');
  const beforeMalformed={calls,pages,reports:count('weekly_reports')};
  for(const historicalInactiveUserIds of [null,'history-selected',{},[''],[' history-selected'],[1],Array(501).fill('history-selected')])await assert.rejects(sync.run({...options,historicalInactiveUserIds}),/invalid_historical_inactive_users/);
@@ -203,7 +204,7 @@ try{
  incoming=[{...item,task_id:'quality-evidence',from_user_id:'quality-evidence',from_user_name:'证据校验样本'}];forgeQuotes=true;
  const beforeForgery=calls;await sync.run(options);assert.equal(status.retryHeld,1);assert.equal(calls,beforeForgery+2,'invalid quoted evidence stops automatic retries after one correction attempt');assert.equal(savedReports('quality-evidence').length,1);assert.equal(JSON.parse(savedReports('quality-evidence')[0].content_json).ai,undefined);
  const beforeRescore=directoryCalls;
- forgeQuotes=false;lowConfidence=true;await sync.run({mode:'rescore',targetMonth:savedReports('quality-evidence')[0].week_end.slice(0,7)});assert.equal(status.ok,true);const lowContent=JSON.parse(savedReports('quality-evidence')[0].content_json);assert.deepEqual(lowContent.ai.scores,[40,40,40,40]);assert.equal(lowContent.ai.modules[0].confidence,.1);assert(lowContent.ai.anomalies.includes('数据矛盾待补充说明'));
+ forgeQuotes=false;lowConfidence=true;await sync.run({mode:'rescore',targetMonth:savedReports('quality-evidence')[0].week_end.slice(0,7)});assert.equal(status.ok,true);const lowContent=JSON.parse(savedReports('quality-evidence')[0].content_json);assert.deepEqual(lowContent.ai.scores,[40,40,40,40]);assert.equal(lowContent.ai.modules[0].confidence,.1);assert.deepEqual(lowContent.ai.anomalies,[],'low confidence and low scores do not invent risk signals');
  assert.equal(directoryCalls,beforeRescore,'rescoring stored reports does not fetch the employee directory');
  data=JSON.parse(await readFile(path.join(dir,'prototypeData.json')));assert.equal(data.weekly_scores.find(r=>r.user_id==='quality-evidence')['总分'],40,'low scores, confidence and anomalies do not create an approval gate');
 

@@ -1,4 +1,6 @@
 import {LEGACY_REPORT_QUALITY_VERSION,REPORT_QUALITY_VERSION,PREVIOUS_REPORT_QUALITY_PROMPT_VERSION,REPORT_QUALITY_PROMPT_VERSION,reportQualityAssessment,validateReportQualityAnalysis} from './report-quality-scoring.mjs';
+import {ACTIVE_REPORT_QUALITY_VERSION,ACTIVE_REPORT_QUALITY_PROMPT_VERSION,validateActiveReportQualityAnalysis} from './report-quality-active.mjs';
+import {isPreviewQuality} from './report-quality-reader.mjs';
 
 export const reportFacts = content => ({
  results:content?.results||content?.['本周成果摘要']||'',
@@ -14,9 +16,13 @@ export function legacyReportScore(content){
 }
 const scoresValid = ai => Array.isArray(ai?.scores)&&ai.scores.length===4&&ai.scores.every(score=>typeof score==='number'&&Number.isFinite(score)&&score>=0&&score<=100)&&typeof ai.summary==='string'&&Boolean(ai.summary.trim());
 export function usableQuality(ai,facts){
+ // Candidate comparisons must never become a published grade through the
+ // compatibility fallback for historical scoring versions.
+ if(isPreviewQuality(ai))return false;
  if(!scoresValid(ai))return false;
  if(ai.version===LEGACY_REPORT_QUALITY_VERSION)return reportQualityAssessment({...facts,ai})!==null;
  if(ai.version===REPORT_QUALITY_VERSION){try{validateReportQualityAnalysis(ai,facts);}catch{return false;}}
+ if(ai.version===ACTIVE_REPORT_QUALITY_VERSION){try{validateActiveReportQualityAnalysis(ai,facts);}catch{return false;}}
  return true;
 }
 export function previousQualitySnapshot(content,sourceHash='',weights=[30,25,25,20]){
@@ -26,11 +32,19 @@ export function previousQualitySnapshot(content,sourceHash='',weights=[30,25,25,
  return candidates.find(snapshot=>snapshot?.facts&&usableQuality(snapshot.ai,snapshot.facts))||null;
 }
 export function currentQualityCached(content,sourceHash,model){
+ if(content?.ai?.version===ACTIVE_REPORT_QUALITY_VERSION)return content.sourceHash===sourceHash&&content.aiModel===model&&content.aiPromptVersion===ACTIVE_REPORT_QUALITY_PROMPT_VERSION&&usableQuality(content.ai,reportFacts(content));
  if(content?.sourceHash!==sourceHash||content.aiModel!==model||content.ai?.version!==REPORT_QUALITY_VERSION)return false;
  // A formatting-only prompt repair does not invalidate a result that already
  // passed the unchanged scoring rule. Unknown prompt versions still reanalyse.
  if(![REPORT_QUALITY_VERSION,PREVIOUS_REPORT_QUALITY_PROMPT_VERSION,REPORT_QUALITY_PROMPT_VERSION].includes(content.aiPromptVersion))return false;
  return usableQuality(content.ai,reportFacts(content));
+}
+// A rule/model upgrade alone is not permission to replace an existing grade.
+// Explicit reanalysis and changed report sources bypass this retention check.
+export function retainedQualityCached(content,sourceHash){
+ if(content?.sourceHash!==sourceHash||!usableQuality(content?.ai,reportFacts(content)))return false;
+ if(content.qualityRefresh&&content.qualityRefresh.state!=='ready')return false;
+ return true;
 }
 export function archivedQuality(content,sourceHash='',weights=[30,25,25,20]){
  const history=Array.isArray(content?.aiAnalysisHistory)?[...content.aiAnalysisHistory]:[];

@@ -6,7 +6,9 @@ import path from 'node:path';
 import {createLiveReportSync} from '../server/live-report-sync.mjs';
 import {createPerformance} from '../server/performance.mjs';
 import {REPORT_QUALITY_VERSION,REPORT_QUALITY_PROMPT_VERSION,validateReportQualityAnalysis} from '../server/report-quality-scoring.mjs';
+import {ACTIVE_REPORT_QUALITY_VERSION,ACTIVE_REPORT_QUALITY_PROMPT_VERSION,ACTIVE_REPORT_QUALITY_REVIEW_PROMPT_VERSION} from '../server/report-quality-active.mjs';
 import {makeReportQualityAnalysis} from './report-quality-test-fixtures.mjs';
+import {makeActiveReportQualityAnalysis} from './report-quality-active-test-fixtures.mjs';
 
 // Entire engine + monthly candidate projection, with synthetic retained SQLite and
 // mocked providers only. No Feishu credential, real AI, employee data or cleanup.
@@ -40,13 +42,17 @@ run(`INSERT INTO performance_results(month,employee_user_id,employee_name,kind,r
  VALUES('2026-09','A','虚构甲','quality','{"score":55}','{}','虚构主管','2026-10-01T09:00:00Z');`);
 const stored=id=>run(`SELECT * FROM weekly_reports WHERE id=${sql(id)};`,true)[0];
 const content=id=>JSON.parse(stored(id).content_json);
+function queueExisting(id,state='queued'){
+ const row=stored(id),next={...content(id),qualityRefresh:{state,targetVersion:ACTIVE_REPORT_QUALITY_VERSION,model,sourceHash:row.source_hash||'',jobId:'fixture-prior-admin-request'}};
+ run(`UPDATE weekly_reports SET content_json=${sql(JSON.stringify(next))} WHERE id=${sql(id)};`);
+}
 const untouched=new Map(['SEP','STOP','MISSING','C1'].map(id=>[id,stored(id)]));
 const initialView=await performance.overview();
 const october=(view,userId)=>view.monthly.find(row=>row.month==='2026-10'&&row.userId===userId);
 const monthly=(view,userId)=>october(view,userId).quality;
 assert.equal(monthly(initialView,'A').candidateScore,60);assert.equal(monthly(initialView,'B').candidateScore,80);
 let releaseB;const bGate=new Promise(resolve=>{releaseB=resolve;});
-let phase='first',bNetworkRemaining=0,calls=[],status,observations=[],transientPublicationFailure=true,independentPublication=false;
+let phase='retention',bNetworkRemaining=0,calls=[],status,observations=[],transientPublicationFailure=false,independentPublication=false;
 const perPhaseCalls=new Map();
 const fetcher=async(url,options)=>{
  assert.equal(url,'https://fixture.invalid/v1/chat/completions','rescore must never read Feishu or any real provider');
@@ -56,7 +62,7 @@ const fetcher=async(url,options)=>{
  if(phase==='first'&&id==='B1')await bGate;
  if(phase==='retry'&&id==='B1'&&bNetworkRemaining-->0)throw new TypeError('PRIVATE_NETWORK_MESSAGE_MUST_NOT_BE_LOGGED');
  const score=id==='A1'?90:id==='A2'?100:id==='B1'?(phase==='retry'?88:85):92;
- const result=makeReportQualityAnalysis(input.report,{scores:[score,score,score,score],summary:'虚构重评已完成'});
+ const result=makeActiveReportQualityAnalysis(input.report,{scores:[score,score,score,score],summary:'虚构重评已完成'});
  if((phase==='first'&&id==='A1'&&count===1)||(phase==='fail'&&id==='B1'))result.modules[0].criteria[0].evidence=[{quote:'PRIVATE_FORGED_QUOTE_MUST_NOT_REACH_DIAGNOSTIC',type:'reported_fact'}];
  if(phase==='source-change'&&id==='C1'){
   const current=content('C1'),newFacts={...input.report,results:'【虚构新版本】刚修改的周报，不能用旧请求结果覆盖。'};
@@ -74,6 +80,15 @@ const sync=createLiveReportSync({query,exec,sql,config:{dataDir:dir,moonshotApiK
 const options={mode:'rescore',targetMonth:'2026-10'};
 let timer;
 try{
+ const beforeRetention=run('SELECT * FROM weekly_reports ORDER BY id;',true);
+ await sync.run(options);
+ assert.equal(status.cached,4);assert.equal(status.analyzed,0);assert.equal(calls.length,0,'rule and model upgrades alone never replace valid historical grades');
+ assert.deepEqual(run('SELECT * FROM weekly_reports ORDER BY id;',true),beforeRetention,'all retained report rows remain byte-for-byte unchanged');
+ assert.equal(monthly(await performance.overview(),'A').candidateScore,60);
+ // Continue work explicitly queued by a prior administrator request; old AI
+ // records remain old-version snapshots rather than being relabeled active.
+ for(const id of ['A1','A2','B1'])queueExisting(id);
+ phase='first';transientPublicationFailure=true;
  const firstJob=sync.run(options);
  await Promise.race([firstJob,new Promise((_,reject)=>{timer=setTimeout(()=>{releaseB();reject(Error('one_employee_publication_waited_for_other_employee'));},20000);})]);clearTimeout(timer);
  assert(independentPublication,'A reaches a complete October candidate while B is still processing with its previous weekly score visible');
@@ -84,40 +99,45 @@ try{
  assert(!firstView.results.some(row=>row.month==='2026-10'&&row.kind==='quality'),'AI analysis never creates a monthly final result');
  const september=firstView.results.find(row=>row.month==='2026-09'&&row.employee_user_id==='A'&&row.kind==='quality');
  assert.equal(september.result.score,55);assert.equal(september.confirmed_by,'虚构主管');
- assert.equal(perPhaseCalls.get('first:A1'),2);assert.equal(perPhaseCalls.get('first:A2'),1);assert.equal(perPhaseCalls.get('first:B1'),1);
+ assert.equal(perPhaseCalls.get('first:A1'),3);assert.equal(perPhaseCalls.get('first:A2'),2);assert.equal(perPhaseCalls.get('first:B1'),2);
  const corrected=calls.find(call=>call.id==='A1'&&call.messages.some(message=>message.role==='user'&&message.content.includes('validationFeedback')));assert(corrected);
  const feedback=JSON.parse(corrected.messages.at(-1).content).validationFeedback;
- assert.deepEqual(feedback,{code:'evidence_not_in_source',path:'modules.results.criteria.result.evidence[0].quote',moduleId:'results',criterionId:'result',retryable:true});
+ assert.deepEqual(feedback,{code:'reference_not_in_source',path:'modules.results.criteria.progress.evidence[0]',retryable:true,stage:'initial'});
  assert(!JSON.stringify(feedback).includes('PRIVATE_'),'retry diagnostics must contain schema locations only');
- assert(content('A1').aiAnalysisAttempts.some(attempt=>attempt.code==='evidence_not_in_source'));
- for(const id of ['A1','A2','B1']){assert(content(id).aiAnalysisHistory.length);assert.equal(content(id).aiPromptVersion,REPORT_QUALITY_PROMPT_VERSION);}
+ assert(content('A1').aiAnalysisAttempts.some(attempt=>attempt.code==='reference_not_in_source'&&attempt.stage==='initial'));
+ for(const id of ['A1','A2','B1']){assert(content(id).aiAnalysisHistory.length);assert.equal(content(id).ai.version,ACTIVE_REPORT_QUALITY_VERSION);assert.equal(content(id).aiPromptVersion,ACTIVE_REPORT_QUALITY_PROMPT_VERSION);assert.equal(content(id).aiReviewPromptVersion,ACTIVE_REPORT_QUALITY_REVIEW_PROMPT_VERSION);assert.equal(content(id).aiAnalysisHistory[0].ai.version,undefined,'historical unversioned snapshot is not relabeled active');}
  for(const [id,row] of untouched)assert.deepEqual(stored(id),row,'cached, outside-month, inactive and unsubmitted rows stay byte-compatible: '+id);
  assert.equal(run('SELECT count(*) FROM import_batches;'),'0','stored-source repair does not create a Feishu import');
 
- // Fail only one stale result; already validated employees must not rerun.
- phase='fail';run("UPDATE weekly_reports SET content_json=json_set(content_json,'$.aiModel','stale-B-model') WHERE id='B1';");
+ // Fail only one explicitly queued result; completed employees must not rerun.
+ phase='fail';queueExisting('B1');
  await sync.run(options);assert.equal(status.phase,'partial');assert.equal(status.failed,1);assert.equal(status.cached,3);assert.equal(perPhaseCalls.get('fail:B1'),2);assert.equal(calls.filter(call=>call.phase==='fail').length,2);
  const failedView=await performance.overview(),bFailed=monthly(failedView,'B'),bPrevious=october(failedView,'B').reports.find(report=>report.id==='B1');
  assert.equal(bFailed.currentAverage,null);assert.equal(bFailed.status,'pending_ai');assert.equal(bPrevious.displayQualityScore,85);assert.equal(bPrevious.qualityRefresh.state,'failed');
- assert.equal(content('B1').qualityRefresh.diagnostic.code,'evidence_not_in_source');
+ assert.equal(content('B1').qualityRefresh.diagnostic.code,'reference_not_in_source');assert.equal(content('B1').qualityRefresh.diagnostic.stage,'initial');
  assert(!JSON.stringify(content('B1').aiAnalysisAttempts).includes('PRIVATE_'),'persisted diagnostics cannot expose provider output');
  const successfulA=stored('A1'),successfulA2=stored('A2');
  phase='retry';bNetworkRemaining=1;await sync.run(options);
- assert.equal(status.ok,true);assert.equal(status.analyzed,1);assert.equal(status.cached,3);assert.equal(calls.filter(call=>call.phase==='retry').length,2);assert.equal(monthly(await performance.overview(),'B').candidateScore,88);
+ assert.equal(status.ok,true);assert.equal(status.analyzed,1);assert.equal(status.cached,3);assert.equal(calls.filter(call=>call.phase==='retry').length,3);assert.equal(monthly(await performance.overview(),'B').candidateScore,88);
  assert(content('B1').aiAnalysisAttempts.some(attempt=>attempt.code==='upstream_network_error'));
  assert.deepEqual(stored('A1'),successfulA);assert.deepEqual(stored('A2'),successfulA2);
 
  // A newer source wins even when an old model request finishes later.
- phase='source-change';run("UPDATE weekly_reports SET content_json=json_set(content_json,'$.aiModel','stale-C-model') WHERE id='C1';");
- await sync.run(options);assert.equal(calls.filter(call=>call.phase==='source-change').length,1);assert.equal(status.skippedSourceChanged,1);assert.equal(status.skippedInactiveAnalysis,0);assert.equal(status.analyzed,0);
+ phase='source-change';
+ await sync.run({...options,targetReportId:'C1'});assert.equal(calls.filter(call=>call.phase==='source-change').length,1);assert.equal(status.skippedSourceChanged,1);assert.equal(status.skippedInactiveAnalysis,0);assert.equal(status.analyzed,0);
  assert.equal(stored('C1').source_hash,'source-C1-newer');assert(content('C1').results.includes('刚修改'));assert.equal(content('C1').ai,undefined,'response for older content must never be applied');
- // Old imported records without a source hash acquire a stable identity once,
- // so a completed repair is skipped on the following run.
+ // Valid imported grades lacking a source hash remain unchanged. Only an
+ // explicitly queued repair acquires a stable identity and fresh active grade.
  phase='unhashed';
  const changedC=content('C1');sources.set('C1',{facts:{results:changedC.results,problems:changedC.problems,nextPlan:changedC.nextPlan,reflection:changedC.reflection},hash:'source-C1-newer'});
  store('UNHASHED','C','2026-10-30',72,{unhashed:true});
  assert.equal(stored('UNHASHED').source_hash,null);
- await sync.run(options);assert.equal(status.analyzed,2);assert.equal(status.ok,true);
+ const unhashedHistorical=stored('UNHASHED');
+ await sync.run(options);assert.equal(status.analyzed,1);assert.equal(status.cached,4);assert.equal(status.ok,true);
+ assert.deepEqual(stored('UNHASHED'),unhashedHistorical,'a missing source hash is not permission to replace a usable old grade');
+ assert.equal(calls.filter(call=>call.id==='UNHASHED').length,0);
+ queueExisting('UNHASHED');
+ await sync.run(options);assert.equal(status.analyzed,1);assert.equal(status.cached,4);assert.equal(status.ok,true);
  assert(/^[a-f0-9]{64}$/.test(stored('UNHASHED').source_hash));
  assert.equal(content('UNHASHED').sourceHash,stored('UNHASHED').source_hash);
  const unhashedComplete=stored('UNHASHED'),afterUnhashedCalls=calls.length;
@@ -127,6 +147,6 @@ try{
  assert.equal(calls.length,beforeInvalid);
  assert.equal(run('PRAGMA integrity_check;'),'ok');
  for(const table of ['scoring360_responses','monthly_manager_scores','feishu_tasks','weekly_reminder_sends'])assert.equal(run('SELECT count(*) FROM '+table+';'),'0');
- const result={ok:true,storedMonthOnly:true,noFeishuCredentialsRequired:true,oldPromptCacheReused:true,unsubmittedInactiveAndOtherMonthUntouched:true,correctiveValidationFeedback:true,noDiagnosticPayloadLeaks:true,oldMonthlyFinalRetained:true,individualCandidateCompletion:true,transientPublicationRecovery:true,failedOnlyRetry:true,transientNetworkRetry:true,staleSourceResponseDiscarded:true,invalidMonthBeforeModelCall:true,externalRequests:0,realNotifications:0,artifacts:dir};
+ const result={ok:true,storedMonthOnly:true,noFeishuCredentialsRequired:true,oldPromptCacheReused:true,validHistoricalAndUnhashedGradesRetained:true,explicitQueuedRepair:true,activeScoringAndReview:true,unsubmittedInactiveAndOtherMonthUntouched:true,correctiveValidationFeedback:true,noDiagnosticPayloadLeaks:true,oldMonthlyFinalRetained:true,individualCandidateCompletion:true,transientPublicationRecovery:true,failedOnlyRetry:true,transientNetworkRetry:true,staleSourceResponseDiscarded:true,invalidMonthBeforeModelCall:true,externalRequests:0,realNotifications:0,artifacts:dir};
  await writeFile(dir+'/result.json',JSON.stringify(result,null,2));console.log(JSON.stringify(result));
 }finally{clearTimeout(timer);releaseB();console.log('Artifacts retained:',dir);}

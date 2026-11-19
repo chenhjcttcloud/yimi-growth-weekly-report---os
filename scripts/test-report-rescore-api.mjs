@@ -6,6 +6,7 @@ import {createServer} from 'node:net';
 import path from 'node:path';
 import {validateAnalysis} from '../server/live-report-sync.mjs';
 import {REPORT_QUALITY_VERSION,REPORT_QUALITY_PROMPT_VERSION} from '../server/report-quality-scoring.mjs';
+import {ACTIVE_REPORT_QUALITY_VERSION,ACTIVE_REPORT_QUALITY_PROMPT_VERSION,ACTIVE_REPORT_QUALITY_REVIEW_PROMPT_VERSION} from '../server/report-quality-active.mjs';
 import {makeReportQualityAnalysis} from './report-quality-test-fixtures.mjs';
 
 // Exercise the real local HTTP server. All persisted records and model outputs
@@ -42,7 +43,7 @@ for(const name of ['prototypeData','scoring360','kimiInsights','kimiInsightsByPe
 const callsFile=dir+'/upstream-calls.log',modelsCallsFile=dir+'/upstream-models.log',releaseGate=dir+'/release-ai.flag';
 await writeFile(dir+'/provider.mjs',`
 import {appendFile,access} from 'node:fs/promises';
-import {makeReportQualityAnalysis} from ${JSON.stringify(new URL('./report-quality-test-fixtures.mjs',import.meta.url).href)};
+import {makeActiveReportQualityAnalysis} from ${JSON.stringify(new URL('./report-quality-active-test-fixtures.mjs',import.meta.url).href)};
 const RealDate=Date,stamp=Date.parse('2026-11-02T08:00:00Z');globalThis.Date=class extends RealDate{constructor(...args){super(...(args.length?args:[stamp]));}static now(){return stamp;}};
 let requests=0,modelListings=0;
 const completion=(content,usage)=>new Response(JSON.stringify({choices:[{finish_reason:'stop',message:{content}}],usage}));
@@ -69,9 +70,9 @@ globalThis.fetch=async(url,options={})=>{
  }
  requests++;const feedbackMessage=body.messages.find(message=>message.role==='user'&&message.content.includes('validationFeedback'));
  const feedback=feedbackMessage?JSON.parse(feedbackMessage.content).validationFeedback:null;
- await appendFile(${JSON.stringify(callsFile)},JSON.stringify({kind:'ai',week:input.week,marker:input.report.results.split('：')[0],feedback})+'\\n');
+ await appendFile(${JSON.stringify(callsFile)},JSON.stringify({kind:'ai',week:input.week,marker:input.report.results.split('：')[0],stage:input.candidate?'review':'initial',feedback})+'\\n');
  if(requests===1){let released=false;for(let attempt=0;attempt<500;attempt++){try{await access(${JSON.stringify(releaseGate)});released=true;break;}catch{}await new Promise(resolve=>setTimeout(resolve,20));}if(!released)throw Error('fixture_gate_not_released');}
- const analysis=makeReportQualityAnalysis(input.report,{summary:'虚构修正后的评分理由'});
+ const analysis=makeActiveReportQualityAnalysis(input.report,{summary:'虚构修正后的评分理由'});
  if(requests===1)analysis.modules[0].criteria[0].evidence=[{quote:'PRIVATE_UNTRUSTED_MODEL_QUOTE',type:'reported_fact'}];
  return completion(JSON.stringify(analysis),{prompt_tokens:100,completion_tokens:30,total_tokens:130,prompt_tokens_details:{cached_tokens:20}});
 };
@@ -121,22 +122,33 @@ try{
   Array(2).fill({authorized:true,method:'GET',redirect:'error'}));
  assert.deepEqual(run("SELECT value_json FROM app_settings WHERE key='ai_runtime';",true),beforeDiscovery,'discovering models leaves the saved settings intact');
  assert.equal((await providerCalls()).length,0,'authorization and validation never start a model or Feishu request');
+ const historicalBefore=record('stale-october');
+ assert.deepEqual(JSON.parse(historicalBefore.content_json).ai.scores,[80,80,80,80]);
+ assert.equal((await call('POST',{mode:'rescore',targetMonth:'2026-10'})).status,202);
+ const preserved=await until(async()=>{const response=(await call('GET')).body;return !response.processRunning&&response.status?.finishedAt?response.status:null;},'historical_retention_did_not_complete');
+ assert.equal(preserved.cached,3);assert.equal(preserved.analyzed,0);assert.equal((await providerCalls()).length,0,'a broad continuation does not regrade valid old rules or models');
+ assert.deepEqual(record('stale-october'),historicalBefore,'the legacy grade remains byte-for-byte unchanged before an explicit queue request');
+ for(const id of untouchedIds)assert.deepEqual(record(id),retained[id]);
+ // Simulate an administrator's previously queued repair without relabeling
+ // any historical score or invalidating it merely due to a new model/rule.
+ const queued={state:'queued',targetVersion:ACTIVE_REPORT_QUALITY_VERSION,model:'fixture-quality-model',sourceHash:historicalBefore.source_hash,jobId:'fixture-prior-admin-request'};
+ run(`UPDATE weekly_reports SET content_json=json_set(content_json,'$.qualityRefresh',json(${quote(JSON.stringify(queued))})) WHERE id='stale-october';`);
  const start=await call('POST',{mode:'rescore',targetMonth:'2026-10'});assert.equal(start.status,202);
  const busy=await call('POST',{mode:'rescore',targetMonth:'2026-10'});assert.equal(busy.status,409);assert.equal(busy.body.alreadyRunning,true);
  const active=await until(async()=>{const response=await call('GET');assert.equal(response.status,200);const state=response.body.status;return state?.rowCount===3&&state.active===1?response.body:null;},'targeted_progress_missing');
  assert.equal(active.processRunning,true);assert.equal(active.status.targetMonth,'2026-10');assert.equal(active.status.mode,'rescore');assert.equal(active.status.cached,2);assert.equal(active.status.remaining,1);assert.deepEqual(active.status.byMonth['2026-10'],{total:3,completed:0,failed:0,cached:2,remaining:1,active:1,skipped:0});
  const inFlight=JSON.parse(record('stale-october').content_json);assert.equal(inFlight.previousQuality.ai.scores[0],80,'the old successful score remains available while scoring is in flight');
  await writeFile(releaseGate,'release synthetic response');
- const diagnostic=await until(async()=>{const state=(await call('GET')).body.status;return state?.diagnostics?.some(item=>item.code==='evidence_not_in_source')?state:null;},'corrective_diagnostic_missing');
- const quoteDiagnostic=diagnostic.diagnostics.find(item=>item.code==='evidence_not_in_source');assert.equal(quoteDiagnostic.moduleId,'results');assert.equal(quoteDiagnostic.criterionId,'result');assert(quoteDiagnostic.path.endsWith('.quote'));assert(!JSON.stringify(diagnostic.diagnostics).includes('PRIVATE_UNTRUSTED_MODEL_QUOTE'),'status exposes only safe diagnostics, never raw provider reply');
+ const diagnostic=await until(async()=>{const state=(await call('GET')).body.status;return state?.diagnostics?.some(item=>item.code==='reference_not_in_source')?state:null;},'corrective_diagnostic_missing');
+ const quoteDiagnostic=diagnostic.diagnostics.find(item=>item.code==='reference_not_in_source');assert.equal(quoteDiagnostic.path,'modules.results.criteria.progress.evidence[0]');assert.equal(quoteDiagnostic.stage,'initial');assert.equal(quoteDiagnostic.retryable,true);assert(!JSON.stringify(diagnostic.diagnostics).includes('PRIVATE_UNTRUSTED_MODEL_QUOTE'),'status exposes only safe diagnostics, never raw provider reply');
  const finished=await until(async()=>{const response=(await call('GET')).body;return !response.processRunning&&response.status?.finishedAt?response.status:null;},'rescore_did_not_complete');
  assert.equal(finished.phase,'done');assert(!finished.publicationPending,'valid records in other months must not break candidate projection');assert.equal(finished.rowCount,3);assert.equal(finished.analyzed,1);assert.equal(finished.cached,2);assert.equal(finished.failed,0);assert.equal(finished.remaining,0);assert.equal(finished.active,0);
- const refreshed=JSON.parse(record('stale-october').content_json);assert.equal(refreshed.ai.version,REPORT_QUALITY_VERSION);assert.equal(refreshed.aiPromptVersion,REPORT_QUALITY_PROMPT_VERSION);assert.equal(refreshed.qualityRefresh.state,'ready');assert.equal(refreshed.qualityRefresh.attempts,2);assert(refreshed.aiAnalysisHistory.some(entry=>entry.ai.scores[0]===80));
+ const refreshed=JSON.parse(record('stale-october').content_json);assert.equal(refreshed.ai.version,ACTIVE_REPORT_QUALITY_VERSION);assert.equal(refreshed.aiPromptVersion,ACTIVE_REPORT_QUALITY_PROMPT_VERSION);assert.equal(refreshed.aiReviewPromptVersion,ACTIVE_REPORT_QUALITY_REVIEW_PROMPT_VERSION);assert.equal(refreshed.qualityRefresh.state,'ready');assert.equal(refreshed.qualityRefresh.attempts,3);assert(refreshed.aiAnalysisHistory.some(entry=>entry.ai.scores[0]===80&&entry.ai.version===undefined));
  for(const id of untouchedIds)assert.deepEqual(record(id),retained[id],'outside scope, unsubmitted, inactive and valid cached rows remain byte-for-byte intact: '+id);
- const calls=await providerCalls();assert.equal(calls.length,2);assert(calls.every(row=>row.kind==='ai'&&row.week==='2026-10-09'&&row.marker==='retry-first'));assert.equal(calls[1].feedback.code,'evidence_not_in_source');assert(calls[1].feedback.path.endsWith('.quote'));
+ const calls=await providerCalls();assert.equal(calls.length,3);assert(calls.every(row=>row.kind==='ai'&&row.week==='2026-10-09'&&row.marker==='retry-first'));assert.deepEqual(calls.map(row=>row.stage),['initial','initial','review']);assert.deepEqual(calls[1].feedback,{code:'reference_not_in_source',path:'modules.results.criteria.progress.evidence[0]',retryable:true,stage:'initial'});assert.equal(calls[2].feedback,null);
  const beforeRepeat=record('stale-october');assert.equal((await call('POST',{mode:'rescore',targetMonth:'2026-10'})).status,202);
  const repeated=await until(async()=>{const response=(await call('GET')).body;return !response.processRunning&&response.status?.finishedAt?response.status:null;},'repeat_did_not_complete');
- assert.equal(repeated.cached,3);assert.equal(repeated.analyzed,0);assert.equal(repeated.remaining,0);assert.equal((await providerCalls()).length,2,'a second run resumes from cache without repeating successful model calls');assert.deepEqual(record('stale-october'),beforeRepeat);
+ assert.equal(repeated.cached,3);assert.equal(repeated.analyzed,0);assert.equal(repeated.remaining,0);assert.equal((await providerCalls()).length,3,'a second run resumes from cache without repeating successful model calls');assert.deepEqual(record('stale-october'),beforeRepeat);
  assert.equal(JSON.stringify(humanTables.map(table=>[table,run('SELECT * FROM '+table+' ORDER BY rowid;',true)])),humanBefore,'rescore API preserves human ratings, review history and historical final results and does not confirm the current month');
  for(const table of ['weekly_reminder_sends','scoring360_reminder_sends','monthly_score_reminder_deliveries'])assert.equal(run('SELECT count(*) AS n FROM '+table+';',true)[0].n,0);
  assert.equal(run('SELECT count(*) AS n FROM import_batches;',true)[0].n,0,'stored-only rescore creates no Feishu import batch');assert.equal(run('PRAGMA integrity_check;'),'ok');
@@ -151,13 +163,13 @@ try{
  assert.equal(usage.status,200);assert.equal(usage.body.days,7);
  const totals=Object.fromEntries(usage.body.modules.map(row=>[row.module,[row.requests,row.failed,row.unreported,row.inputTokens,row.outputTokens,row.cachedInputTokens,row.totalTokens]]));
  assert.deepEqual(totals,{
-  report_scoring:[2,0,0,200,60,40,260],management_summary:[1,0,0,50,10,0,60],
+  report_scoring:[3,0,0,300,90,60,390],management_summary:[1,0,0,50,10,0,60],
   personal_coach:[1,0,0,20,5,0,25],task_followup:[1,0,0,7,3,0,10],
  });
- assert.equal((await providerCalls()).length,5,'cached results do not add provider usage');
+ assert.equal((await providerCalls()).length,6,'cached results do not add provider usage');
  const clearForDiscovery=await call('POST',{action:'clear'},'admin','/api/system-settings/ai/key');
  assert.deepEqual(clearForDiscovery,{status:200,body:{ok:true,keyConfigured:false}});
  assert.deepEqual(await call('GET',undefined,'admin',modelsRoute),{status:503,body:{ok:false,error:'ai_not_configured'}});
  assert.equal((await readFile(modelsCallsFile,'utf8')).trim().split('\n').length,2,'no saved key means no provider discovery request');
- const result={ok:true,actualLocalServer:true,managementBoundaryPreserved:true,ordinaryMemberDenied:true,invalidMonthRejected:true,busy409:true,storedMonthScope:true,onlyActiveSubmitted:true,version1And2CacheAccepted:true,preciseProgress:true,safeDiagnostic:true,correctionFeedback:true,oldScorePreserved:true,successfulCacheResume:true,humanScoresUntouched:true,aiUsageByModule:true,explicitKeyReplacement:true,feishuQueries:0,realProviderRequests:0,syntheticProviderCalls:5,messagesSent:0,artifacts:dir};await writeFile(dir+'/result.json',JSON.stringify(result,null,2));console.log(JSON.stringify(result));
+ const result={ok:true,actualLocalServer:true,managementBoundaryPreserved:true,ordinaryMemberDenied:true,invalidMonthRejected:true,busy409:true,storedMonthScope:true,onlyActiveSubmitted:true,version1And2CacheAccepted:true,validHistoricalGradesRetained:true,explicitQueuedRepair:true,activeScoringAndReview:true,preciseProgress:true,safeDiagnostic:true,correctionFeedback:true,oldScorePreserved:true,successfulCacheResume:true,humanScoresUntouched:true,aiUsageByModule:true,explicitKeyReplacement:true,feishuQueries:0,realProviderRequests:0,syntheticProviderCalls:6,messagesSent:0,artifacts:dir};await writeFile(dir+'/result.json',JSON.stringify(result,null,2));console.log(JSON.stringify(result));
 }catch(error){console.error(logs);throw error;}finally{if(server?.exitCode===null){server.kill('SIGTERM');if(server.exitCode===null)await new Promise(resolve=>server.once('exit',resolve));}await writeFile(dir+'/server.log',logs);console.log('Test artifacts retained:',dir);}

@@ -19,7 +19,7 @@ const pending=render({assessment,previous:true,refresh:{state:'analyzing'}});
 assert(pending.includes('旧版分数 · 重评中'));assert(pending.includes('以下引文来自旧评分对应的周报版本'));assert(pending.includes(facts.results));
 assert(!pending.includes('>AI 候选</span>'),'old evidence cannot be labelled as a current candidate');
 const failed=render({assessment,previous:true,refresh:{state:'failed'}});assert(failed.includes('旧版分数 · 重评失败'));assert(failed.includes(facts.results));
-const legacy=render({previous:true,refresh:{state:'queued'},pending:true});assert(legacy.includes('旧版分数 · 重评中'));assert(legacy.includes('这里不补造评分依据'));assert(!legacy.includes('当前未生成有效评分'));
+const legacy=render({previous:true,refresh:{state:'queued'},pending:true});assert(legacy.includes('旧版分数 · 重评中'));assert(legacy.includes('这里不补写历史理由'));assert(!legacy.includes('当前未生成有效评分'));
 const noPrior=render({pending:true,refresh:{state:'failed'}});assert(noPrior.includes('重评失败'));assert(noPrior.includes('不按0分处理'));assert(!noPrior.includes('旧版分数 ·'));
 const ready=render({assessment,refresh:{state:'ready'}});assert(ready.includes('AI 候选'));assert(ready.includes('月度最终分由管理人员确认'));assert(!ready.includes('旧版分数 ·'));
 const result={ok:true,previousScoreVisibleDuringRescore:true,failedRescoreKeepsOldEvidence:true,originalVersionClearlyLabelled:true,legacyEvidenceNotInvented:true,noPriorIsPendingNotZero:true,readyScoreLabelledCandidate:true,scoringVersion:REPORT_QUALITY_VERSION,externalRequests:0,artifacts:dir};

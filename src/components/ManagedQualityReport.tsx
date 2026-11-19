@@ -3,13 +3,13 @@ import { FileText } from 'lucide-react';
 import { DeferredEvidence } from './DeferredEvidence';
 import { qualityDate } from './MonthlyQuality';
 import { scoreText } from './PerformanceUI';
-import { ReportQualityDetails, type QualityAssessment } from './ReportQualityDetails';
+import { ReportQualityDetails, isCoachingQualityAssessment, type QualityAssessment } from './ReportQualityDetails';
 
 type ReviewAction = 'adjust_score' | 'validate_evidence' | 'mark_not_applicable' | 'exclude_report' | 'restore_report' | 'reanalyze';
 
 const actionLabels: Record<ReviewAction, string> = {
   adjust_score: '调整周报候选分',
-  validate_evidence: '标记证据有效',
+  validate_evidence: '记录管理核实',
   mark_not_applicable: '标记评分项不适用',
   exclude_report: '标记周报无效或重复',
   restore_report: '恢复纳入月度质量分',
@@ -70,13 +70,14 @@ export function ManagedQualityReport({ report, userId, month, editable, onUpdate
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
   const modules = report.qualityAssessment?.modules || [];
+  const coaching = isCoachingQualityAssessment(report.qualityAssessment);
   const criterionAction = action === 'mark_not_applicable' || action === 'validate_evidence';
   const selectedModule = modules.find(module => module.id === moduleId);
   const criteria = selectedModule?.criteria || [];
   const ready = Boolean(action && reason.trim() && (!criterionAction || moduleId && criterionId) && (action !== 'validate_evidence' || quote.trim()) && (action !== 'adjust_score' || score.trim() && Number.isFinite(Number(score)) && Number(score) >= 0 && Number(score) <= 100));
   const reviewActions: ReviewAction[] = report.qualityExcluded ? (report.qualityReviews?.some(review => review.active && review.action === 'exclude_report') ? ['restore_report'] : []) : [
     ...(report.candidate != null ? ['adjust_score' as const] : []),
-    ...(report.candidate != null && modules.length ? ['validate_evidence' as const, 'mark_not_applicable' as const] : []),
+    ...(report.candidate != null && modules.length && !coaching ? ['validate_evidence' as const, 'mark_not_applicable' as const] : []),
     'exclude_report', 'reanalyze',
   ];
 
@@ -104,7 +105,7 @@ export function ManagedQualityReport({ report, userId, month, editable, onUpdate
     <p className="pf-caption">提交时间 {report.submittedAt || '待核实'} · {previous ? '旧版 AI 候选分' : 'AI 候选分'} {scoreText(displayScore)}{displayScore != null && ' 分'}{report.qualityExcluded ? ' · 已标记为无效或重复' : report.qualityReanalysisPending ? ' · 已退回重新分析' : report.candidate != null && report.candidate !== displayScore ? ` · 人工复核后 ${scoreText(report.candidate)} 分` : ''}</p>
     {report.evidence.map(item => <div className="pf-fact" key={item.module}><span>{item.module.replace('摘要', '')}</span><p>{item.text || '未提供内容'}</p></div>)}
     <ReportQualityDetails assessment={assessment} weights={previous ? report.previousScoringWeights : report.scoringPolicy?.weights} pending={report.candidate == null && report.displayQualityScore == null} previous={previous} refresh={report.qualityRefresh}/>
-    <div className={`pf-evidence-note ${report.anomalies.length ? 'is-warning' : ''}`}><strong>{report.anomalies.length ? '完整性提示' : '完整性检查'}</strong><p>{report.anomalies.join('；') || '四个模块完整，未标记异常'}</p>{report.suggestions && <p>{report.suggestions}</p>}</div>
+    <div className={`pf-evidence-note ${report.anomalies.length ? 'is-warning' : ''}`}><strong>{report.anomalies.length ? '如需进一步确认' : '完整性检查'}</strong><p>{report.anomalies.join('；') || '四个模块完整，未标记异常'}</p>{!coaching && report.suggestions && <p>{report.suggestions}</p>}</div>
     <DeferredEvidence label="查看完整原始记录" url={report.id ? '/api/performance/report?id=' + encodeURIComponent(report.id) + (report.contentVersion ? '&version=' + encodeURIComponent(report.contentVersion) : '') : undefined} initialValue={report.contentDeferred ? undefined : report.content}/>
     {!!report.qualityReviews?.length && <details className="quality-version"><summary>人工复核记录（{report.qualityReviews.length}）</summary><ul className="quality-review-records">
       {report.qualityReviews.map((review, index) => <li key={index}><strong>{actionLabels[review.action]}{review.details?.score != null ? ` · ${scoreText(review.details.score)} 分` : ''}{review.active === false ? ' · 历史记录' : ''}</strong><p>{review.reason}</p>{review.details?.quote && <blockquote>{review.details.quote}</blockquote>}<small>{review.reviewerName || '—'} · {qualityDate(review.createdAt)}</small></li>)}

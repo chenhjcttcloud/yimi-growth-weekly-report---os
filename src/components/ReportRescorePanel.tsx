@@ -36,7 +36,7 @@ function diagnosticLabel(value:Diagnostic){
  if(code==='upstream_forbidden')return 'AI 服务拒绝访问，请检查模型或项目权限';
  if(code==='upstream_bad_request')return 'AI 服务未接受请求，请检查模型和请求配置';
  if(code==='upstream_error')return 'AI 服务暂时不可用，系统按重试规则处理';
- if(/quote|evidence/.test(code))return '原文证据未通过校验';
+ if(/quote|evidence|reference/.test(code))return 'AI评分的原文引用需要修正';
  if(/score|range|point/.test(code))return '细项分数未通过校验';
  if(/reason/.test(code))return '评分理由不完整';
  if(/timeout/.test(code))return 'AI 请求超时';

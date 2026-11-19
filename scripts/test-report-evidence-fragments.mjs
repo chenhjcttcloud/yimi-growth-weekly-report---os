@@ -4,13 +4,15 @@ import {mkdir,mkdtemp,readFile,writeFile} from 'node:fs/promises';
 import path from 'node:path';
 import {createLiveReportSync} from '../server/live-report-sync.mjs';
 import {
-  NO_REPORT_EVIDENCE,
   REPORT_QUALITY_PROMPT_VERSION,
   REPORT_QUALITY_VERSION,
-  reportQualityAssessment,
+  reportQualityAssessment as legacyReportQualityAssessment,
   validateReportQualityAnalysis,
 } from '../server/report-quality-scoring.mjs';
 import {makeReportQualityAnalysis} from './report-quality-test-fixtures.mjs';
+import {makeActiveReportQualityAnalysis} from './report-quality-active-test-fixtures.mjs';
+import {ACTIVE_REPORT_QUALITY_VERSION,ACTIVE_REPORT_QUALITY_PROMPT_VERSION,ACTIVE_REPORT_QUALITY_REVIEW_PROMPT_VERSION} from '../server/report-quality-active.mjs';
+import {reportQualityAssessment} from '../server/report-quality-reader.mjs';
 
 const priorPrompt = 'weekly-quality-prompt-2026-11-12-v3';
 const month = '2026-11';
@@ -36,7 +38,7 @@ run(await readFile('db/schema.sql','utf8'));
 await writeFile(path.join(directory,'prototypeData.json'),JSON.stringify({meta:{periods:[]},employee_summary:[],weekly_scores:[]}));
 
 const sources = new Map();
-function seed(id,{cached=false,history=false}={}) {
+function seed(id,{cached=false,history=false,pending=false}={}) {
   const facts = {
     results:id==='a-fragments' ? results : repeated,
     problems:repeated,
@@ -57,6 +59,7 @@ function seed(id,{cached=false,history=false}={}) {
       code:'evidence_not_in_source',path:'modules.results.criteria.result.evidence[0].quote',retryable:true,
     }));
   }
+  if(pending) content.qualityRefresh={state:'queued',targetVersion:ACTIVE_REPORT_QUALITY_VERSION,sourceHash:content.sourceHash,attempts:0};
   run(`INSERT INTO employees(user_id,name,department,is_active) VALUES(${sql(id)},'虚构员工',${sql(id)},1);
     INSERT INTO weekly_reports(id,employee_user_id,employee_name,department,week_label,week_start,week_end,status,content_json,source_hash,submitted_at)
     VALUES(${sql(id)},${sql(id)},'虚构员工',${sql(id)},${sql(week)},'2026-11-02',${sql(week)},'准时',${sql(JSON.stringify(content))},${sql(content.sourceHash)},${sql(week+'T10:00:00Z')});`);
@@ -68,10 +71,12 @@ seed('b-corrective');
 seed('c-invalid');
 seed('d-legacy-quote');
 seed('e-cached',{cached:true});
-seed('f-no-evidence');
+seed('f-no-evidence',{cached:true,pending:true});
 const saved = id => run(`SELECT * FROM weekly_reports WHERE id=${sql(id)};`,true)[0];
 const report = id => JSON.parse(saved(id).content_json);
 const beforeCached = saved('e-cached');
+const beforeUnsupported = structuredClone(report('f-no-evidence').ai);
+assert.equal(legacyReportQualityAssessment(report('e-cached')).version,REPORT_QUALITY_VERSION,'the legacy fixture and its historical parser keep their original contract');
 
 const calls = new Map();
 const selected = new Map();
@@ -96,7 +101,8 @@ const sync = createLiveReportSync({
     requests.push({input,feedback:requests.length?JSON.parse(request.messages.at(-1).content).validationFeedback:null});
     calls.set(id,requests);
 
-    const analysis = makeReportQualityAnalysis(facts,{evidenceLevels:['B','B','B','B']});
+    assert.equal(request.model,model);
+    const analysis = makeActiveReportQualityAnalysis(facts,{scores:[80,80,80,80]});
     const fragments = input.evidenceFragments;
     if(id!=='d-legacy-quote') {
       for(const module of analysis.modules) {
@@ -105,14 +111,14 @@ const sync = createLiveReportSync({
           ? sourceFragments.filter(item=>item.text===repeated).at(-1)
           : sourceFragments[0];
         for(const criterion of module.criteria) {
-          criterion.evidence = criterion.evidence.map(({type,level})=>({ref:fragment.id,type,level}));
+          criterion.evidence = criterion.evidence.map(({type})=>({ref:fragment.id,type}));
         }
         if(id==='a-fragments') selected.set(module.id,fragment);
       }
-    }
+    } else for(const module of analysis.modules)for(const criterion of module.criteria)criterion.evidence=criterion.evidence.map(({type})=>({quote:fragments[module.id][0].text,type}));
     const criteria = analysis.modules.find(module=>module.id==='results').criteria;
     if(id==='a-fragments') {
-      criteria.find(criterion=>criterion.id==='evidence').evidence = [];
+      if(requests.length===1)criteria.find(criterion=>criterion.id==='progress').evidence = [];
       analysis.tasks = [
         {title:'安排复检',description:'用本周计划安排下周复检。',evidenceRef:fragments.nextPlan[0].id,evidence:'PRIVATE_UNTRUSTED_TASK_QUOTE'},
         {title:'无依据任务',description:'没有可定位的片段。',evidenceRef:'PRIVATE_UNKNOWN_TASK_REFERENCE',evidence:repeated},
@@ -135,9 +141,10 @@ assert.equal(status.rowCount,6);
 assert.equal(status.analyzed,3);
 assert.equal(status.cached,1);
 assert.equal(status.failed,2);
-assert.equal(status.aiRequests,9);
+assert.equal(status.aiRequests,12);
+assert.equal(status.aiRequestBudget,20,'five pending reports allow two stages with at most two attempts each');
 assert.deepEqual(Object.fromEntries([...calls].map(([id,requests])=>[id,requests.length])),{
-  'a-fragments':2,'b-corrective':2,'c-invalid':2,'d-legacy-quote':1,'f-no-evidence':2,
+  'a-fragments':3,'b-corrective':3,'c-invalid':2,'d-legacy-quote':2,'f-no-evidence':2,
 });
 assert.deepEqual(saved('e-cached'),beforeCached,'the repair must reuse validated v3 scores');
 assert.notEqual(REPORT_QUALITY_PROMPT_VERSION,priorPrompt);
@@ -158,25 +165,24 @@ for(const [module,entries] of Object.entries(fragments)) {
 assert.equal(fragments.results.filter(entry=>entry.text===repeated).length,2);
 const first = report('a-fragments');
 assert.equal(first.results,results);
-assert.equal(first.ai.version,REPORT_QUALITY_VERSION);
-assert.equal(first.aiPromptVersion,REPORT_QUALITY_PROMPT_VERSION);
+assert.equal(first.ai.version,ACTIVE_REPORT_QUALITY_VERSION);
+assert.equal(first.aiPromptVersion,ACTIVE_REPORT_QUALITY_PROMPT_VERSION);
+assert.equal(first.aiReviewPromptVersion,ACTIVE_REPORT_QUALITY_REVIEW_PROMPT_VERSION);
 assert.equal(first.aiAnalysisAttempts.length,3,'previous attempt diagnostics survive recovery');
 assert(first.aiAnalysisAttempts.slice(0,2).every(attempt=>attempt.promptVersion===priorPrompt));
-assert.equal(calls.get('a-fragments')[1].feedback.code,'positive_score_without_evidence');
+assert.equal(calls.get('a-fragments')[1].feedback.code,'positive_score_without_reference');
+assert.equal(calls.get('a-fragments')[1].feedback.stage,'initial');
+assert(calls.get('a-fragments')[2].input.candidate,'the corrected initial candidate receives independent review');
 const resultCriteria = first.ai.modules.find(module=>module.id==='results').criteria;
-const evidence = resultCriteria.find(criterion=>criterion.id==='result').evidence[0];
+const evidence = resultCriteria.find(criterion=>criterion.id==='progress').evidence[0];
 assert.deepEqual(evidence,{
-  quote:selected.get('results').text,type:'reported_fact',level:'B',
+  quote:selected.get('results').text,type:'reported_fact',
   start:results.lastIndexOf(repeated),end:results.lastIndexOf(repeated)+repeated.length,
 });
-const missing = resultCriteria.find(criterion=>criterion.id==='evidence');
-assert.equal(missing.score,0);
-assert.equal(missing.rawScore,0);
-assert.deepEqual(missing.evidence,[]);
-assert(missing.missing.includes(NO_REPORT_EVIDENCE));
-assert(resultCriteria.find(criterion=>criterion.id==='outcome').score>0,'only the unsupported item should lose points');
-assert.deepEqual(first.ai.scores,[66,80,85,75]);
-assert.equal(first.ai.recommendHumanReview,true);
+assert(resultCriteria.find(criterion=>criterion.id==='progress').score>0,'a recovered reference must be validated rather than capped or silently changed to zero');
+assert(resultCriteria.find(criterion=>criterion.id==='outcome').score>0);
+assert.deepEqual(first.ai.scores,[80,80,80,80]);
+assert.equal(first.ai.recommendHumanReview,false,'confidence and reference formatting cannot manufacture a risk signal');
 assert.equal(reportQualityAssessment(first).modules[0].criteria[0].evidence[0].start,evidence.start);
 assert.deepEqual(first.ai.tasks.map(task=>({title:task.title,evidence:task.evidence})),[
   {title:'安排复检',evidence:selected.get('nextPlan').text},
@@ -186,28 +192,31 @@ assert(!JSON.stringify(first.ai.tasks).includes('PRIVATE_'));
 
 const corrective = report('b-corrective');
 assert.equal(corrective.qualityRefresh.state,'ready');
-assert.equal(corrective.qualityRefresh.attempts,2);
-assert.deepEqual(corrective.ai.scores,[86.4,80,85,75],'reference resolution preserves existing evidence weighting');
-assert.equal(calls.get('b-corrective')[1].feedback.code,'invalid_evidence_reference');
+assert.equal(corrective.qualityRefresh.attempts,3);
+assert.deepEqual(corrective.ai.scores,[80,80,80,80],'reference resolution preserves the active fixed rubric without historical evidence caps');
+assert.equal(calls.get('b-corrective')[1].feedback.code,'invalid_reference');
+assert(calls.get('b-corrective')[2].input.candidate);
 assert.deepEqual(calls.get('b-corrective')[1].input.evidenceFragments,calls.get('b-corrective')[0].input.evidenceFragments);
 const rejected = report('c-invalid');
 assert.equal(rejected.ai,undefined);
 assert.equal(rejected.qualityRefresh.state,'failed');
 assert.equal(rejected.qualityRefresh.attempts,2);
-assert.equal(rejected.qualityRefresh.diagnostic.code,'invalid_evidence_reference');
+assert.equal(rejected.qualityRefresh.diagnostic.code,'invalid_reference');
 assert(!JSON.stringify(rejected.aiAnalysisAttempts).includes('PRIVATE_UNKNOWN_PROVIDER_REFERENCE'));
 assert(!JSON.stringify(status.diagnostics).includes('PRIVATE_UNKNOWN_PROVIDER_REFERENCE'));
 
 const exactQuote = report('d-legacy-quote');
 assert.equal(exactQuote.qualityRefresh.state,'ready');
-assert.equal(exactQuote.qualityRefresh.attempts,1);
+assert.equal(exactQuote.qualityRefresh.attempts,2);
 assert.equal(exactQuote.ai.modules[0].criteria[0].evidence[0].quote,repeated);
 const unsupported = report('f-no-evidence');
 assert.equal(unsupported.ai,undefined,'an entirely unsupported reply cannot produce a new candidate');
 assert.equal(unsupported.qualityRefresh.state,'failed');
 assert.equal(unsupported.qualityRefresh.attempts,2);
-assert.equal(unsupported.qualityRefresh.diagnostic.code,'positive_score_without_evidence');
+assert.equal(unsupported.qualityRefresh.diagnostic.code,'positive_score_without_reference');
+assert.deepEqual(unsupported.previousQuality.ai,beforeUnsupported,'strict rejection retains the saved historical score instead of publishing a default zero');
+assert.equal(reportQualityAssessment(unsupported),null);
 assert.equal(run('SELECT count(*) FROM import_batches;'),'0');
 assert.equal(run("SELECT count(*) FROM performance_results WHERE kind='quality';"),'0');
-console.log('Report evidence fragment tests passed: selected source offsets, criterion-only missing evidence, corrective retry, invalid ref rejection, task evidence, exact quote and prior cache compatibility.');
+console.log('Report evidence fragment tests passed: source offsets, CRLF, repeated fragments, emoji, two-stage corrective review, strict unsupported rejection with old-score preservation, safe diagnostics, task refs, exact quotes and unchanged legacy cache.');
 console.log('Synthetic artifacts retained:',directory);

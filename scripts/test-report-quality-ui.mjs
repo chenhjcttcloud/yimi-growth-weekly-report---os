@@ -130,7 +130,7 @@ try{
   await page.reload();
   await page.getByRole('heading',{name:'员工月度结果',exact:true}).waitFor();
   await page.getByRole('tab',{name:'周报与证据',exact:true}).click();
-  const assessmentPanel=page.getByRole('region',{name:'四模块评分依据'});
+  const assessmentPanel=page.getByRole('region',{name:'四模块评分说明'});
   await page.getByText('第四周虚构成果',{exact:true}).waitFor();
   const weekButtons=page.getByRole('group',{name:'周报周次'});
   const weekButton=week=>weekButtons.getByRole('button',{name:`第 ${week} 周`,exact:true});
@@ -162,14 +162,16 @@ try{
   assert.equal(await assessmentPanel.locator('[data-quality-module]').count(),4);
   const first=assessmentPanel.locator('[data-quality-module="results"]');
   assert(await first.getByText(reasons.module,{exact:true}).isVisible());
+  assert(await first.getByText(reasons.criterion).first().isHidden(),'historical fine-grained scoring is collapsed by default');
+  await first.locator('.quality-legacy-details>summary').click();
   assert(await first.getByText(reasons.criterion).first().isVisible());
   assert(await first.getByText(quote,{exact:true}).first().isVisible());
   assert(await first.getByText('置信度（模型自评）：86%',{exact:true}).isVisible());
   assert(await first.getByText('计入总分 24 分',{exact:true}).isVisible());
-  assert(await first.getByText('证据等级 · B 级 · 内部可核验事实').first().isVisible());
+  assert.equal(await assessmentPanel.getByText('证据等级',{exact:false}).count(),0,'saved grades do not become evidence demands');
   assert(await first.getByText('本项不属于该岗位的交付范围。').isVisible());
-  assert(await first.getByText('加分依据',{exact:true}).isVisible());
-  assert(await first.getByText('扣分依据',{exact:true}).isVisible());
+  assert(await first.getByText('做得好',{exact:true}).isVisible());
+  assert(await first.getByText('可以补充',{exact:true}).isVisible());
   await assessmentPanel.locator('[data-quality-module="reflection"]>summary').click();
   assert(await assessmentPanel.getByText('本模块未填写，系统按固定规则计0分。',{exact:true}).isVisible());
   assert.equal(await page.getByRole('button',{name:'确认月度最终分'}).count(),0);
@@ -208,6 +210,7 @@ try{
   assert(await page.getByText('待完成 AI 分析 1 份',{exact:false}).isVisible());
   assert.equal(await page.getByRole('columnheader',{name:'质量最终分'}).count(),0);
   assert(await page.locator('.quality-assessment').getByText(anomaly,{exact:true}).isVisible(),'employees must also see the same non-blocking anomaly');
+  await page.locator('[data-quality-module="results"] .quality-legacy-details>summary').click();
   assert(await page.locator('[data-quality-module="results"]').getByText(reasons.criterion).first().isVisible());
   assert(await page.locator('[data-quality-module="results"]').getByText(quote,{exact:true}).first().isVisible());
   assert.equal(await page.getByRole('button',{name:'确认月度最终分'}).count(),0);
@@ -250,10 +253,10 @@ try{
   assert(await page.getByRole('columnheader',{name:'质量最终分'}).isVisible());
   assert(await page.getByRole('cell',{name:supervisor.name}).isVisible());
   state='legacy';await page.reload();
-  await page.getByText('历史记录未保存逐项评分理由和原文证据，已有分数保留；这里不补造评分依据。',{exact:true}).waitFor();
+  await page.getByText('历史记录未保存详细评分说明，已有分数保留；这里不补写历史理由。',{exact:true}).waitFor();
   assert.equal(await page.locator('[data-quality-module]').count(),0,'historical evidence must not be fabricated');
   state='pending';await page.reload();
-  await page.getByText('AI 分析完成后，将自动展示各模块得分、评分理由和原文证据。当前未生成有效评分，不按 0 分处理。',{exact:true}).waitFor();
+  await page.getByText('AI 分析完成后，将自动展示各模块得分、评分理由和可以补充的内容。当前未生成有效评分，不按 0 分处理。',{exact:true}).waitFor();
   assert.equal(await page.locator('[data-quality-module]').count(),0,'a failed analysis must not appear as a zero-scored report');
 
   mode='supervisor';state='ready';qualityState='pending_confirmation';confirmedScore=null;

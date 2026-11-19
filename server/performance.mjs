@@ -2,8 +2,9 @@ import {randomUUID} from 'node:crypto';
 import {weeklyReportSchedule,monthFridays,shiftDate} from './weekly-report-schedule.mjs';
 import {isEligibleOnTimeApproval,readWeeklyOnTimeApprovals} from './weekly-on-time-approvals.mjs';
 import {employedOn,employedInMonth} from './employee-lifecycle.mjs';
-import {LEGACY_REPORT_QUALITY_VERSION,REPORT_QUALITY_VERSION,REPORT_QUALITY_WEIGHTS,reportQualityAssessment} from './report-quality-scoring.mjs';
-import {legacyReportScore} from './report-rescore-state.mjs';
+import {ACTIVE_REPORT_QUALITY_VERSION} from './report-quality-active.mjs';
+import {reportQualityAssessment,fixedQualityWeightsFor,isStructuredQualityVersion,isPreviewQuality} from './report-quality-reader.mjs';
+import {legacyReportScore,usableQuality} from './report-rescore-state.mjs';
 import {encodeAutomaticEvidence,decodeAutomaticEvidence} from './automatic-evidence-storage.mjs';
 import {applyQualityReviews,qualityAnalysisVersion,qualityReviewDetails,qualityRound,qualityVersion,summarizeMonthlyQuality} from './weekly-quality-review.mjs';
 
@@ -174,24 +175,25 @@ WHERE COALESCE((SELECT calculation_hash FROM automatic_performance_results WHERE
     return [...rows.values()].map(r=>{
       const original=r.content || {};
       const configuredPolicy=policies.get(monthOf(r.end));
-      const policy=original.ai?.version===REPORT_QUALITY_VERSION?{...configuredPolicy,weights:REPORT_QUALITY_WEIGHTS}:configuredPolicy;
+      const fixedWeights=fixedQualityWeightsFor(original.ai?.version);
+      const policy=fixedWeights?{...configuredPolicy,weights:fixedWeights}:configuredPolicy;
       const c={...original,'本周成果摘要':original['本周成果摘要']||original.results||'', '问题摘要':original['问题摘要']||original.problems||'', '下周计划摘要':original['下周计划摘要']||original.nextPlan||'', '思考与复盘摘要':original['思考与复盘摘要']||original.reflection||''};
       const sections=[['本周成果摘要','成果分',.30],['问题摘要','问题分',.25],['下周计划摘要','计划分',.25],['思考与复盘摘要','复盘分',.20]].map(([text,key],index)=>[text,key,policy.weights[index]/100]);
       const missing=sections.filter(([key])=>!String(c[key]||'').trim()).map(([key])=>key);
       const qualityAssessment=reportQualityAssessment(c);
       // The previous score belongs to its saved original facts, not an edited report.
       const archived=Array.isArray(c.aiAnalysisHistory)?[...c.aiAnalysisHistory].reverse():[];
-      const previous=c.previousQuality||archived.find(record=>Array.isArray(record?.ai?.scores)&&record.ai.scores.length===4&&record.ai.scores.every(value=>Number.isFinite(value)&&value>=0&&value<=100));
-      const rawRefresh=c.qualityRefresh||(!c.ai&&previous?{state:'queued',targetVersion:REPORT_QUALITY_VERSION}:null);
-      const qualityRefresh=rawRefresh?{state:['queued','analyzing','failed','ready'].includes(rawRefresh.state)?rawRefresh.state:'queued',targetVersion:String(rawRefresh.targetVersion||REPORT_QUALITY_VERSION),attempts:Number.isInteger(rawRefresh.attempts)?rawRefresh.attempts:0,updatedAt:typeof rawRefresh.updatedAt==='string'?rawRefresh.updatedAt:''}:null;
+      const previous=[c.previousQuality,...archived].find(record=>record&&usableQuality(record.ai,record.facts||{}));
+      const rawRefresh=c.qualityRefresh||(!c.ai&&previous?{state:'queued',targetVersion:ACTIVE_REPORT_QUALITY_VERSION}:null);
+      const qualityRefresh=rawRefresh?{state:['queued','analyzing','failed','ready'].includes(rawRefresh.state)?rawRefresh.state:'queued',targetVersion:String(rawRefresh.targetVersion||ACTIVE_REPORT_QUALITY_VERSION),attempts:Number.isInteger(rawRefresh.attempts)?rawRefresh.attempts:0,updatedAt:typeof rawRefresh.updatedAt==='string'?rawRefresh.updatedAt:''}:null;
       const refreshPending=qualityRefresh&&qualityRefresh.state!=='ready';
       let previousQualityAssessment=null,previousQualityScore=null;
       if(previous&&Array.isArray(previous.ai?.scores)&&previous.ai.scores.length===4&&previous.ai.scores.every(value=>Number.isFinite(value)&&value>=0&&value<=100)){
         previousQualityAssessment=reportQualityAssessment({...previous.facts,ai:previous.ai,aiModel:previous.aiModel||previous.model,aiPromptVersion:previous.aiPromptVersion||previous.promptVersion,aiGeneratedAt:previous.aiGeneratedAt||previous.generatedAt,sourceHash:previous.sourceHash});
-        if(![REPORT_QUALITY_VERSION,LEGACY_REPORT_QUALITY_VERSION].includes(previous.ai.version)||previousQualityAssessment){const previousScores=previousQualityAssessment?.scores||previous.ai.scores;previousQualityScore=previousQualityAssessment?.totalScore??round(previousScores.reduce((sum,value,index)=>sum+value*(previous.scoringWeights||policy.weights)[index]/100,0));}
+        if(!isStructuredQualityVersion(previous.ai.version)||previousQualityAssessment){const previousScores=previousQualityAssessment?.scores||previous.ai.scores;previousQualityScore=previousQualityAssessment?.totalScore??round(previousScores.reduce((sum,value,index)=>sum+value*(previous.scoringWeights||policy.weights)[index]/100,0));}
       }
       const scores=sections.map(([,key,w],index)=>({value:qualityAssessment?qualityAssessment.scores[index]:c[key]==null||String(c[key]).trim()===''?NaN:Number(c[key]),w}));
-      const valid=scores.every(s=>Number.isFinite(s.value)&&s.value>=0&&s.value<=100)&&(![REPORT_QUALITY_VERSION,LEGACY_REPORT_QUALITY_VERSION].includes(c.ai?.version)||qualityAssessment!==null)&&!refreshPending;
+      const valid=scores.every(s=>Number.isFinite(s.value)&&s.value>=0&&s.value<=100)&&(!isStructuredQualityVersion(c.ai?.version)||qualityAssessment!==null)&&!isPreviewQuality(c.ai)&&!refreshPending;
       const candidate=legacyReportScore(c)??(valid?qualityAssessment?.totalScore??round(scores.reduce((n,s)=>n+s.value*s.w,0)):null);
       const submitted=r.status!=='未交' && (!!r.submittedAt || sections.some(([key])=>String(c[key]||'').trim()));
       const ts=submitted?Date.parse(String(r.submittedAt).replace(' ','T')+(/(?:Z|[+-]\d\d:\d\d)$/.test(r.submittedAt)?'':'+08:00')):NaN;
@@ -199,7 +201,7 @@ WHERE COALESCE((SELECT calculation_hash FROM automatic_performance_results WHERE
       const approved=approvedOnTime(r.employeeUserId,r.end)&&isEligibleOnTimeApproval(r.status,ts);
       const late=submitted&&!schedule.exempt&&!schedule.calendarPending&&Number.isFinite(ts)&&ts>deadline&&!approved;
       const status=schedule.exempt?'免交':schedule.calendarPending?'等待日历':!submitted?'未交':!Number.isFinite(ts)?'待核实时间':late?'迟交':'准时';
-      const report={...r,content:c,status,schedule,scoringPolicy:policy,...(qualityAssessment&&!refreshPending?{qualityAssessment}:{}),...(qualityRefresh?{qualityRefresh,displayQualityScore:refreshPending?previousQualityScore:null,...(refreshPending&&previousQualityScore!==null?{qualityDisplaySource:'previous',previousQualityVersion:previous.ai.version||previous.aiPromptVersion||previous.promptVersion||'legacy',previousScoringWeights:previous.ai.version===REPORT_QUALITY_VERSION?REPORT_QUALITY_WEIGHTS:previous.scoringWeights||policy.weights,...(previousQualityAssessment?{previousQualityAssessment}:{})}: {})}:{}), month:monthOf(r.end), submitted, timestampUnknown:submitted&&!Number.isFinite(ts),late,onTime:submitted&&!schedule.exempt&&!schedule.calendarPending&&Number.isFinite(ts)&&(ts<=deadline||approved), candidate, missing, evidence:sections.map(([key])=>({module:key,text:c[key]||''})), anomalies:[...(Array.isArray(c.ai?.anomalies)?c.ai.anomalies:[]),...(c.source?.weekInference?['周次按提交日期推定，请核实补交或跨周汇报的归属']:[]),...missing.map(x=>`缺失：${x}`),...(!valid?['缺少有效的四模块候选分']:[]),...(submitted&&!Number.isFinite(ts)?['提交时间无法解析']:[])], suggestions:c.ai?.summary|| (missing.length?'请补齐缺失模块，并由主管核实事实与结果。':'请主管核实成果证据、问题影响和计划可验证性。'),qualityExcluded:['无效','重复','invalid','duplicate','void'].includes(String(r.status||'').toLowerCase())};
+      const report={...r,content:c,status,schedule,scoringPolicy:policy,...(qualityAssessment&&!refreshPending?{qualityAssessment}:{}),...(qualityRefresh?{qualityRefresh,displayQualityScore:refreshPending?previousQualityScore:null,...(refreshPending&&previousQualityScore!==null?{qualityDisplaySource:'previous',previousQualityVersion:previous.ai.version||previous.aiPromptVersion||previous.promptVersion||'legacy',previousScoringWeights:fixedQualityWeightsFor(previous.ai.version)||previous.scoringWeights||policy.weights,...(previousQualityAssessment?{previousQualityAssessment}:{})}: {})}:{}), month:monthOf(r.end), submitted, timestampUnknown:submitted&&!Number.isFinite(ts),late,onTime:submitted&&!schedule.exempt&&!schedule.calendarPending&&Number.isFinite(ts)&&(ts<=deadline||approved), candidate, missing, evidence:sections.map(([key])=>({module:key,text:c[key]||''})), anomalies:[...(Array.isArray(c.ai?.anomalies)?c.ai.anomalies:[]),...(c.source?.weekInference?['周次按提交日期推定，请核实补交或跨周汇报的归属']:[]),...missing.map(x=>`缺失：${x}`),...(!valid?['缺少有效的四模块候选分']:[]),...(submitted&&!Number.isFinite(ts)?['提交时间无法解析']:[])], suggestions:c.ai?.summary|| (missing.length?'请补齐缺失模块，并由主管核实事实与结果。':'请主管核实成果证据、问题影响和计划可验证性。'),qualityExcluded:['无效','重复','invalid','duplicate','void'].includes(String(r.status||'').toLowerCase())};
       const reviewed=applyQualityReviews(report,reviews.get(JSON.stringify([r.employeeUserId,report.month,r.id]))||[]);
       return {...reviewed,content:original};
     });
@@ -381,7 +383,7 @@ WHERE NOT EXISTS(SELECT 1 FROM all_monthly_weighted_results WHERE ${match})
       const refreshing=(row?.reports||[]).filter(report=>report.submitted&&!report.qualityExcluded&&report.candidate===null&&(report.qualityRefresh||report.qualityReanalysisPending));
       const failedAnalysis=refreshing.filter(report=>report.qualityRefresh?.state==='failed').length;
       return {month,quality:get('quality')?.score??null,qualityStatus:monthlyQuality.status,monthlyQuality:{...monthlyQuality,canConfirm:false},
-        ...(refreshing.length&&monthlyQuality.status==='pending_ai'?{qualityRefresh:{status:failedAnalysis?'rescore_failed':'rescoring',pendingAnalysis:monthlyQuality.pendingAnalysis,failedAnalysis,targetVersion:REPORT_QUALITY_VERSION}}:{}),
+        ...(refreshing.length&&monthlyQuality.status==='pending_ai'?{qualityRefresh:{status:failedAnalysis?'rescore_failed':'rescoring',pendingAnalysis:monthlyQuality.pendingAnalysis,failedAnalysis,targetVersion:ACTIVE_REPORT_QUALITY_VERSION}}:{}),
         timeliness:get('timeliness')??null,collaboration:get('collaboration')?.score??null,collaborationRule:rows.find(r=>r.month===month&&r.kind==='collaboration')?.scoring_rule||null};
     });
     const scores=history.filter(r=>r.quality!==null).slice(0,3).map(r=>r.quality);

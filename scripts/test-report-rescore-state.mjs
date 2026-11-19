@@ -26,6 +26,14 @@ assert.equal(currentQualityCached(ready,sourceHash,'changed-model'),false,'chang
 assert.equal(currentQualityCached({...ready,ai:{...ai,version:'unknown-rule'}},sourceHash,model),false,'unknown scoring rule cannot be a current grade');
 assert.deepEqual(reportFacts({'本周成果摘要':facts.results,'问题摘要':facts.problems,'下周计划摘要':facts.nextPlan,'思考与复盘摘要':facts.reflection}),facts);
 assert(usableQuality(ai,facts));
+for(const marker of [{previewOnly:true},{publicationMode:'preview_only'},{version:'weekly-quality-coaching-preview-2026-11-19-v1'}]) {
+ const preview={...ai,...marker};
+ assert.equal(usableQuality(preview,facts),false,'candidate comparison cannot become a published historical grade');
+ assert.equal(currentQualityCached({...ready,ai:preview},sourceHash,model),false);
+ assert.equal(previousQualitySnapshot({...facts,ai:preview}),null);
+ assert.deepEqual(previousQualitySnapshot({...facts,ai:preview,previousQuality:{ai,facts}}).ai,ai,'preview cannot replace a valid previous grade');
+ assert.equal(previousQualitySnapshot({...facts,aiAnalysisHistory:[{ai:preview,facts}]}),null,'archived candidate cannot become a fallback grade');
+}
 const forged=structuredClone(ready);forged.ai.modules[0].criteria[0].evidence[0].quote='伪造原文，不属于任何本模块正文';
 assert.equal(currentQualityCached(forged,sourceHash,model),false,'forged stored citation cannot be reused');
 assert.equal(previousQualitySnapshot(forged),null,'forged current-rule citation cannot masquerade as a published fallback');

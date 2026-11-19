@@ -64,7 +64,7 @@ try{
  await start.click();await panel.getByText('正在补跑评分',{exact:true}).waitFor();assert.equal(posts.length,1);assert.deepEqual(posts[0],{mode:'rescore',targetMonth:'2026-10'});assert(await start.isDisabled());
  assert(await panel.getByText('重评时，旧评分依据可供回看。月度候选分只汇总已完成分析的有效周报，最终分由管理人员确认。',{exact:true}).isVisible());
  state=snapshot({phase:'analysis',analyzed:1,failed:1,remaining:1,active:1,aiRequests:3,diagnostics:[{reportId:'fixture-report',weekEnd:'2026-10-16',moduleId:'results',criterionId:'evidence',code:'quote_not_found',path:'modules.results.criteria.evidence.evidence',attempt:2,providerResponse:'PRIVATE_PROVIDER_RESPONSE_MUST_NOT_RENDER'}]});
- await refresh.click();await panel.getByText('原文证据未通过校验 · 第2次尝试',{exact:true}).waitFor();
+ await refresh.click();await panel.getByText('AI评分的原文引用需要修正 · 第2次尝试',{exact:true}).waitFor();
  assert(await panel.getByText('本批 AI 请求 3 次，按待评分周报最多安排 6 次。',{exact:true}).isVisible());
  assert((await panel.innerText()).includes('quote_not_found · modules.results.criteria.evidence.evidence'));
  assert(!(await panel.innerText()).includes('PRIVATE_PROVIDER_RESPONSE'));

@@ -50,7 +50,7 @@ await new Promise(resolve=>socket.close(resolve));
 const provider=path.join(dir,'provider.mjs'),providerLog=path.join(dir,'provider.jsonl');
 await writeFile(provider,`import {appendFileSync,existsSync} from 'node:fs';
 import {setTimeout as pause} from 'node:timers/promises';
-import {makeReportQualityAnalysis} from ${JSON.stringify(new URL('./report-quality-test-fixtures.mjs',import.meta.url).href)};
+import {makeActiveReportQualityAnalysis as makeReportQualityAnalysis} from ${JSON.stringify(new URL('./report-quality-active-test-fixtures.mjs',import.meta.url).href)};
 const RealDate=Date, now=RealDate.parse('2026-11-13T17:00:00+08:00');
 globalThis.Date=class extends RealDate {
  constructor(...args){super(...(args.length?args:[now]));}
@@ -157,7 +157,7 @@ try{
  assert.equal(refreshed.status,'pending_confirmation',logs);
  assert.equal(refreshed.candidateScore,82.5);
  const inputs=(await readFile(providerLog,'utf8')).trim().split('\n').map(line=>JSON.parse(line));
- assert.deepEqual(inputs,[{report:facts,week:'2026-10-16'}]);
+ assert.deepEqual(inputs,[{report:facts,week:'2026-10-16'},{report:facts,week:'2026-10-16'}],'only the requested report reaches the initial and review calls');
  assert.deepEqual(JSON.parse(run("SELECT content_json FROM weekly_reports WHERE id='score-second';")),next);
  const attempts=await Promise.all([confirm({version:refreshed.version}),confirm({version:refreshed.version},'boss')]);
  assert.deepEqual(attempts.map(result=>result.status).sort(),[200,409]);

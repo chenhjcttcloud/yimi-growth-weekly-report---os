@@ -3,7 +3,8 @@ import {mkdir,mkdtemp,readFile,writeFile} from 'node:fs/promises';
 import {spawnSync} from 'node:child_process';
 import path from 'node:path';
 import {createLiveReportSync} from '../server/live-report-sync.mjs';
-import {makeReportQualityAnalysis} from './report-quality-test-fixtures.mjs';
+import {makeActiveReportQualityAnalysis} from './report-quality-active-test-fixtures.mjs';
+import {ACTIVE_REPORT_QUALITY_VERSION,ACTIVE_REPORT_QUALITY_REVIEW_PROMPT_VERSION} from '../server/report-quality-active.mjs';
 
 // Retained, synthetic SQLite fixtures and in-memory providers only. No real
 // employee identity, credential, network request, notification or cleanup.
@@ -18,7 +19,7 @@ async function fixture(name,{count=1,respond,reserveAiRequest,pauseHook=async()=
  run(schema);
  for(let index=1;index<=count;index++){
   const facts={results:`【虚构${index}】完成接口验收。`,problems:`【虚构${index}】口径待确认，已邀请协作方。`,nextPlan:`【虚构${index}】优先在周五交付验收。`,reflection:`【虚构${index}】先明确口径，下次复用清单。`};
-  const content={...facts,source:{provider:'feishu-report'},sourceHash:'source-'+index,ai:{scores:[79,79,79,79],summary:'虚构旧版评分'},aiModel:'legacy-fixture-model',aiPromptVersion:'legacy',aiGeneratedAt:'2026-10-31T00:00:00Z'};
+  const content={...facts,source:{provider:'feishu-report'},sourceHash:'source-'+index,ai:{scores:[79,79,79,79],summary:'虚构旧版评分'},aiModel:'legacy-fixture-model',aiPromptVersion:'legacy',aiGeneratedAt:'2026-10-31T00:00:00Z',qualityRefresh:{state:'queued',targetVersion:ACTIVE_REPORT_QUALITY_VERSION,sourceHash:'source-'+index,attempts:0}};
   run(`INSERT INTO employees(user_id,name,is_active) VALUES(${sql('E'+index)},${sql('虚构'+index)},1); INSERT INTO weekly_reports(id,employee_user_id,employee_name,week_label,week_start,week_end,status,content_json,source_hash,submitted_at) VALUES(${sql('R'+index)},${sql('E'+index)},${sql('虚构'+index)},'2026-10-09','2026-10-05','2026-10-09','准时',${sql(JSON.stringify(content))},${sql('source-'+index)},'2026-10-09T10:00:00Z');`);
  }
  await writeFile(path.join(directory,'prototypeData.json'),JSON.stringify({meta:{periods:[]},employee_summary:[],weekly_scores:[]}));
@@ -36,7 +37,7 @@ async function fixture(name,{count=1,respond,reserveAiRequest,pauseHook=async()=
  scenarios++;
  return {execute,run,report,events,calls,statuses,get status(){return status;},get maxInFlight(){return maxInFlight;}};
 }
-const success=input=>({ok:true,status:200,json:async()=>({choices:[{message:{content:JSON.stringify(makeReportQualityAnalysis(input.report))},finish_reason:'stop'}]})});
+const success=input=>({ok:true,status:200,json:async()=>({choices:[{message:{content:JSON.stringify(makeActiveReportQualityAnalysis(input.report))},finish_reason:'stop'}]})});
 const failure=(status,type=null,after=null,nonJson=false)=>({ok:false,status,headers:{get:name=>name.toLowerCase()==='retry-after'?after:null},json:async()=>{if(nonJson)throw new SyntaxError('PRIVATE_PROVIDER_BODY_NOT_JSON');return {error:{type,message:'PRIVATE_PROVIDER_TEXT_NEVER_STORE'}};}});
 const diagnostics=value=>value.report(1).aiAnalysisAttempts||[];
 function pausedBetween(value,leftRequest,rightRequest){
@@ -45,30 +46,66 @@ function pausedBetween(value,leftRequest,rightRequest){
 }
 
 const single=await fixture('single-flight',{count:4,respond:({input})=>success(input)});
-await single.execute();assert.equal(single.maxInFlight,1);assert.equal(single.calls.length,4);assert.equal(single.status.analyzed,4);assert.equal(single.status.failed,0);
-assert.equal(single.status.aiRequestBudget,8);assert.equal(single.status.aiRequests,4);
+await single.execute();assert.equal(single.maxInFlight,1);assert.equal(single.calls.length,8);assert.equal(single.status.analyzed,4);assert.equal(single.status.failed,0);
+assert.equal(single.status.aiRequestBudget,16);assert.equal(single.status.aiRequests,8);
+assert.equal(single.calls.filter(call=>call.input.candidate).length,4,'every successfully scored report must receive an independent review');
+for(let offset=0;offset<single.calls.length;offset+=2){const initial=single.calls[offset],review=single.calls[offset+1];assert(!initial.input.candidate);assert.equal(initial.request.model,'synthetic-model');assert.equal(review.request.model,initial.request.model);assert.equal(review.input.candidate.version,ACTIVE_REPORT_QUALITY_VERSION);assert.deepEqual(review.input.report,initial.input.report);}
+for(const index of [1,2,3,4]){assert.equal(single.report(index).ai.version,ACTIVE_REPORT_QUALITY_VERSION);assert.equal(single.report(index).aiReviewPromptVersion,ACTIVE_REPORT_QUALITY_REVIEW_PROMPT_VERSION);assert.equal(single.report(index).qualityRefresh.attempts,2);}
 
 let scoringPaused=false;
 const batchPause=await fixture('manual-pause-during-batch',{
- count:3,respond:({input,number})=>{if(number===1)scoringPaused=true;return success(input);},
+ count:3,respond:({input,number})=>{if(number===2)scoringPaused=true;return success(input);},
  reserveAiRequest:async()=>scoringPaused?'ai_scoring_paused':true,
 });
 await batchPause.execute();
-assert.equal(batchPause.calls.length,1);
+assert.equal(batchPause.calls.length,2);
 assert.equal(batchPause.status.phase,'paused');
 assert.equal(batchPause.status.blockedReason,'ai_scoring_paused');
 assert.equal(batchPause.status.analyzed,1);
 assert.equal(batchPause.status.failed,0);
 assert.equal(batchPause.status.remaining,2);
-assert.equal(batchPause.status.aiRequestBudget,6);assert.equal(batchPause.status.aiRequests,1);
+assert.equal(batchPause.status.aiRequestBudget,12);assert.equal(batchPause.status.aiRequests,2);
 for(const index of [2,3])assert.equal(batchPause.report(index).qualityRefresh.state,'queued');
 scoringPaused=false;
 await batchPause.execute();
 assert.equal(batchPause.status.phase,'done');
 assert.equal(batchPause.status.cached,1);
 assert.equal(batchPause.status.analyzed,2);
-assert.equal(batchPause.calls.length,3);
-assert.equal(batchPause.status.aiRequestBudget,4);assert.equal(batchPause.status.aiRequests,2);
+assert.equal(batchPause.calls.length,6);
+assert.equal(batchPause.status.aiRequestBudget,8);assert.equal(batchPause.status.aiRequests,4);
+
+let pausedBeforeReview=false;
+const betweenStages=await fixture('manual-pause-before-review',{
+ count:2,respond:({input,number})=>{if(number===1)pausedBeforeReview=true;return success(input);},
+ reserveAiRequest:async()=>pausedBeforeReview?'ai_scoring_paused':true,
+});
+await betweenStages.execute();assert.equal(betweenStages.calls.length,1);assert.equal(betweenStages.status.analyzed,0);assert.equal(betweenStages.status.failed,0);
+assert.equal(betweenStages.status.phase,'paused');assert.equal(betweenStages.status.blockedReason,'ai_scoring_paused');assert.equal(betweenStages.status.remaining,2);
+assert.equal(betweenStages.status.aiRequestBudget,8);assert.equal(betweenStages.status.aiRequests,1);assert.equal(betweenStages.report(1).qualityRefresh.state,'queued');
+assert.equal(betweenStages.report(1).ai,undefined,'an initial-only assessment cannot publish before the mandatory review');assert.equal(betweenStages.report(1).previousQuality.ai.scores[0],79);
+pausedBeforeReview=false;await betweenStages.execute();assert.equal(betweenStages.status.analyzed,2);assert.equal(betweenStages.calls.length,5);assert.equal(betweenStages.status.aiRequests,4);
+
+let reviewReservations=0;
+const reviewReservation=await fixture('review-reservation-unavailable',{
+ respond:({input})=>success(input),reserveAiRequest:async()=>++reviewReservations===1,
+});
+await reviewReservation.execute();assert.equal(reviewReservations,2,'review requires its own request reservation');assert.equal(reviewReservation.calls.length,1);
+assert.equal(reviewReservation.status.phase,'paused');assert.equal(reviewReservation.status.blockedReason,'ai_request_budget_unavailable');assert.equal(reviewReservation.status.analyzed,0);
+assert.equal(reviewReservation.report(1).qualityRefresh.state,'queued');assert.equal(reviewReservation.report(1).ai,undefined);assert.equal(reviewReservation.report(1).previousQuality.ai.scores[0],79);
+assert.equal(reviewReservation.status.aiRequestBudget,4);assert.equal(reviewReservation.status.aiRequests,1);
+
+const reviewRateLimit=await fixture('review-rate-limit-retry',{
+ respond:({input,number,run})=>{
+  if(number===1){assert(!input.candidate);return success(input);}
+  assert.equal(input.candidate.version,ACTIVE_REPORT_QUALITY_VERSION);assert.deepEqual(input.facts,input.report);
+  const current=JSON.parse(run("SELECT content_json FROM weekly_reports WHERE id='R1';",true)[0].content_json);
+  assert.equal(current.ai,undefined,'neither a failed review nor a queued retry publishes the initial assessment');
+  return number===2?failure(429,'rate_limit_reached_error','65'):success(input);
+ },
+});
+await reviewRateLimit.execute();assert.equal(reviewRateLimit.calls.length,3);assert.equal(reviewRateLimit.status.analyzed,1);assert.equal(reviewRateLimit.status.failed,0);
+assert.equal(reviewRateLimit.status.aiRequestBudget,4);assert.equal(reviewRateLimit.status.aiRequests,3);assert.equal(reviewRateLimit.report(1).qualityRefresh.attempts,3);
+assert(pausedBetween(reviewRateLimit,2,3)>=63000);assert.equal(diagnostics(reviewRateLimit)[0].stage,'review');assert.equal(diagnostics(reviewRateLimit)[0].code,'upstream_rate_limit');
 
 let reservations=0;
 const retryReservation=await fixture('reservation-unavailable-on-retry',{
@@ -84,17 +121,17 @@ assert.equal(retryReservation.status.remaining,1);
 assert.equal(retryReservation.status.failed,0);
 assert.equal(retryReservation.report(1).qualityRefresh.state,'queued');
 assert.equal(retryReservation.report(1).qualityRefresh.attempts,1);
-assert.equal(retryReservation.status.aiRequestBudget,2);assert.equal(retryReservation.status.aiRequests,1);
+assert.equal(retryReservation.status.aiRequestBudget,4);assert.equal(retryReservation.status.aiRequests,1);
 
 for(const [name,header,minimum] of [['default',null,58000],['seconds','90',88000],['http-date',new Date(Date.now()+120000).toUTCString(),115000],['invalid-header','not-a-retry-date',58000],['negative-header','-1',58000],['fractional-header','1.5',58000]]){
  const sample=await fixture('retry-'+name,{respond:({number,input})=>number===1?failure(429,'rate_limit_reached_error',header):success(input)});
- await sample.execute();assert.equal(sample.calls.length,2);assert.equal(sample.status.analyzed,1);
+ await sample.execute();assert.equal(sample.calls.length,3);assert.equal(sample.status.analyzed,1);assert(sample.calls[2].input.candidate,'a recovered initial request must still be reviewed');
  assert(pausedBetween(sample,1,2)>=minimum,'Retry-After must be consumed before another request: '+name);
  const diagnostic=diagnostics(sample)[0];assert.equal(diagnostic.code,'upstream_rate_limit');assert.equal(diagnostic.retryable,true);assert(diagnostic.retryAfterMs>=0&&diagnostic.retryAfterMs<=86400000);
 }
 
 const exhaustedRetries=await fixture('final-429-shared',{count:2,respond:({input})=>input.report.results.includes('虚构1')?failure(429):success(input)});
-await exhaustedRetries.execute();assert.equal(exhaustedRetries.calls.length,3);assert.equal(exhaustedRetries.report(1).qualityRefresh.attempts,2);assert.equal(exhaustedRetries.status.failed,1);assert.equal(exhaustedRetries.status.analyzed,1);
+await exhaustedRetries.execute();assert.equal(exhaustedRetries.calls.length,4);assert.equal(exhaustedRetries.report(1).qualityRefresh.attempts,2);assert.equal(exhaustedRetries.status.failed,1);assert.equal(exhaustedRetries.status.analyzed,1);
 assert(pausedBetween(exhaustedRetries,2,3)>=58000,'the final 429 must cool down the next report too');
 assert.equal(exhaustedRetries.report(1).previousQuality.ai.scores[0],79);assert.equal(exhaustedRetries.report(1).ai,undefined);assert(exhaustedRetries.report(1).aiAnalysisHistory.length>0);
 
@@ -103,14 +140,14 @@ const depleted=await fixture('quota-pauses-batch',{count:5,respond:({input})=>qu
 await depleted.execute();assert.equal(depleted.calls.length,1);assert.equal(depleted.status.phase,'paused');assert.equal(depleted.status.blockedReason,'upstream_quota_exhausted');assert.equal(depleted.status.failed,1);assert.equal(depleted.status.remaining,4);assert.equal(depleted.status.active,0);assert.equal(depleted.status.skippedSourceChanged,0);
 assert.equal(depleted.report(1).qualityRefresh.diagnostic.code,'upstream_quota_exhausted');assert.equal(depleted.report(1).qualityRefresh.diagnostic.retryable,false);
 for(let index=2;index<=5;index++){assert.equal(depleted.report(index).qualityRefresh.state,'queued');assert.equal(depleted.report(index).qualityRefresh.attempts,0);}
-quota=false;await depleted.execute();assert.equal(depleted.status.phase,'done');assert.equal(depleted.status.analyzed,5);assert.equal(depleted.calls.length,6,'a later explicit run may recover after quota is fixed');
+quota=false;await depleted.execute();assert.equal(depleted.status.phase,'done');assert.equal(depleted.status.analyzed,5);assert.equal(depleted.calls.length,11,'a later explicit run recovers all five reports through both initial scoring and review');
 
 const overloaded=await fixture('overload',{respond:({number,input})=>number===1?failure(503,'engine_overloaded_error','75'):success(input)});
-await overloaded.execute();assert.equal(overloaded.calls.length,2);assert(pausedBetween(overloaded,1,2)>=73000);assert.equal(diagnostics(overloaded)[0].code,'upstream_overloaded');assert.equal(diagnostics(overloaded)[0].retryable,true);
+await overloaded.execute();assert.equal(overloaded.calls.length,3);assert(pausedBetween(overloaded,1,2)>=73000);assert.equal(diagnostics(overloaded)[0].code,'upstream_overloaded');assert.equal(diagnostics(overloaded)[0].retryable,true);
 
 for(const [status,code,retry] of [[400,'upstream_bad_request',false],[401,'upstream_auth_failed',false],[403,'upstream_forbidden',false],[429,'upstream_rate_limit',true],[503,'upstream_error',true]]){
  const sample=await fixture('non-json-'+status,{respond:({number,input})=>number===1?failure(status,null,null,true):success(input)});
- await sample.execute();assert.equal(sample.calls.length,retry?2:1);assert.equal(diagnostics(sample)[0].code,code);assert.equal(diagnostics(sample)[0].retryable,retry);assert.notEqual(diagnostics(sample)[0].code,'invalid_json');
+ await sample.execute();assert.equal(sample.calls.length,retry?3:1);assert.equal(diagnostics(sample)[0].code,code);assert.equal(diagnostics(sample)[0].retryable,retry);assert.notEqual(diagnostics(sample)[0].code,'invalid_json');
  assert(!JSON.stringify(diagnostics(sample)).includes('PRIVATE_'));
 }
 
@@ -167,13 +204,14 @@ assert.equal(configurationChangedBeforeSend.status.blockedReason,'ai_model_chang
 assert.equal(configurationChangedBeforeSend.status.remaining,1);
 
 const corrective=await fixture('strict-evidence-retry',{respond:({number,input,request})=>{
- const result=makeReportQualityAnalysis(input.report);
+ const result=makeActiveReportQualityAnalysis(input.report);
  if(number===1)result.modules[0].criteria[0].evidence=[{quote:'PRIVATE_FORGED_QUOTE',type:'reported_fact'}];
- else{const feedback=JSON.parse(request.messages.at(-1).content).validationFeedback;assert.equal(feedback.code,'evidence_not_in_source');assert(!JSON.stringify(feedback).includes('PRIVATE_'));}
+ else if(number===2){const feedback=JSON.parse(request.messages.at(-1).content).validationFeedback;assert.equal(feedback.code,'reference_not_in_source');assert.equal(feedback.stage,'initial');assert(!JSON.stringify(feedback).includes('PRIVATE_'));}
+ else{assert(input.candidate,'the repaired candidate must pass the separate review stage');assert.equal(input.candidate.version,ACTIVE_REPORT_QUALITY_VERSION);}
  return {ok:true,status:200,json:async()=>({choices:[{message:{content:JSON.stringify(result)},finish_reason:'stop'}]})};
 }});
-await corrective.execute();assert.equal(corrective.calls.length,2);assert.equal(corrective.status.analyzed,1);assert.equal(corrective.report(1).qualityRefresh.state,'ready');assert(!JSON.stringify(corrective.report(1).aiAnalysisAttempts).includes('PRIVATE_'));
-assert.equal(corrective.status.aiRequestBudget,2);assert.equal(corrective.status.aiRequests,2);
+await corrective.execute();assert.equal(corrective.calls.length,3);assert.equal(corrective.status.analyzed,1);assert.equal(corrective.report(1).qualityRefresh.state,'ready');assert(!JSON.stringify(corrective.report(1).aiAnalysisAttempts).includes('PRIVATE_'));
+assert.equal(corrective.status.aiRequestBudget,4);assert.equal(corrective.status.aiRequests,3);
 
-const result={ok:true,scenarios,singleFlight:true,manualPauseResumesPendingReports:true,batchRequestBudget:true,retriesRequireReservation:true,retryAfterSecondsAndDate:true,defaultAndFinal429Cooldown:true,quotaPausesUnrequestedReports:true,quotaRecovery:true,overloadRetry:true,nonJsonHttpDiagnostics:true,oversizedWaitPauses:true,sourceJobAndActiveRechecked:true,aiConfigurationChangesPause:true,strictEvidenceRetry:true,externalRequests:0,notifications:0};
+const result={ok:true,scenarios,singleFlight:true,mandatorySameModelReview:true,initialOnlyNeverPublishes:true,manualPauseResumesPendingReports:true,batchRequestBudget:true,retriesRequireReservation:true,reviewRequiresReservation:true,reviewRateLimitRetry:true,retryAfterSecondsAndDate:true,defaultAndFinal429Cooldown:true,quotaPausesUnrequestedReports:true,quotaRecovery:true,overloadRetry:true,nonJsonHttpDiagnostics:true,oversizedWaitPauses:true,sourceJobAndActiveRechecked:true,aiConfigurationChangesPause:true,strictEvidenceRetry:true,externalRequests:0,notifications:0};
 await writeFile(path.join(root,'result.json'),JSON.stringify(result,null,2));console.log(JSON.stringify(result));console.log('Synthetic artifacts retained:',root);
