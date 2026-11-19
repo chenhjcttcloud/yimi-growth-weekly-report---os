@@ -1,9 +1,10 @@
 import {randomUUID} from 'node:crypto';
 import {employedInMonth} from './employee-lifecycle.mjs';
+import {createMonthlyScoringWindow} from './monthly-scoring-window.mjs';
 const round=value=>Math.round(value*10)/10;
 const average=values=>values.length?round(values.reduce((sum,value)=>sum+Number(value),0)/values.length):null;
 const key=(month,id)=>JSON.stringify([month,id]);
-export function createManagerReviews({query,exec,sql,organization,reports,isBossUserId=()=>false,now=()=>new Date()}){
+export function createManagerReviews({query,exec,sql,organization,reports,isBossUserId=()=>false,now=()=>new Date(),ratingWindow=createMonthlyScoringWindow({query,sql,now})}){
  const monthNow=()=>now().toLocaleDateString('sv-SE',{timeZone:'Asia/Shanghai'}).slice(0,7);
  const validMonth=month=>{if(!/^\d{4}-(0[1-9]|1[0-2])$/.test(month||'')||month>monthNow())throw Error('invalid_month');return month;};
  async function snapshot(organizationData){
@@ -76,12 +77,14 @@ export function createManagerReviews({query,exec,sql,organization,reports,isBoss
   month=validMonth(month||monthNow());const state=await snapshot(),mine=[...new Set([...state.plans.keys(),...frozenIds(state,month)])].map(id=>planFor(state,month,id)).filter(p=>p?.kind==='manager'&&p.expectedIds.includes(user.userId)&&state.people.get(user.userId)?.active&&(p.employee.active||state.scores.some(s=>s.month===month&&s.employee_user_id===p.employee.userId&&s.evaluator_user_id===user.userId)));
   const evidence=mine.length&&reports?await reports({month}):[];
   const published=await query(`SELECT employee_user_id FROM all_monthly_weighted_results WHERE month=${sql(month)} UNION SELECT employee_user_id FROM performance_results WHERE month=${sql(month)} AND kind='collaboration';`);
-  return {month,canReview:mine.length>0,hasResponsibilities:state.handoffs.some(h=>h.to_user_id===user.userId)||[...state.plans.values(),...state.frozen.values()].some(p=>p.kind==='manager'&&p.expectedIds.includes(user.userId)),weights:{manager:30,peers:70},tasks:mine.map(p=>{const saved=state.scores.find(s=>s.month===month&&s.employee_user_id===p.employee.userId&&s.evaluator_user_id===user.userId);return {employeeUserId:p.employee.userId,name:p.employee.name,department:p.employee.department,score:saved?.score??null,comment:saved?.comment||'',submitted:Boolean(saved),locked:Boolean(saved)||published.some(r=>r.employee_user_id===p.employee.userId),frozen:Boolean(p.frozenAt),reports:evidence.filter(r=>r.employeeUserId===p.employee.userId&&r.month===month).map(r=>({id:r.id,start:r.start,end:r.end,facts:r.evidence,aiReference:r.candidate,status:r.status}))};})};
+  const reviewWindow=await ratingWindow.status(month);
+  return {month,reviewWindow,canReview:mine.length>0,hasResponsibilities:state.handoffs.some(h=>h.to_user_id===user.userId)||[...state.plans.values(),...state.frozen.values()].some(p=>p.kind==='manager'&&p.expectedIds.includes(user.userId)),weights:{manager:30,peers:70},tasks:mine.map(p=>{const saved=state.scores.find(s=>s.month===month&&s.employee_user_id===p.employee.userId&&s.evaluator_user_id===user.userId);return {employeeUserId:p.employee.userId,name:p.employee.name,department:p.employee.department,score:saved?.score??null,comment:saved?.comment||'',submitted:Boolean(saved),locked:Boolean(saved)||published.some(r=>r.employee_user_id===p.employee.userId),blocked:!saved&&!reviewWindow.isOpen,frozen:Boolean(p.frozenAt),reports:evidence.filter(r=>r.employeeUserId===p.employee.userId&&r.month===month).map(r=>({id:r.id,start:r.start,end:r.end,facts:r.evidence,aiReference:r.candidate,status:r.status}))};})};
  }
  async function submit(user,body){
   const month=validMonth(body.month),value=Number(body.score),comment=String(body.comment||'').trim();
   if(body.score==null||body.score===''||!Number.isFinite(value)||value<0||value>100||!comment||comment.length>4000)throw Error('score_and_comment_required');
   if(body.employeeUserId===user.userId)throw Error('self_scoring_forbidden');
+  await ratingWindow.assertOpen(month);
   let state=await snapshot(),plan=planFor(state,month,body.employeeUserId);
   if(!plan)throw Error('employee_not_employed');
   if(!state.people.get(body.employeeUserId)?.active)throw Error('employee_inactive');
@@ -92,10 +95,12 @@ export function createManagerReviews({query,exec,sql,organization,reports,isBoss
   if(!state.people.get(user.userId)?.active||!plan.expectedIds.includes(user.userId))throw Error('not_your_subordinate');
   const locked=await query(`SELECT 1 FROM monthly_manager_scores WHERE month=${sql(month)} AND employee_user_id=${sql(body.employeeUserId)} AND evaluator_user_id=${sql(user.userId)} UNION SELECT 1 FROM all_monthly_weighted_results WHERE month=${sql(month)} AND employee_user_id=${sql(body.employeeUserId)} UNION SELECT 1 FROM performance_results WHERE month=${sql(month)} AND employee_user_id=${sql(body.employeeUserId)} AND kind='collaboration';`);if(locked.length)throw Error('result_locked');
   const evidence={employee:plan.employee,evaluatorUserId:user.userId,evaluatorName:user.name,expectedIds:plan.expectedIds,weights:{manager:30,peers:70}};
+  await ratingWindow.assertOpen(month);
   // Preserve frozen scopes and submitted history, but an account stopped while
   // this request was loading must not receive a new grade.
-  await exec(`INSERT INTO monthly_manager_scores(month,employee_user_id,evaluator_user_id,score,comment,snapshot_json) SELECT ${sql(month)},${sql(body.employeeUserId)},${sql(user.userId)},${round(value)},${sql(comment)},${sql(JSON.stringify(evidence))} WHERE EXISTS(SELECT 1 FROM employees WHERE user_id=${sql(body.employeeUserId)} AND is_active=1) AND EXISTS(SELECT 1 FROM employees WHERE user_id=${sql(user.userId)} AND is_active=1);`);
+  await exec(`INSERT INTO monthly_manager_scores(month,employee_user_id,evaluator_user_id,score,comment,snapshot_json) SELECT ${sql(month)},${sql(body.employeeUserId)},${sql(user.userId)},${round(value)},${sql(comment)},${sql(JSON.stringify(evidence))} WHERE (${ratingWindow.guardSql(month)}) AND EXISTS(SELECT 1 FROM employees WHERE user_id=${sql(body.employeeUserId)} AND is_active=1) AND EXISTS(SELECT 1 FROM employees WHERE user_id=${sql(user.userId)} AND is_active=1);`);
   if(!(await query(`SELECT 1 FROM monthly_manager_scores WHERE month=${sql(month)} AND employee_user_id=${sql(body.employeeUserId)} AND evaluator_user_id=${sql(user.userId)};`)).length){
+   await ratingWindow.assertOpen(month);
    if(!(await query(`SELECT 1 FROM employees WHERE user_id=${sql(body.employeeUserId)} AND is_active=1;`)).length)throw Error('employee_inactive');
    throw Error('not_your_subordinate');
   }
@@ -147,7 +152,7 @@ export function createManagerReviews({query,exec,sql,organization,reports,isBoss
   const leaderScoreTargets=[...ids].filter(Boolean).map(id=>leaderTargetFor(state,month,id,published));
   const leaderById=new Map(leaderScoreTargets.map(target=>[target.leaderUserId,target]));
   const savedIds=new Set(state.bossPersonScores.filter(score=>score.month===month).map(score=>score.leader_user_id));
-  return {month,leaderScoreTargets,scoreTargets:state.departments.map(d=>{
+  return {month,reviewWindow:await ratingWindow.status(month),leaderScoreTargets,scoreTargets:state.departments.map(d=>{
    const leaderUserId=d.leader_user_id,person=state.people.get(leaderUserId),saved=state.bossScores.find(s=>s.month===month&&s.department_id===d.id&&s.leader_user_id===leaderUserId),plan=planFor(state,month,leaderUserId);
    const target=leaderById.get(leaderUserId),ratingRequired=target?.ratingRequired===true&&plan?.kind==='boss'&&plan.expectedIds.includes(d.id);
    const unavailableReason=!leaderUserId?'missing_leader':target?.unavailableReason||(!ratingRequired?(state.frozen.has(key(month,leaderUserId))?'rating_scope_frozen':'not_required'):'');

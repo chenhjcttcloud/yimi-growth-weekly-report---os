@@ -6,7 +6,7 @@ run(await readFile('db/schema.sql','utf8'));
 run(`INSERT INTO employees(user_id,name,department,manager_user_id) VALUES('h1','原负责人','团队',''),('h2','第二负责人','支持',''),('h3','新负责人','新组',''),('staff','员工','团队 / 支持',''),('new','新员工','团队','h1'),('peer','同事','其他',''),('failure','异常员工','其他',''),('boss','老板','管理','');
 INSERT INTO organization_departments VALUES('a','团队','h1',datetime('now')),('b','支持','h2',datetime('now')),('c','新组','h3',datetime('now'));
 INSERT INTO employee_employment_periods(id,employee_user_id,start_date,source) VALUES('new-hire','new','2026-10-28','manager'),('staff-hire','staff','2026-09-01','manager'),('h3-hire','h3','2026-10-28','manager');
-INSERT INTO scoring360_cycles(id,label,start_date,end_date,status,launch_at) VALUES('oct','十月','2026-10-01','2026-10-31','open','2026-10-01T00:00:00Z');
+INSERT INTO scoring360_cycles(id,label,start_date,end_date,status,launch_at) VALUES('oct','十月','2026-10-01','2026-10-31','open','2026-10-01T00:00:00Z'),('sep','九月已开放补评','2026-09-01','2026-09-30','open','2026-09-28T00:00:00+08:00');
 INSERT INTO scoring360_assignments(id,cycle_id,evaluee_name,evaluator_name,evaluee_user_id,evaluator_user_id,created_at) VALUES('staff-peer','oct','员工','同事','staff','peer','2026-10-01T00:00:00Z'),('failure-peer','oct','异常员工','同事','failure','peer','2026-10-01T00:00:00Z');
 INSERT INTO scoring360_responses(id,assignment_id,cycle_id,evaluee_name,evaluator_name,score,comment) VALUES('peer-result','staff-peer','oct','员工','同事',70,'实际协作成果');`);
 let time=new Date('2026-10-28T02:00:00Z');const employees=async()=> (await query('SELECT * FROM employees WHERE is_active=1;')).map(e=>({userId:e.user_id,name:e.name,department:e.department,managerUserId:e.manager_user_id}));

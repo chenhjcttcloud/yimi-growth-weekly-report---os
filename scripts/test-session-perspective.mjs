@@ -35,6 +35,7 @@ sql(`
   INSERT INTO employees(user_id,name,department,manager_user_id,is_active) VALUES
     ('fixture-boss','测试老板','测试团队',NULL,1),
     ('other-boss','另一位老板','测试团队',NULL,1),
+    ('switchable-boss','可切换的未授权管理员老板','测试团队',NULL,1),
     ('admin-only','测试管理员','测试团队',NULL,1),
     ('same-name','测试老板','测试团队','fixture-boss',1),
     ('staff','测试员工','测试团队',NULL,1),
@@ -43,6 +44,7 @@ sql(`
     SELECT 'employment-'||user_id,user_id,'2026-01-01','manager' FROM employees WHERE is_active=1;
   INSERT INTO app_settings(key,value_json) VALUES
     ('boss_view_members','{"members":[{"userId":"fixture-boss","name":"测试老板"}]}'),
+    ('scoring360_admin_members','{"members":[{"userId":"fixture-boss","name":"测试老板"}]}'),
     ('report_automation_config','{"enabled":false}');
   INSERT INTO weekly_reports(id,employee_user_id,employee_name,department,week_label,week_start,week_end,status,content_json,submitted_at)
     VALUES ('fixture-own-report','fixture-boss','测试老板','测试团队','测试周','2026-01-05','2026-01-09','准时',
@@ -83,9 +85,9 @@ const env = {...process.env,
   SERVER_PORT: String(port), BASE_URL: base, APP_DATA_DIR: data, STATIC_DIR: path.join(dir, 'static'),
   WEEKLY_REPORT_DB_PATH: db, WEEKLY_REPORT_UPLOAD_DIR: path.join(dir, 'uploads'), BACKUP_DIR: path.join(dir, 'backups'),
   LARK_REPORT_SYNC_STATUS_PATH: path.join(dir, 'report-sync.json'),
-  BOSS_VIEW_USER_IDS: 'other-boss,inactive-boss', BOSS_VIEW_NAMES: '',
-  BOSS_EMPLOYEE_PERSPECTIVE_USER_IDS: 'fixture-boss,admin-only,inactive-boss',
-  SCORING360_CONFIG_MANAGER_USER_IDS: 'fixture-boss,admin-only', SCORING360_CONFIG_MANAGER_NAMES: '',
+  BOSS_VIEW_USER_IDS: 'other-boss,switchable-boss,inactive-boss', BOSS_VIEW_NAMES: '',
+  BOSS_EMPLOYEE_PERSPECTIVE_USER_IDS: 'fixture-boss,switchable-boss,admin-only,inactive-boss',
+  SCORING360_CONFIG_MANAGER_USER_IDS: 'admin-only', SCORING360_CONFIG_MANAGER_NAMES: '',
   CHINA_CALENDAR_AUTO_UPDATE_ENABLED: 'false', LARK_REPORT_AUTO_SYNC_ENABLED: 'false',
   LARK_AUTH_MONITOR_ENABLED: 'false', SCORING360_REMINDER_ENABLED: 'false', SCORING360_LAUNCH_MODE: 'manual',
   WEEKLY_REMINDER_ENABLED: 'false', WEEKLY_UPDATE_REMINDER_ENABLED: 'false', FEISHU_TASK_CREATE_ENABLED: 'false',
@@ -116,6 +118,7 @@ const session = authCookie(owner);
 const switchView = (cookie, perspective, headers) => post(sessionRoute, cookie, {perspective}, headers);
 const access = cookie => request('/api/me', {cookie});
 const bossRoute = '/api/boss-view-members';
+const adminRoute = '/api/scoring360-admin-members';
 const managedRoutes = ['/api/management-data', '/api/system-settings/report-automation',
   '/api/performance/manage', '/api/performance/quality-scope', '/api/manager-reviews?month=' + month,
   '/api/admin/employee-preview/workspace?employeeId=same-name', '/api/scoring360/config', bossRoute];
@@ -129,6 +132,19 @@ function sessionPreference(response) {
   assert.match(cookies[0], /; SameSite=Lax\b/);
   assert.match(response.headers.get('cache-control') || '', /no-store/);
   return cookies[0].split(';')[0];
+}
+
+const cookiePayload = cookie => JSON.parse(Buffer.from(cookie.split('=',2)[1].split('.')[0],'base64url').toString());
+const loginPayload = cookiePayload(session);
+function assertPreferenceExpiry(response) {
+  const preference = sessionPreference(response);
+  const header = response.headers.getSetCookie()[0];
+  const maxAge = Number(/(?:^|;\s*)Max-Age=(\d+)/i.exec(header)?.[1]);
+  assert(maxAge > 0 && maxAge <= Math.floor((Date.parse(loginPayload.expiresAt)-Date.now())/1000)+1,
+    'perspective preference must not outlive the original login');
+  assert(!response.headers.getSetCookie().some(cookie=>cookie.startsWith('wos_session=')),
+    'switching perspective must not issue or extend a login session');
+  return preference;
 }
 
 const server = spawn(process.execPath, ['--import', networkGuard, 'server/index.mjs'],
@@ -156,6 +172,7 @@ try {
   assert.equal(initial.body.access.role, 'boss');
   assert.equal(initial.body.canSwitchPerspective, true);
   assert.equal(initial.body.activePerspective, 'boss');
+  assert.deepEqual(initial.body.availablePerspectives, ['boss','admin','employee']);
   assert.equal(initial.body.devView, null);
   assert.equal((await request('/api/dev/views', {cookie: session})).status, 404);
   assert.equal((await request('/api/performance/quality-scope', {cookie: session})).status, 200);
@@ -170,12 +187,13 @@ try {
   assert.equal((await switchView(session, 'administrator')).status, 400);
   assert.equal((await post(sessionRoute, session, {perspective: 'employee', userId: 'same-name'})).status, 400);
 
-  const employeePreference = sessionPreference(await switchView(session, 'employee'));
+  const employeePreference = assertPreferenceExpiry(await switchView(session, 'employee'));
   const employeeCookie = session + '; ' + employeePreference;
   const employee = await access(employeeCookie);
   assert.equal(employee.status, 200);
   assert.equal(employee.body.canSwitchPerspective, true);
   assert.equal(employee.body.activePerspective, 'employee');
+  assert.deepEqual(employee.body.availablePerspectives, ['boss','admin','employee']);
   assert.equal(employee.body.access.role, 'member');
   assert.equal(employee.body.user.role, 'member');
   assert.equal(employee.body.user.userId, owner.userId);
@@ -224,10 +242,61 @@ try {
   assert.deepEqual(scores.body.skipped, [{assignmentId: 'other-assignment', reason: 'assignment_not_found'}]);
   assert.deepEqual(sql('SELECT assignment_id FROM scoring360_responses;', true), [{assignment_id: 'own-assignment'}]);
 
-  const restoredPreference = sessionPreference(await switchView(employeeCookie, 'boss'));
+  const scoresBeforeAdmin = sql('SELECT * FROM department_person_scores ORDER BY month,leader_user_id;', true);
+  const adminPreference = assertPreferenceExpiry(await switchView(employeeCookie, 'admin'));
+  const adminCookie = session + '; ' + adminPreference;
+  const administrator = await access(adminCookie);
+  assert.equal(administrator.status, 200);
+  assert.equal(administrator.body.activePerspective, 'admin');
+  assert.deepEqual(administrator.body.availablePerspectives, ['boss','admin','employee']);
+  assert.equal(administrator.body.user.userId, owner.userId);
+  assert.equal(administrator.body.user.role, 'system_admin');
+  assert.equal(administrator.body.access.role, 'system_admin');
+  assert.equal(administrator.body.access.currentEmployee.userId, owner.userId);
+  for (const capability of ['canViewSettings','canManageScoring360','canManagePersonnel']) {
+    assert.equal(administrator.body.access[capability], true, capability);
+  }
+  for (const route of managedRoutes) {
+    assert.equal((await request(route, {cookie: adminCookie})).status, 200, route);
+  }
+  const adminDepartments = await request('/api/departments?month=' + month, {cookie: adminCookie});
+  assert.equal(adminDepartments.status, 200);
+  assert.equal(adminDepartments.body.canScore, false, 'admin perspective cannot act as the boss scorer');
+  assert.equal((await post('/api/departments/score', adminCookie,
+    {leaderUserId:'staff',month,score:88,comment:'管理员视角不得提交老板评分'})).status, 403);
+  assert.deepEqual(sql('SELECT * FROM department_person_scores ORDER BY month,leader_user_id;', true), scoresBeforeAdmin);
+  const adminRenewed = administrator.headers.getSetCookie().find(cookie=>cookie.startsWith('wos_session='));
+  assert.equal(adminRenewed?.split(';')[0], session, 'admin perspective must not enter the signed login cookie');
+  const renewedPayload = cookiePayload(adminRenewed.split(';')[0]);
+  assert.equal(renewedPayload.issuedAt, loginPayload.issuedAt);
+  assert.equal(renewedPayload.expiresAt, loginPayload.expiresAt);
+  assert.equal(renewedPayload.sessionId, loginPayload.sessionId);
+  assert(!Object.hasOwn(renewedPayload,'adminPerspective'));
+  assert(!Object.hasOwn(renewedPayload,'employeePerspective'));
+  assert.equal((await access(adminCookie)).body.activePerspective, 'admin');
+  assert.equal((await access(authCookie(owner) + '; ' + adminPreference)).body.activePerspective, 'boss');
+  assert.equal((await access(session + '; ' + adminPreference.replace(/\..+$/, '.invalid'))).body.activePerspective, 'boss');
+  assert.equal((await switchView(adminCookie, 'employee', {origin:'https://fixture-other.invalid'})).status, 403);
+  assert.equal((await post(sessionRoute, adminCookie, {perspective:'boss',userId:'same-name'})).status, 400);
+
+  const restoredPreference = assertPreferenceExpiry(await switchView(adminCookie, 'boss'));
   const restoredCookie = session + '; ' + restoredPreference;
-  assert.equal((await access(restoredCookie)).body.access.role, 'boss');
+  const restored = await access(restoredCookie);
+  assert.equal(restored.body.activePerspective, 'boss');
+  assert.equal(restored.body.access.role, 'boss');
+  assert.equal(restored.body.user.userId, owner.userId);
+  assert.equal((await request('/api/departments?month=' + month, {cookie: restoredCookie})).body.canScore, true);
   assert.equal((await request('/api/system-settings/report-automation', {cookie: restoredCookie})).status, 200);
+
+  const noAdminSession = authCookie({userId:'switchable-boss',name:'可切换的未授权管理员老板'});
+  const noAdminProfile = await access(noAdminSession);
+  assert.equal(noAdminProfile.body.canSwitchPerspective, true);
+  assert.equal(noAdminProfile.body.activePerspective, 'boss');
+  assert.deepEqual(noAdminProfile.body.availablePerspectives, ['boss','employee']);
+  assert.equal((await switchView(noAdminSession, 'admin')).status, 403, 'being a boss does not grant the administrator perspective');
+  const noAdminEmployee = noAdminSession + '; ' + sessionPreference(await switchView(noAdminSession, 'employee'));
+  assert.equal((await access(noAdminEmployee)).body.access.role, 'member');
+  assert.equal((await switchView(noAdminEmployee, 'admin')).status, 403);
 
   for (const [user, role] of [
     [{userId: 'same-name', name: owner.name}, 'member'],
@@ -240,12 +309,35 @@ try {
     assert.notEqual(profile.body.canSwitchPerspective, true);
     assert.equal((await switchView(cookie, 'employee')).status, 403);
     assert.equal((await switchView(cookie, 'boss')).status, 403);
+    assert.equal((await switchView(cookie, 'admin')).status, 403);
   }
   assert.equal((await switchView(authCookie({userId: 'inactive-boss', name: '停用老板'}), 'employee')).status, 403);
   assert.equal((await switchView(authCookie({userId: 'external:legacy', name: '旧访客'}), 'employee')).status, 410);
   assert.equal((await switchView(authCookie(owner, {expiresAt: '2026-01-01T00:00:00Z'}), 'employee')).status, 401);
+  assert.equal((await switchView(authCookie(owner, {expiresAt: '2026-01-01T00:00:00Z'}), 'admin')).status, 401);
 
   const revokingAdmin = authCookie({userId: 'admin-only', name: '测试管理员'});
+  const administratorGrants = await request(adminRoute, {cookie: revokingAdmin});
+  assert.equal(administratorGrants.status, 200);
+  assert.equal((await post(adminRoute, revokingAdmin,
+    {members:[],expectedRevision:administratorGrants.body.revision})).status, 200);
+  const adminRevoked = await access(adminCookie);
+  assert.equal(adminRevoked.status, 200);
+  assert.equal(adminRevoked.body.activePerspective, 'employee', 'a revoked admin preference must fall back without elevating the selected perspective');
+  assert.equal(adminRevoked.body.access.role, 'member');
+  assert.equal(adminRevoked.body.access.bossView, false);
+  assert.deepEqual(adminRevoked.body.availablePerspectives, ['boss','employee']);
+  assert.equal((await switchView(adminCookie, 'admin')).status, 403);
+  for (const route of managedRoutes) assert.equal((await request(route, {cookie:adminCookie})).status, 403, route);
+  assert.equal((await request('/api/departments?month=' + month, {cookie:adminCookie})).status, 403);
+  assert.equal((await post('/api/departments/score',adminCookie,
+    {leaderUserId:'staff',month,score:88,comment:'已撤销管理员视角不得获得老板评分权限'})).status, 403);
+  const explicitBossPreference = assertPreferenceExpiry(await switchView(adminCookie,'boss'));
+  const explicitBossCookie = session + '; ' + explicitBossPreference;
+  assert.equal((await access(explicitBossCookie)).body.activePerspective, 'boss');
+  assert.equal((await access(explicitBossCookie)).body.access.role, 'boss');
+  assert.equal((await request('/api/departments?month=' + month, {cookie:explicitBossCookie})).body.canScore, true,
+    'the independently granted boss perspective requires an explicit selection after admin revocation');
   const grants = await request(bossRoute, {cookie: revokingAdmin});
   assert.equal(grants.status, 200);
   assert.equal((await post(bossRoute, revokingAdmin, {members: [], expectedRevision: grants.body.revision})).status, 200);
@@ -253,13 +345,16 @@ try {
   assert.notEqual(revoked.body.canSwitchPerspective, true);
   assert.notEqual(revoked.body.access.role, 'boss');
   assert.equal((await switchView(employeeCookie, 'boss')).status, 403);
+  assert.equal((await access(adminCookie)).body.access.role, 'member', 'revoked preferences cannot preserve either elevated identity');
+  assert.equal((await request('/api/system-settings/report-automation', {cookie: adminCookie})).status, 403);
 
-  const logout = await post('/auth/logout', employeeCookie, {});
+  const logout = await post('/auth/logout', adminCookie, {});
   assert.equal(logout.status, 200);
   assert(logout.headers.getSetCookie().some(cookie => /^wos_perspective=;.*Max-Age=0/.test(cookie)));
   assert.equal((await access(employeeCookie)).status, 401);
+  assert.equal((await access(adminCookie)).status, 401);
   await assert.rejects(readFile(networkLog, 'utf8'), {code: 'ENOENT'});
-  console.log('Session perspective tests passed: same identity and expiry, session-bound preference, personal reports and tasks, management denial, authorization revocation, logout, no provider requests.');
+  console.log('Session perspective tests passed: three explicit roles under one identity, same session and expiry, session-bound preference, personal reports and tasks, management denial, admin cannot submit boss scores, admin/boss authorization revocation, logout, no provider requests.');
 } catch (error) {
   console.error(logs);
   throw error;

@@ -1,7 +1,8 @@
 import {randomUUID,createHash} from 'node:crypto';
 import {employedInMonth} from './employee-lifecycle.mjs';
+import {createMonthlyScoringWindow} from './monthly-scoring-window.mjs';
 export const departmentNames=value=>[...new Set(String(value||'').split(/[,，、]|\s+\/\s+/).map(x=>x.trim()).filter(Boolean))];
-export function createDepartments({query,exec,sql,employees,beforeScore,resolveScoreTarget,resolveLeaderScoreTarget}) {
+export function createDepartments({query,exec,sql,employees,beforeScore,resolveScoreTarget,resolveLeaderScoreTarget,now=()=>new Date(),ratingWindow=createMonthlyScoringWindow({query,sql,now})}) {
  let layoutSaving=false;
  const removed=async id=>(await query(`SELECT 1 FROM feishu_department_sync_states WHERE department_id=${sql(id)} AND state='deleted';`)).length>0;
  const leaderName=(d,roster)=>!d.leader_user_id?'':d.feishu_id?(d.synced_leader_name||roster.find(e=>e.userId===d.leader_user_id)?.name||''):(roster.find(e=>e.userId===d.leader_user_id)?.name||'');
@@ -80,11 +81,12 @@ export function createDepartments({query,exec,sql,employees,beforeScore,resolveS
   statements.push('COMMIT;');await exec(statements.join('\n'));
  }
  async function score(body,user){
-  if(!/^\d{4}-(0[1-9]|1[0-2])$/.test(body.month||'')||body.month>new Date().toLocaleDateString('sv-SE',{timeZone:'Asia/Shanghai'}).slice(0,7))throw Error('invalid_month');
+  if(!/^\d{4}-(0[1-9]|1[0-2])$/.test(body.month||'')||body.month>now().toLocaleDateString('sv-SE',{timeZone:'Asia/Shanghai'}).slice(0,7))throw Error('invalid_month');
   const departmentId=body.departmentId;
   if(departmentId&&await removed(departmentId))throw Error('department_removed');
   const value=Number(body.score),comment=String(body.comment||'').trim();
   if(body.score===''||body.score==null||!Number.isFinite(value)||value<0||value>100||!comment||comment.length>4000)throw Error('score_and_comment_required');
+  await ratingWindow.assertOpen(body.month);
   const rounded=Math.round(value*10)/10;
   const data=await overview(),department=departmentId?data.departments.find(d=>d.id===departmentId):undefined;
   const leaderId=departmentId?department?.leader_user_id:body.leaderUserId;
@@ -114,6 +116,7 @@ export function createDepartments({query,exec,sql,employees,beforeScore,resolveS
    eligibleDepartments.push(...officialDepartments.filter(d=>trusted.some(row=>row.department_id===d.id)));
   }
   if(!eligibleDepartments.length)throw Error('leader_must_be_department_member');
+  await ratingWindow.assertOpen(body.month);
   await beforeScore?.(body.month,leader.userId);
   // Verify that the organization and accounts still permit scoring at write time.
   // The empty scope key is reserved for a single rating per person and month.
@@ -121,10 +124,11 @@ export function createDepartments({query,exec,sql,employees,beforeScore,resolveS
   try{
    await exec(`INSERT INTO department_person_scores(department_id,month,leader_user_id,score,comment,scorer_user_id,scorer_name,created_at)
     SELECT '',${sql(body.month)},${sql(leaderId)},${rounded},${sql(comment)},${sql(user.userId)},${sql(user.name)},datetime('now')
-    WHERE ${scope} AND NOT EXISTS(SELECT 1 FROM employees WHERE user_id IN(${sql(leaderId)},${sql(user.userId)}) AND is_active<>1);`);
+    WHERE (${ratingWindow.guardSql(body.month)}) AND ${scope} AND NOT EXISTS(SELECT 1 FROM employees WHERE user_id IN(${sql(leaderId)},${sql(user.userId)}) AND is_active<>1);`);
   }catch(error){if(/result_locked|UNIQUE constraint failed: department_person_scores/.test(error.message))throw Error('result_locked');throw error;}
   const saved=await query(`SELECT 1 FROM boss_person_scores WHERE month=${sql(body.month)} AND leader_user_id=${sql(leaderId)} AND scorer_user_id=${sql(user.userId)} AND score=${rounded} AND comment=${sql(comment)};`);
   if(!saved.length){
+   await ratingWindow.assertOpen(body.month);
    if((await query(`SELECT 1 FROM employees WHERE user_id=${sql(leaderId)} AND is_active<>1;`)).length)throw Error('leader_inactive');
    if((await query(`SELECT 1 FROM employees WHERE user_id=${sql(user.userId)} AND is_active<>1;`)).length)throw Error('account_inactive');
    throw Error('rating_responsibility_changed');

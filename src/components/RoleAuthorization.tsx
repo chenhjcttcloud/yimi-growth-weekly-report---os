@@ -135,7 +135,7 @@ export function RoleAuthorization() {
         <div className="ra-table-foot"><span>共 {people.length} 位授权人员</span><span>授权按飞书 user_id 识别</span></div>
       </>}
     </div>
-    <details className="ra-guide"><summary><ShieldCheck size={16}/>老板和管理员有什么区别？<ChevronDown size={15}/></summary><div><p><strong>老板</strong><span>查看全公司管理看板与评分、维护组织和系统设置；侧栏不显示个人成长模块。</span></p><p><strong>管理员</strong><span>拥有相同管理功能，同时保留本人的分数、周报和评分任务。</span></p><p><strong>普通员工</strong><span>查看本人的结果与周报，完成分配给自己的评分任务，无需在此授权。</span></p><small>同时具有两种角色时，系统优先进入老板视角。服务配置赋予的角色需由维护人员调整配置。</small></div></details>
+    <details className="ra-guide"><summary><ShieldCheck size={16}/>老板和管理员有什么区别？<ChevronDown size={15}/></summary><div><p><strong>老板</strong><span>查看全公司管理看板与评分、维护组织和系统设置；侧栏不显示个人成长模块。</span></p><p><strong>管理员</strong><span>拥有相同管理功能，同时保留本人的分数、周报和评分任务。</span></p><p><strong>普通员工</strong><span>查看本人的结果与周报，完成分配给自己的评分任务，无需在此授权。</span></p><small>老板和管理员授权分别保留，顶部视角菜单显示当前账号可用的入口。服务配置赋予的角色需由维护人员调整配置。</small></div></details>
 
     {mode&&data&&<AuthorizationDrawer title={mode==='add'?'添加角色授权':`管理${currentTarget?displayName(currentTarget):''}的授权`} onClose={close} footer={discard?<div className="ra-discard"><strong>当前选择尚未保存</strong><div><button type="button" className="secondary-button" onClick={()=>setDiscard(false)}>继续编辑</button><button type="button" className="ra-danger-button" onClick={reset}>放弃本次选择</button></div></div>:<>
       {error&&<p className="ra-error" role="alert">{error}</p>}
@@ -157,7 +157,7 @@ export function RoleAuthorization() {
           const fixed = currentTarget.fixed.includes(currentRole), has = currentTarget.roles.includes(currentRole);
           return <div className="ra-manage-role" key={currentRole}><div className="ra-manage-title">{currentRole==='boss'?<Crown size={19}/>:<ShieldCheck size={19}/>}<strong>{labels[currentRole]}</strong><span>{has?'已授权':'未授权'}</span></div><p>{currentRole==='boss'?'全公司看板、组织与系统管理；进入老板视角。':'完整管理功能，并保留本人的分数与成长记录。'}</p>{fixed?<small>来自服务配置，请联系维护人员调整。</small>:<button type="button" className={has?'ra-text-button ra-danger':'ra-text-button'} disabled={busy||(!has&&(!currentTarget.userId||!currentTarget.active))} onClick={()=>{setConfirmation({role:currentRole,revoke:has});setError('');}}>{has?'撤销此项授权':'添加此项授权'}<ArrowRight size={14}/></button>}</div>;
         })}
-        {currentTarget.roles.length>1&&<p className="ra-notice">当前同时拥有两种角色，系统优先进入老板视角。</p>}
+        {currentTarget.roles.length>1&&<p className="ra-notice">当前同时拥有老板和管理员授权，可通过顶部视角菜单使用已开放的对应入口。</p>}
       </>}
     </AuthorizationDrawer>}
   </section>;

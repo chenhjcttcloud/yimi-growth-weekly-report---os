@@ -1,5 +1,6 @@
 import {randomUUID} from 'node:crypto';
 import {employedInMonth} from './employee-lifecycle.mjs';
+import {monthlyScoringOpensAt} from './monthly-scoring-window.mjs';
 
 const CONFIG='scoring360_recurring_config',VERSION='scoring360_recurring_plan_version_',MONTH='scoring360_recurring_month_';
 const validMonth=value=>/^\d{4}-(0[1-9]|1[0-2])$/.test(value||'');
@@ -68,7 +69,7 @@ export function createScoringRecurrence({query,exec,sql,setup,managerReviews,bos
    // remains. Otherwise the draft would appear fixed while the permanent
    // template would pause every following month for the same missing person.
    for(const pair of record.version?.pairs||[])if(targetIds.has(pair.evalueeUserId)&&!people.has(pair.evaluatorUserId)&&!p.issues.some(i=>i.type==='templateInactiveRater'&&i.userId===pair.evalueeUserId))p.issues.push({type:'templateInactiveRater',label:'固定名单中有已停用评分人，请将调整后的本月配置更新为固定名单',userId:pair.evalueeUserId,name:people.get(pair.evalueeUserId)?.name||''});
-   return {...summary,state:base.cycle.status==='draft'?'needs_attention':'generated',label:base.cycle.status==='draft'?(p.issues.length?'本月任务已生成，有人员变动待处理':'本月配置已补齐，请在工作台检查并开放'):'本月任务已自动生成',missingEmployeesCount:p.issues.filter(i=>i.type==='peers').length,issueCount:p.issues.length,issues:p.issues,versionId:marker.versionId};
+   return {...summary,opensAt:monthlyScoringOpensAt(month),state:base.cycle.status==='draft'?'needs_attention':base.cycle.status==='scheduled'?'scheduled':'generated',label:base.cycle.status==='draft'?(p.issues.length?'本月任务已生成，有人员变动待处理':'本月配置已补齐，最后一周将自动检查并开放'):base.cycle.status==='scheduled'?'本月任务已生成，最后一周开放评分':'本月任务已自动生成',missingEmployeesCount:p.issues.filter(i=>i.type==='peers').length,issueCount:p.issues.length,issues:p.issues,versionId:marker.versionId};
   }
   if(!record.configured)return {...summary,state:'not_configured',label:'尚未设置固定评分名单'};
   if(!record.config.enabled)return {...summary,state:'disabled',label:'每月自动沿用已暂停'};
@@ -84,16 +85,16 @@ export function createScoringRecurrence({query,exec,sql,setup,managerReviews,bos
   if(!record.configured||!record.config.enabled)return {skipped:'disabled',month};
   if(!validMonth(record.config.startMonth)||record.config.startMonth>month)return {skipped:'not_started',month};
   if((await setup.overview(month)).cycle)return {skipped:'existing_cycle',month};
-  const p=await projection(record,month),id=randomUUID(),cycleId=month+'-360',status=p.issues.length?'draft':'open',createdAt=stamp();
+  const p=await projection(record,month),id=randomUUID(),cycleId=month+'-360',opensAt=monthlyScoringOpensAt(month),status=p.issues.length?'draft':now().getTime()<Date.parse(opensAt)?'scheduled':'open',createdAt=stamp();
   const end=new Date(Date.UTC(Number(month.slice(0,4)),Number(month.slice(5)),0)).toISOString().slice(0,10);
   const guard=`${configGuard(record)} AND (${fingerprint(month)})=${sql(p.signature)} AND NOT EXISTS(SELECT 1 FROM scoring360_cycles WHERE substr(start_date,1,7)=${sql(month)}) AND NOT EXISTS(SELECT 1 FROM all_monthly_weighted_results WHERE month=${sql(month)}) AND NOT EXISTS(SELECT 1 FROM performance_results WHERE month=${sql(month)} AND kind='collaboration')`;
-  const statements=[logInsert(id,null,'固定配评：自动生成本月任务',{month,versionId:record.version.id,status,pairCount:p.pairs.length,issueCount:p.issues.length},guard),`INSERT INTO scoring360_cycles(id,label,mode,start_date,end_date,status,launch_at,total_employees,total_evaluees) SELECT ${sql(cycleId)},${sql(month+' 月同事互评')},'monthly',${sql(month+'-01')},${sql(end)},${sql(status)},${status==='open'?sql(createdAt):'NULL'},${p.targets.length},${p.targets.length} WHERE ${owned(id)};`];
+  const statements=[logInsert(id,null,'固定配评：自动生成本月任务',{month,versionId:record.version.id,status,opensAt,pairCount:p.pairs.length,issueCount:p.issues.length},guard),`INSERT INTO scoring360_cycles(id,label,mode,start_date,end_date,status,launch_at,total_employees,total_evaluees) SELECT ${sql(cycleId)},${sql(month+' 月同事互评')},'monthly',${sql(month+'-01')},${sql(end)},${sql(status)},${status==='open'?sql(createdAt):status==='scheduled'?sql(opensAt):'NULL'},${p.targets.length},${p.targets.length} WHERE ${owned(id)};`];
   for(const pair of p.pairs){const a=p.base.people.find(x=>x.userId===pair.evalueeUserId),b=p.base.people.find(x=>x.userId===pair.evaluatorUserId);statements.push(`INSERT INTO scoring360_assignments(id,cycle_id,evaluee_name,evaluator_name,evaluee_user_id,evaluator_user_id,status) SELECT ${sql(randomUUID())},${sql(cycleId)},${sql(a.name)},${sql(b.name)},${sql(a.userId)},${sql(b.userId)},'active' WHERE ${owned(id)};`);}
   const marker={month,cycleId,versionId:record.version.id,sourceMonth:record.version.sourceMonth,createdAt,createdPairs:p.pairs.length,status,issues:p.issues};
   statements.push(`INSERT INTO app_settings(key,value_json,updated_at) SELECT ${sql(MONTH+month)},${sql(JSON.stringify(marker))},${sql(createdAt)} WHERE ${owned(id)};`);
   await exec(`BEGIN IMMEDIATE;${statements.join('\n')}COMMIT;`);
   if(!(await query(`SELECT id FROM system_operation_logs WHERE id=${sql(id)};`)).length)return {skipped:'changed',month};
-  return {month,state:status==='open'?'generated':'needs_attention',cycleId,status,createdPairs:p.pairs.length,issues:p.issues,messagesSent:0};
+  return {month,state:status==='open'?'generated':status==='scheduled'?'scheduled':'needs_attention',cycleId,status,opensAt,createdPairs:p.pairs.length,issues:p.issues,messagesSent:0};
  }
  async function tick(){if(busy)return {skipped:'running'};busy=true;try{return await generate();}finally{busy=false;}}
  async function mutate(body,actor){

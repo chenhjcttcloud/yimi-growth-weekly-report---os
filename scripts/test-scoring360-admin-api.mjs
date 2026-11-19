@@ -19,17 +19,18 @@ sql(`INSERT INTO employees(user_id,name,department,manager_user_id) VALUES
  ('owner','测试老板','管理层',''),('admin','测试管理员','管理层',''),
  ('staff','员工甲','测试团队','head'),('head','测试主管','测试团队',''),
  ('peer','评分同事','其他',''),('member','普通同事','其他','');
- INSERT INTO organization_departments VALUES('team','测试团队','head',datetime('now'));`);
+ INSERT INTO organization_departments VALUES('team','测试团队','head',datetime('now')),('management','管理层','owner',datetime('now')),('other','其他','owner',datetime('now'));`);
 for (const name of ['prototypeData', 'scoring360', 'kimiInsights', 'kimiInsightsByPeriod', 'monthlyMeetingInsights']) {
   await writeFile(data + '/' + name + '.json', JSON.stringify(name === 'prototypeData' ? { meta: { periods: [] }, employee_summary: [], weekly_scores: [] } : name === 'scoring360' ? { cycles: [], assignments: [], responses: [] } : {}));
 }
 // Retained isolated fixture; no real OAuth credentials, Feishu requests or messages.
-await writeFile(dir + '/guard.mjs', `import {appendFileSync} from 'node:fs';globalThis.fetch=async()=>{appendFileSync(${JSON.stringify(dir + '/network.log')},'blocked\\n');throw Error('fixture_external_network_forbidden');};`);
+const fixtureNow=Date.parse('2026-11-30T10:00:00+08:00');
+await writeFile(dir + '/guard.mjs', `import {appendFileSync} from 'node:fs';const RealDate=Date;globalThis.Date=class extends RealDate{constructor(...args){super(...(args.length?args:[${fixtureNow}]));}static now(){return ${fixtureNow};}};globalThis.fetch=async()=>{appendFileSync(${JSON.stringify(dir + '/network.log')},'blocked\\n');throw Error('fixture_external_network_forbidden');};`);
 const port = 18500 + Math.floor(Math.random() * 300), base = `http://127.0.0.1:${port}`, secret = 'isolated-scoring360-admin-secret';
-const month = new Date().toLocaleDateString('sv-SE', { timeZone: 'Asia/Shanghai' }).slice(0, 7), cycleId = month + '-360';
+const month = '2026-11', cycleId = month + '-360';
 const names = { owner: '测试老板', admin: '测试管理员', staff: '员工甲', head: '测试主管', peer: '评分同事', member: '普通同事' };
 const cookie = id => {
-  const body = Buffer.from(JSON.stringify({ user: { userId: id, name: names[id] }, issuedAt: Date.now(), sessionId: randomUUID(), expiresAt: new Date(Date.now() + 3600000).toISOString() })).toString('base64url');
+  const body = Buffer.from(JSON.stringify({ user: { userId: id, name: names[id] }, issuedAt: fixtureNow, sessionId: randomUUID(), expiresAt: new Date(fixtureNow + 3600000).toISOString() })).toString('base64url');
   return 'wos_session=' + body + '.' + createHmac('sha256', secret).update(body).digest('base64url');
 };
 async function request(route, body, id = 'owner', method = body === undefined ? 'GET' : 'POST') {
@@ -91,6 +92,11 @@ try {
   const roster = await ok('/api/employees/manage', undefined, 'admin'); assert.equal(roster.employees.filter(employee => employee.userId === 'staff').length, 1); assert.equal(roster.employees.find(employee => employee.userId === 'staff').active, true);
   assert.equal((await ok('/api/scoring360/assignments', pair('owner'), 'admin')).assignment.id, ownerAssignment);
   assert.equal((await ok('/api/scoring360/assignments', pair('peer'), 'admin')).assignment.id, peerAssignment);
+  const incomplete=records(),partialOpen=await request('/api/scoring360/cycle',{action:'open'},'admin');
+  assert.equal(partialOpen.status,409);assert.equal(partialOpen.body.error,'setup_incomplete');
+  assert.equal(records(),incomplete,'an incomplete month cannot open or alter submitted/assignment records');
+  for(const evalueeUserId of ['admin','head','peer','member'])await ok('/api/scoring360/assignments',{cycleId,evalueeUserId,evaluatorUserId:'owner'},'admin');
+  assert.equal((await ok('/api/scoring360/workbench?month='+month,undefined,'admin')).checks.length,0,'all non-boss targets have peer raters and valid organization responsibilities');
   await ok('/api/scoring360/cycle', { action: 'open' }, 'admin');
   const grade = (assignmentId, score) => ({ cycleId, scores: [{ assignmentId, score, comment: '依据本月具体成果与实际协作完成评价' }] });
   assert.equal((await ok('/api/scoring360/submit', grade(ownerAssignment, 92))).saved, 1);

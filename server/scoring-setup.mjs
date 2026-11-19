@@ -21,8 +21,6 @@ export function createScoringSetup({query,exec,sql,isBoss=()=>false,now=()=>new 
   }
   if(statements.length)await exec(`BEGIN IMMEDIATE;${statements.join('\n')}COMMIT;`);return {...await overview(month),added:statements.length};
  }
- async function open(month){validate(month,true);const state=await overview(month);if(!state.cycle||!state.assignments.length)throw Error('scoring_assignments_required');if(state.cycle.status==='closed')throw Error('result_locked');const scheduled=month>current();await exec(`UPDATE scoring360_cycles SET status=${sql(scheduled?'scheduled':'open')},launch_at=${sql(scheduled?month+'-01T00:00:00+08:00':now().toISOString())},updated_at=datetime('now') WHERE id=${sql(state.cycle.id)};`);return overview(month);}
  async function deactivate(month,id){validate(month,true);const state=await overview(month),assignment=state.assignments.find(a=>a.id===id);if(!assignment)throw Error('assignment_not_found');if(assignment.response_id)throw Error('result_locked');const published=await query(`SELECT 1 FROM all_monthly_weighted_results WHERE month=${sql(month)} AND employee_user_id=${sql(assignment.evaluee_user_id)} UNION SELECT 1 FROM performance_results WHERE month=${sql(month)} AND employee_user_id=${sql(assignment.evaluee_user_id)} AND kind='collaboration';`);if(published.length)throw Error('result_locked');await exec(`UPDATE scoring360_assignments SET status='inactive',updated_at=datetime('now') WHERE id=${sql(id)};`);return overview(month);}
- async function activateDue(){await exec(`UPDATE scoring360_cycles SET status='open',updated_at=datetime('now') WHERE status='scheduled' AND substr(start_date,1,7)=${sql(current())} AND datetime(launch_at)<=datetime(${sql(now().toISOString())}) AND EXISTS(SELECT 1 FROM scoring360_assignments a WHERE a.cycle_id=scoring360_cycles.id AND a.status='active');`);}
- return {overview,prepare,assign,open,deactivate,activateDue};
+ return {overview,prepare,assign,deactivate};
 }

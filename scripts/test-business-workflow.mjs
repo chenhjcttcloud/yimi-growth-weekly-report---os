@@ -79,7 +79,12 @@ try{
  assert.equal(earlyConfirmation.status,409);assert.equal(earlyConfirmation.body.error,'quality_month_open');
  assert.equal(run("SELECT count(*) FROM performance_results WHERE kind='quality';").trim(),'0');
  stages.push('飞书汇报生成四模块 AI 评分，月内显示当前均分并拒绝提前确认');
- assert.equal((await call('/api/scoring360/setup','admin',{month,action:'prepare'})).status,200);assert.equal((await call('/api/scoring360/setup','admin',{month,action:'assign',pairs:['staff','head','admin'].map(evalueeUserId=>({evalueeUserId,evaluatorUserId:'peer'}))})).status,200);assert.equal((await call('/api/scoring360/setup','admin',{month,action:'open'})).status,200);
+ assert.equal((await call('/api/scoring360/setup','admin',{month,action:'prepare'})).status,200);assert.equal((await call('/api/scoring360/setup','admin',{month,action:'assign',pairs:['staff','head','admin'].map(evalueeUserId=>({evalueeUserId,evaluatorUserId:'peer'}))})).status,200);
+ const incompleteOpening=await call('/api/scoring360/setup','admin',{month,action:'open'});assert.equal(incompleteOpening.status,409);assert.equal(incompleteOpening.body.error,'setup_incomplete','partially configured targets cannot bypass the monthly opening checks');
+ const incompleteSetup=(await call('/api/scoring360/workbench?month='+month,'admin')).body;assert(incompleteSetup.checks.some(issue=>issue.type==='peers'&&issue.userId==='peer'));assert(incompleteSetup.checks.some(issue=>issue.type==='peers'&&issue.userId==='new'));
+ assert.equal((await call('/api/scoring360/setup','admin',{month,action:'assign',pairs:[{evalueeUserId:'peer',evaluatorUserId:'head'},{evalueeUserId:'new',evaluatorUserId:'peer'}]})).status,200);
+ const readySetup=(await call('/api/scoring360/workbench?month='+month,'admin')).body;assert.equal(readySetup.checks.length,0,JSON.stringify(readySetup.checks));assert(readySetup.rows.every(employee=>employee.locked||employee.assignments.length));
+ assert.equal((await call('/api/scoring360/setup','admin',{month,action:'open'})).status,200);
  const setup=(await call('/api/scoring360/setup?month='+month,'admin')).body,cycleId=setup.cycle.id;
  for(const target of ['staff','head','admin']){const a=setup.assignments.find(a=>a.evaluee_user_id===target);assert(a);assert.equal((await call('/api/scoring360/submit','peer',{cycleId,scores:[{assignmentId:a.id,score:target==='staff'?90:80,comment:'已核实共同交付结果'}]})).body.saved,1);}
  assert.equal((await call('/api/performance/me')).body.history.find(v=>v.month===month).collaboration,null);assert.equal((await call('/api/manager-reviews','head',{month,employeeUserId:'staff',score:80,comment:'独立完成验收'})).status,200);assert.equal((await call('/api/performance/me')).body.history.find(v=>v.month===month).collaboration,87);

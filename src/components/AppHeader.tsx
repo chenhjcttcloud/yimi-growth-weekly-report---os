@@ -29,6 +29,7 @@ interface AppHeaderProps {
   canViewBossDashboard: boolean;
   managementRole?: string;
   sessionPerspective?: SessionPerspective;
+  availableSessionPerspectives?: SessionPerspective[];
   adminPerspective?: string;
   previewEmployees?: Array<{userId:string;name:string;department?:string}>;
   onChangeAdminPerspective?: (value:string)=>void;
@@ -59,6 +60,7 @@ export function AppHeader({
   canViewBossDashboard,
   managementRole,
   sessionPerspective,
+  availableSessionPerspectives=['boss','employee'],
   adminPerspective,
   previewEmployees=[],
   onChangeAdminPerspective,
@@ -76,6 +78,8 @@ export function AppHeader({
   const [notificationOpen, setNotificationOpen] = useState(false);
   const [perspectiveBusy, setPerspectiveBusy] = useState(false);
   const [perspectiveError, setPerspectiveError] = useState("");
+  const sessionOptions=[...new Set(availableSessionPerspectives.filter(option=>option==='boss'||option==='admin'||option==='employee'))];
+  const sessionLabels:Record<SessionPerspective,string>={boss:'老板视角',admin:'管理员视角',employee:'员工视角'};
   const scoreResultsPage = activePage === "quality-scores" || activePage === "collaboration-scores";
 
   useEffect(() => {
@@ -129,7 +133,7 @@ export function AppHeader({
   }
 
   async function changeSessionPerspective(next: string) {
-    if (perspectiveBusy || next === sessionPerspective || (next !== "boss" && next !== "employee")) return;
+    if (perspectiveBusy || next === sessionPerspective || !sessionOptions.some(option=>option===next)) return;
     if (!window.dispatchEvent(new Event("organization-before-leave", { cancelable: true }))) return;
 
     setPerspectiveBusy(true);
@@ -172,17 +176,17 @@ export function AppHeader({
       </div>
 
       <div className="header-actions">
-        {sessionPerspective && (
+        {sessionPerspective && sessionOptions.includes(sessionPerspective) && (
           <div className="session-perspective-control">
             <AppSelect aria-label="切换视角" value={sessionPerspective} onValueChange={next => void changeSessionPerspective(next)} disabled={perspectiveBusy}>
-              <option value="boss">老板视角</option>
-              <option value="employee">员工视角</option>
+              {sessionOptions.map(option=><option value={option} key={option}>{sessionLabels[option]}</option>)}
             </AppSelect>
             {perspectiveBusy && <span className="session-perspective-feedback" role="status">正在切换视角…</span>}
             {perspectiveError && <span className="session-perspective-feedback is-error" role="alert">{perspectiveError}</span>}
           </div>
         )}
-        {adminPerspective && <PerspectiveSwitcher value={adminPerspective} employees={previewEmployees} onChange={onChangeAdminPerspective} />}
+        {adminPerspective && <PerspectiveSwitcher value={adminPerspective} employees={previewEmployees} onChange={onChangeAdminPerspective}
+          {...(sessionPerspective==='admin'?{title:'员工预览',caption:'员工预览',shortcuts:[{id:'management',title:'管理工作台',description:'退出员工预览，返回管理功能'}]}:{})} />}
           <DevViewSwitcher employees={previewEmployees} />
         {canViewBossDashboard ? <div className="notification-anchor">
           <button className="icon-button notification-button" type="button" aria-label="通知" onClick={() => setNotificationOpen((open) => !open)}>

@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';import {mkdtemp,mkdir,readFile,writeFile} from 'node:fs/promises';import {spawn,spawnSync} from 'node:child_process';import {createHmac,randomUUID} from 'node:crypto';import path from 'node:path';
-await mkdir('outputs/tests',{recursive:true});const root=await mkdtemp(path.resolve('outputs/tests/scoring-timezones-'));const month=new Date().toLocaleDateString('sv-SE',{timeZone:'Asia/Shanghai'}).slice(0,7),schema=await readFile('db/schema.sql','utf8');
+await mkdir('outputs/tests',{recursive:true});const root=await mkdtemp(path.resolve('outputs/tests/scoring-timezones-'));const month='2026-10',schema=await readFile('db/schema.sql','utf8');
 async function probe(tz,index){
  const dir=root+'/'+index;await mkdir(dir);const data=dir+'/data';await mkdir(data);const db=dir+'/probe.sqlite';
  function q(sql,json=false){const r=spawnSync('sqlite3',['-bail',...(json?['-json']:[]),db],{input:sql,encoding:'utf8'});assert.equal(r.status,0,r.stderr);return json?JSON.parse(r.stdout||'[]'):r.stdout.trim();}

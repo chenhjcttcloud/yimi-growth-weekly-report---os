@@ -22,6 +22,7 @@ import {createManagementSummary} from './management-summary.mjs';
 import {createScoringWorkbench} from './scoring-workbench.mjs';
 import {createScoringSetup} from './scoring-setup.mjs';
 import {createScoringRecurrence} from './scoring-recurrence.mjs';
+import {createMonthlyScoringWindow} from './monthly-scoring-window.mjs';
 import {createOperations,ensureOperationsSchema} from './operations.mjs';
 import {performanceClientOverview,performanceClientEmployeeMonth} from './performance-client-data.mjs';
 import {createSourceDataCache,createSourceResponseCache} from './source-data-cache.mjs';
@@ -194,20 +195,21 @@ const liveReportSync=createLiveReportSync({query:querySqlRows,exec:execSql,sql:s
 const previousSyncStatus=await readLarkReportSyncStatus();
 if(previousSyncStatus.running)await writeLarkReportSyncStatus({...previousSyncStatus,ok:false,running:false,phase:'interrupted',active:0,...(previousSyncStatus.byMonth?{byMonth:Object.fromEntries(Object.entries(previousSyncStatus.byMonth).map(([month,cell])=>[month,{...cell,active:0}]))}:{}),interruptedAt:new Date().toISOString(),message:'上次同步因服务重启中断，可继续处理未完成评分；已保存的分析将复用。'});
 const feishuDepartmentSync=createFeishuDepartmentSync({query:querySqlRows,exec:execSql,sql:sqlValue,config});
-const departments=createDepartments({query:querySqlRows,exec:execSql,sql:sqlValue,employees:()=>loadManagedEmployees(),beforeScore:(month,id)=>managerReviews.freezeBossPlan(month,id),resolveScoreTarget:(month,id)=>managerReviews.bossTarget(month,id),resolveLeaderScoreTarget:(month,id)=>managerReviews.leaderScoreTarget(month,id)});
+const monthlyScoringWindow=createMonthlyScoringWindow({query:querySqlRows,sql:sqlValue});
+const departments=createDepartments({query:querySqlRows,exec:execSql,sql:sqlValue,ratingWindow:monthlyScoringWindow,employees:()=>loadManagedEmployees(),beforeScore:(month,id)=>managerReviews.freezeBossPlan(month,id),resolveScoreTarget:(month,id)=>managerReviews.bossTarget(month,id),resolveLeaderScoreTarget:(month,id)=>managerReviews.leaderScoreTarget(month,id)});
 let organizationMutationRunning=false;
-const managerReviews=createManagerReviews({query:querySqlRows,exec:execSql,sql:sqlValue,organization:departments.overview,reports:options=>performance.reports(options),isBossUserId:id=>bossAccessState.userIds.has(id)||(config.authMode==='mock'&&id==='mock_owner')});
+const managerReviews=createManagerReviews({query:querySqlRows,exec:execSql,sql:sqlValue,ratingWindow:monthlyScoringWindow,organization:departments.overview,reports:options=>performance.reports(options),isBossUserId:id=>bossAccessState.userIds.has(id)||(config.authMode==='mock'&&id==='mock_owner')});
 const performance = createPerformance({managerReviews,calendar:()=>chinaWorkCalendar,policyFor:systemSettings.policyFor,isCollectingReports:liveReportSync.isCollectingReports,query: querySqlRows, exec: execSql, sql: sqlValue, readData:readSourceReadonly});
 const productManagementScores=createProductManagementScoreApi({query:querySqlRows,sql:sqlValue,sendJson,token:process.env.PRODUCT_MANAGEMENT_SCORE_API_TOKEN||''});
 const reportAutomation=createReportAutomation({query:querySqlRows,exec:execSql,sql:sqlValue,getConfig:systemSettings.reportAutomationConfig,getAiRequestsToday:systemSettings.reportAiRequestsToday,calendar:()=>chinaWorkCalendar,policyFor:systemSettings.policyFor,isRunning:()=>liveReportSync.isRunning(),start:options=>liveReportSync.start(options)});
 const scoringSetup=createScoringSetup({query:querySqlRows,exec:execSql,sql:sqlValue,isBoss:id=>bossAccessState.userIds.has(id)||(config.authMode==='mock'&&id==='mock_owner')});
 const scoringWorkbench=createScoringWorkbench({query:querySqlRows,exec:execSql,sql:sqlValue,setup:scoringSetup,managerReviews,bossMembers:()=>[...bossAccessState.userIds].map(userId=>({userId,name:bossAccessState.members.find(m=>m.userId===userId)?.name||'老板'}))});
 const scoringRecurrence=createScoringRecurrence({query:querySqlRows,exec:execSql,sql:sqlValue,setup:scoringSetup,managerReviews,bossMembers:()=>[...bossAccessState.userIds].map(userId=>({userId,name:bossAccessState.members.find(m=>m.userId===userId)?.name||'老板'}))});
-const personalScoringReminders=createPersonalScoringReminders({managerReviews,bossUserIds:()=>[...bossAccessState.userIds],policyFor:systemSettings.policyFor,query:querySqlRows,exec:execSql,sql:sqlValue,
+const personalScoringReminders=createPersonalScoringReminders({managerReviews,ratingWindow:monthlyScoringWindow,bossUserIds:()=>[...bossAccessState.userIds],policyFor:systemSettings.policyFor,query:querySqlRows,exec:execSql,sql:sqlValue,
  enabled:systemSettings.scoringRemindersEnabled,deliver:(userId,text,id)=>botMessenger.send(userId,text,id)});
 
 
-const monthEndScoreReminders=createMonthEndScoreReminders({query:querySqlRows,exec:execSql,sql:sqlValue,managerReviews,
+const monthEndScoreReminders=createMonthEndScoreReminders({query:querySqlRows,exec:execSql,sql:sqlValue,managerReviews,ratingWindow:monthlyScoringWindow,
  bossMembers:()=>[...bossAccessState.userIds].map(userId=>({userId,name:bossAccessState.members.find(m=>m.userId===userId)?.name||userId})),
  getSettings:systemSettings.monthlyReminderConfig,calendar:()=>chinaWorkCalendar,baseUrl:config.baseUrl,
  deliver:(userId,text,uuid)=>botMessenger.send(userId,text,uuid)});
@@ -244,7 +246,7 @@ scheduleWeeklyGrowthReminder();
 scheduleWeeklyUpdateReminder();
 scheduleMonthEndScoreReminders();
 scheduleLarkAuthMonitor();
-const activateScoring=()=>scoringSetup.activateDue().catch(()=>console.error('scheduled scoring activation failed'));
+const activateScoring=()=>scoringWorkbench.activateDue().catch(()=>console.error('scheduled scoring activation failed'));
 setInterval(activateScoring,60000).unref();void activateScoring();
 const generateRecurringScoring=()=>scoringRecurrence.tick().catch(()=>console.error('recurring scoring generation failed'));
 setInterval(generateRecurringScoring,60000).unref();void generateRecurringScoring();
@@ -407,10 +409,11 @@ async function route(req, res) {
     const cycleId=await ensureScoring360CycleForLaunchDate(scoring360ActiveDate(),{copyAssignments:false});
     const cycle=await loadScoring360Cycle(cycleId);
     if(body.action==='open'){
-      if(!['draft','open','active'].includes(cycle.status))return sendJson(res,409,{ok:false,error:'scoring_cycle_closed'});
-      const assignments=await querySqlRows(`SELECT COUNT(*) AS count FROM scoring360_assignments WHERE cycle_id=${sqlValue(cycleId)} AND status='active';`);
-      if(!Number(assignments[0]?.count))return sendJson(res,409,{ok:false,error:'scoring_assignments_required'});
-      if(!cycle.launchAt)await ensureScoring360CycleSchedule(cycleId);
+      if(!['draft','scheduled','open','active'].includes(cycle.status))return sendJson(res,409,{ok:false,error:'scoring_cycle_closed'});
+      try{
+        const month=cycle.startDate.slice(0,7),state=await scoringWorkbench.overview(month);
+        await scoringWorkbench.mutate({action:'launch',month,revision:state.revision},userForPolicy);
+      }catch(error){return sendJson(res,409,{ok:false,error:error.message==='setup_incomplete'?'setup_incomplete':'scoring_setup_failed'});}
     }
     await systemSettings.audit(userForPolicy,body.action==='open'?'月度互评已开放（未发送通知）':'月度互评周期已准备（手动配置关系）',{cycleId});
     return sendJson(res,200,{ok:true,cycle:await loadScoring360Cycle(cycleId),messagesSent:0});
@@ -444,11 +447,15 @@ async function route(req, res) {
       const body=await readJsonBody(req,{limitBytes:100000});let result;
       if(body.action==='prepare')result=await scoringSetup.prepare(body.month);
       else if(body.action==='assign')result=await scoringSetup.assign(body.month,body.pairs);
-      else if(body.action==='open')result=await scoringSetup.open(body.month);
+      else if(body.action==='open'){
+        const state=await scoringWorkbench.overview(body.month);
+        await scoringWorkbench.mutate({action:'launch',month:body.month,revision:state.revision},userForPolicy);
+        result=await scoringSetup.overview(body.month);
+      }
       else if(body.action==='deactivate')result=await scoringSetup.deactivate(body.month,body.assignmentId);
       else throw Error('invalid_cycle_action');
       await systemSettings.audit(userForPolicy,'月度同事评分配置已更新',{month:body.month,action:body.action,assignmentCount:result.assignments.length});return sendJson(res,200,{ok:true,...result,messagesSent:0});
-    }catch(error){return sendJson(res,409,{ok:false,error:['invalid_month','editable_month_required','invalid_assignment_batch','prepare_cycle_first','result_locked','self_scoring_forbidden','active_employee_required','scoring_assignments_required','assignment_not_found','invalid_cycle_action'].includes(error.message)?error.message:'scoring_setup_failed'});}
+    }catch(error){return sendJson(res,409,{ok:false,error:['setup_incomplete','setup_changed','setup_busy','invalid_month','editable_month_required','invalid_assignment_batch','prepare_cycle_first','result_locked','self_scoring_forbidden','active_employee_required','scoring_assignments_required','assignment_not_found','invalid_cycle_action'].includes(error.message)?error.message:'scoring_setup_failed'});}
   }
   if(url.pathname==='/api/manager-reviews/handoffs'){
     if(!managerForPolicy)return sendJson(res,403,{ok:false,error:'manager_only'});
@@ -473,7 +480,7 @@ async function route(req, res) {
         return sendJson(res,200,{ok:true});
       }
       return sendJson(res,405,{ok:false,error:'method_not_allowed'});
-    }catch(error){const known=['invalid_month','employee_not_employed','employee_inactive','score_and_comment_required','self_scoring_forbidden','not_your_subordinate','result_locked'];return sendJson(res,error.message==='not_your_subordinate'?403:409,{ok:false,error:error.message.includes('UNIQUE')?'result_locked':known.includes(error.message)?error.message:'manager_review_failed'});}
+    }catch(error){const known=['scoring_cycle_not_open','invalid_month','employee_not_employed','employee_inactive','score_and_comment_required','self_scoring_forbidden','not_your_subordinate','result_locked'];return sendJson(res,error.message==='not_your_subordinate'?403:409,{ok:false,error:error.message.includes('UNIQUE')?'result_locked':known.includes(error.message)?error.message:'manager_review_failed'});}
   }
   if(url.pathname.startsWith('/api/departments')) {
     if(!managerForPolicy)return sendJson(res,403,{ok:false,error:'manager_only'});
@@ -501,7 +508,7 @@ async function route(req, res) {
           const leaderUserId=await departments.score(body,userForPolicy);await performance.overview({clientSummary:true});await systemSettings.audit(userForPolicy,'老板负责人评分已提交',{leaderUserId,month:body.month});
         }else return sendJson(res,404,{ok:false,error:'not_found'});
         return sendJson(res,200,{ok:true});
-      }catch(error){const known=['rating_scope_frozen','rating_responsibility_changed','department_layout_conflict','department_removed','department_not_empty','department_inactive','department_sync_running','feishu_not_configured','department_permission_required','department_scope_required','department_scope_empty','department_names_permission_required','department_leader_user_id_required','department_leader_managed_by_feishu','department_ambiguous_names','department_incomplete_tree','department_invalid_pagination','department_upstream_failed','department_hierarchy_cycle','invalid_parent_department','invalid_department','leader_must_be_department_member','department_not_found','invalid_month','score_and_comment_required','department_leader_required','leader_inactive','leader_not_registered','employee_not_employed','account_inactive','self_scoring_forbidden','result_locked'];return sendJson(res,error.message==='account_inactive'?403:409,{ok:false,error:error.message.includes('UNIQUE')?'department_exists':known.includes(error.message)?error.message:'department_save_failed'});}finally{if(organizationMutation)organizationMutationRunning=false;}
+      }catch(error){const known=['scoring_cycle_not_open','rating_scope_frozen','rating_responsibility_changed','department_layout_conflict','department_removed','department_not_empty','department_inactive','department_sync_running','feishu_not_configured','department_permission_required','department_scope_required','department_scope_empty','department_names_permission_required','department_leader_user_id_required','department_leader_managed_by_feishu','department_ambiguous_names','department_incomplete_tree','department_invalid_pagination','department_upstream_failed','department_hierarchy_cycle','invalid_parent_department','invalid_department','leader_must_be_department_member','department_not_found','invalid_month','score_and_comment_required','department_leader_required','leader_inactive','leader_not_registered','employee_not_employed','account_inactive','self_scoring_forbidden','result_locked'];return sendJson(res,error.message==='account_inactive'?403:409,{ok:false,error:error.message.includes('UNIQUE')?'department_exists':known.includes(error.message)?error.message:'department_save_failed'});}finally{if(organizationMutation)organizationMutationRunning=false;}
     }
     return sendJson(res,405,{ok:false,error:'method_not_allowed'});
   }
@@ -522,9 +529,10 @@ async function route(req, res) {
       const {cycleId}=selected;
       const cycle=cycleId?await loadScoring360Cycle(cycleId):null;
       const month=selected.month||cycle?.startDate?.slice(0,7)||'',cycleState=cycle?{id:cycle.id,status:cycle.status,launchAt:cycle.launchAt}:null;
-      if(!cycle?.launchAt||!['open','active'].includes(cycle.status))return sendJson(res,200,{ok:true,cycleId,month,cycle:cycleState,tasks:[],readOnly:true});
-      const tasks=await querySqlRows(`SELECT a.id,a.evaluee_name,r.id AS response_id,r.score,r.comment,r.submitted_at FROM scoring360_assignments a LEFT JOIN scoring360_responses r ON r.assignment_id=a.id WHERE a.cycle_id=${sqlValue(cycleId)} AND a.evaluator_user_id=${sqlValue(user.userId)} AND COALESCE(a.status,'active')='active' ORDER BY a.evaluee_name;`);
-      return sendJson(res,200,{ok:true,cycleId,month,cycle:cycleState,readOnly:true,tasks:tasks.map(r=>({id:r.id,evaluee:r.evaluee_name,score:r.score===''?null:Number(r.score),comment:r.comment||'',submitted:Boolean(r.response_id),locked:isScoring360Locked(r.submitted_at)}))});
+      const reviewWindow=month?await monthlyScoringWindow.status(month):null;
+      if(!cycle)return sendJson(res,200,{ok:true,cycleId,month,cycle:cycleState,reviewWindow,tasks:[],readOnly:true});
+      const tasks=await querySqlRows(`SELECT a.id,a.evaluee_name,r.id AS response_id,r.score,r.comment,r.submitted_at FROM scoring360_assignments a LEFT JOIN scoring360_responses r ON r.assignment_id=a.id WHERE a.cycle_id=${sqlValue(cycleId)} AND a.evaluator_user_id=${sqlValue(user.userId)} AND COALESCE(a.status,'active')='active' AND (r.id IS NOT NULL OR NOT EXISTS(SELECT 1 FROM employees WHERE user_id=a.evaluee_user_id AND is_active=0)) ORDER BY a.evaluee_name;`);
+      return sendJson(res,200,{ok:true,cycleId,month,cycle:cycleState,reviewWindow,readOnly:true,tasks:tasks.filter(r=>reviewWindow?.isOpen||r.response_id).map(r=>({id:r.id,evaluee:r.evaluee_name,score:r.score===''?null:Number(r.score),comment:r.comment||'',submitted:Boolean(r.response_id),locked:!reviewWindow?.isOpen||isScoring360Locked(r.submitted_at)}))});
     }
     return sendJson(res,404,{ok:false,error:'not_found'});
   }
@@ -735,7 +743,7 @@ async function route(req, res) {
       ok: true,
       authenticated: true,
       devView: config.devViewSwitchEnabled ? (session?.devView || {id:"boss",role:"boss"}) : null,
-      ...(canSwitchPerspective ? {canSwitchPerspective, activePerspective: session.employeePerspective ? 'employee' : 'boss'} : {}),
+      ...(canSwitchPerspective ? {canSwitchPerspective, availablePerspectives:availableSessionPerspectives(session), activePerspective:session.employeePerspective?'employee':session.adminPerspective?'admin':'boss'} : {}),
       user: {
         ...user,
         role: access.role,
@@ -1812,19 +1820,13 @@ async function getMyScoring360Tasks(req, res, url) {
   catch { return sendJson(res,400,{ok:false,error:'invalid_scoring_month'}); }
   const {cycleId}=selected;
   if (!cycleId || !evaluatorUserId) {
-    sendJson(res, 200, { ok: true, cycleId, month:selected.month, cycle:null, evaluator, tasks: [] });
+    sendJson(res, 200, { ok: true, cycleId, month:selected.month, cycle:null, reviewWindow:selected.month?await monthlyScoringWindow.status(selected.month):null, evaluator, tasks: [] });
     return;
   }
   const cycle = await loadScoring360Cycle(cycleId);
   const month=selected.month||cycle?.startDate?.slice(0,7)||'',cycleState=cycle?{id:cycle.id,status:cycle.status,launchAt:cycle.launchAt}:null;
-  const cycleOpen = Boolean(
-    cycle?.launchAt
-      && ["open", "active"].includes(cycle.status),
-  );
-  if (!cycleOpen && !canSelectEvaluator) {
-    sendJson(res, 200, { ok: true, cycleId, month, cycle:cycleState, evaluator, tasks: [] });
-    return;
-  }
+  const reviewWindow=month?await monthlyScoringWindow.status(month):null;
+  const cycleOpen=Boolean(reviewWindow?.isOpen&&reviewWindow.cycleId===cycleId);
 
   const rows = await querySqlRows(`
     SELECT
@@ -1844,8 +1846,9 @@ async function getMyScoring360Tasks(req, res, url) {
     cycleId,
     month,
     cycle:cycleState,
+    reviewWindow,
     evaluator,
-    tasks: rows.map((row) => ({
+    tasks: rows.filter(row=>cycleOpen||canSelectEvaluator||row.response_id).map((row) => ({
       id: row.id,
       cycleId: row.cycle_id,
       evaluee: row.evaluee_name,
@@ -1882,7 +1885,9 @@ async function submitScoring360(req, res) {
   const cycle = await loadScoring360Cycle(cycleId);
   const published = await querySqlRows(`SELECT employee_user_id FROM performance_results WHERE kind='collaboration' AND month=${sqlValue(String(cycle?.startDate || '').slice(0,7))} UNION SELECT employee_user_id FROM all_monthly_weighted_results WHERE month=${sqlValue(String(cycle?.startDate || '').slice(0,7))};`);
   const publishedNames = new Set(published.map(row=>row.employee_user_id));
-  if (!cycle?.launchAt || !["open", "active"].includes(cycle.status)) {
+  const scoringMonth=String(cycle?.startDate||'').slice(0,7);
+  const reviewWindow=scoringMonth?await monthlyScoringWindow.status(scoringMonth):null;
+  if (!reviewWindow?.isOpen || reviewWindow.cycleId!==cycleId) {
     sendJson(res, 409, { ok: false, error: "scoring_cycle_not_open" });
     return;
   }
@@ -1929,6 +1934,8 @@ async function submitScoring360(req, res) {
       SELECT ${sqlValue(randomUUID())}, ${sqlValue(assignment.id)}, ${sqlValue(cycleId)}, ${sqlValue(assignment.evaluee_name)},
               ${sqlValue(evaluator)}, ${sqlValue(Math.round(score))}, COALESCE(${sqlValue(comment)},''), datetime('now')
       WHERE NOT EXISTS(SELECT 1 FROM employees WHERE user_id IN (${sqlValue(assignment.evaluee_user_id)},${sqlValue(evaluatorUserId)}) AND is_active=0)
+        AND (${monthlyScoringWindow.guardSql(scoringMonth,cycleId)})
+        AND EXISTS(SELECT 1 FROM scoring360_cycles WHERE id=${sqlValue(cycleId)} AND status IN('open','active') AND julianday(launch_at)<=julianday(${sqlValue(new Date().toISOString())}))
         AND EXISTS(SELECT 1 FROM scoring360_assignments WHERE id=${sqlValue(assignment.id)} AND COALESCE(status,'active')='active')
       ON CONFLICT(assignment_id) DO UPDATE SET
         score = excluded.score,
@@ -2223,7 +2230,10 @@ async function runScoring360Reminder({ cycleId, kind = "launch", dryRun = true, 
     : await resolveScoring360CycleId(""));
   if (!cycleId) return { ok: false, error: "missing_cycle" };
   const priorCycle=await loadScoring360Cycle(cycleId);
-  if (kind === "launch" && !dryRun && !priorCycle?.launchAt) await ensureScoring360CycleSchedule(cycleId);
+  if(!dryRun){
+    const window=priorCycle?.startDate?await monthlyScoringWindow.status(priorCycle.startDate.slice(0,7)):null;
+    if(!window?.isOpen||window.cycleId!==cycleId)return {ok:false,error:'scoring_cycle_not_open'};
+  }
   let cycle = await loadScoring360Cycle(cycleId);
   if (!cycle) return { ok: false, error: "cycle_not_found" };
   const pending = await loadScoring360PendingRecipients(cycleId);
@@ -2315,36 +2325,6 @@ async function runScoring360Reminder({ cycleId, kind = "launch", dryRun = true, 
     failed: results.filter((item) => item.ok === false).length,
     results,
   };
-}
-
-async function ensureScoring360CycleSchedule(cycleId) {
-  const rows = await querySqlRows(`
-    SELECT launch_at, due_at, followup_after_at
-    FROM scoring360_cycles
-    WHERE id = ${sqlValue(cycleId)}
-    LIMIT 1;
-  `).catch(() => []);
-  const row = rows[0] || {};
-  const sentRows = await querySqlRows(`
-    SELECT COUNT(*) AS count
-    FROM scoring360_reminder_sends
-    WHERE cycle_id = ${sqlValue(cycleId)} AND kind = 'launch' AND status = 'sent';
-  `).catch(() => []);
-  if (Number(sentRows[0]?.count || 0) > 0 && row.launch_at && row.due_at && row.followup_after_at) return;
-  const now = new Date();
-  const dueAt = new Date(now.getTime() + config.scoring360ReminderDueHours * 60 * 60 * 1000).toISOString();
-  const followupAt = new Date(now.getTime() + config.scoring360ReminderFollowupHours * 60 * 60 * 1000).toISOString();
-  await execSql(`
-    UPDATE scoring360_cycles
-    SET launch_at = ${sqlValue(now.toISOString())},
-        due_at = ${sqlValue(dueAt)},
-        followup_after_at = ${sqlValue(followupAt)},
-        historical_weight = COALESCE(historical_weight, ${sqlValue(normalizeScoring360Weights().historicalWeight)}),
-        current_weight = COALESCE(current_weight, ${sqlValue(normalizeScoring360Weights().currentWeight)}),
-        status = CASE WHEN status = 'draft' THEN 'open' ELSE status END,
-        updated_at = datetime('now')
-    WHERE id = ${sqlValue(cycleId)};
-  `);
 }
 
 function buildScoring360ReminderMessage({ cycle, recipient, kind }) {
@@ -5126,7 +5106,7 @@ function timingSafeEqual(a, b) {
 }
 
 function setSession(res, session, options = {}) {
-  const {userAccessToken,refreshToken,employeePerspective,...safeSession}=session;
+  const {userAccessToken,refreshToken,employeePerspective,adminPerspective,...safeSession}=session;
   if(userAccessToken)safeSession.feishuGrant=true;
   const issued=sessionPolicy.issue(safeSession),remaining=Math.max(1,Math.floor((Date.parse(issued.expiresAt)-Date.now())/1000));
   setCookie(res, "wos_session", signPayload(issued), { maxAge: Math.min(options.maxAge??remaining,remaining), httpOnly: true });
@@ -5143,9 +5123,13 @@ function getSession(req) {
   if(config.devViewSwitchEnabled && session.devView?.role==='hr' && !employeeDirectory.some(e=>e.userId===session.user?.userId&&e.active!==false)) {
     session.user=developmentManagerIdentity();
   }
-  const preference = canSwitchSessionPerspective(session) && verifyPayload(cookies.wos_perspective);
-  session.employeePerspective = preference?.purpose === 'session-perspective' &&
-    preference.sessionId === session.sessionId && preference.perspective === 'employee';
+  const available=availableSessionPerspectives(session);
+  const preference = available.length>1 && verifyPayload(cookies.wos_perspective);
+  const boundPreference=preference?.purpose==='session-perspective'&&preference.sessionId===session.sessionId;
+  // A revoked role must not silently promote an already selected lower view.
+  const selected=boundPreference?(available.includes(preference.perspective)?preference.perspective:'employee'):'boss';
+  session.employeePerspective=selected==='employee';
+  session.adminPerspective=selected==='admin';
   return session;
 }
 
@@ -5153,6 +5137,11 @@ function canSwitchSessionPerspective(session) {
   return config.authMode === 'feishu' && Boolean(session?.sessionId && !session.devView &&
     !isExternalSession(session) && bossEmployeePerspectiveUserIds.has(session.user?.userId) &&
     bossAccessState.userIds.has(session.user?.userId));
+}
+
+function availableSessionPerspectives(session){
+  if(!canSwitchSessionPerspective(session))return [];
+  return ['boss',...(isScoring360ConfiguredManagerUser(session.user)?['admin']:[]),'employee'];
 }
 
 async function switchSessionPerspective(req, res, session) {
@@ -5169,10 +5158,10 @@ async function switchSessionPerspective(req, res, session) {
   } catch {
     return sendJson(res,400,{ok:false,error:'invalid_perspective'});
   }
-  if (!body || !['boss','employee'].includes(body.perspective) || Object.keys(body).length !== 1) {
+  if (!body || !['boss','admin','employee'].includes(body.perspective) || Object.keys(body).length !== 1) {
     return sendJson(res,400,{ok:false,error:'invalid_perspective'});
   }
-  if (!canSwitchSessionPerspective(getSession(req))) return sendJson(res,403,{ok:false,error:'perspective_forbidden'});
+  if (!availableSessionPerspectives(getSession(req)).includes(body.perspective)) return sendJson(res,403,{ok:false,error:'perspective_forbidden'});
   const maxAge = Math.max(1,Math.floor((Date.parse(session.expiresAt)-Date.now())/1000));
   setCookie(res,'wos_perspective',signPayload({
     purpose:'session-perspective',sessionId:session.sessionId,perspective:body.perspective,
@@ -5185,7 +5174,7 @@ function isExternalSession(session) {
 }
 
 function isBossIdentity(session) {
-  if (session?.employeePerspective) return false;
+  if (session?.employeePerspective||session?.adminPerspective) return false;
   if(!session && config.devViewSwitchEnabled && !process.env.MOCK_USER_ID)return true;
   if (session?.devView && config.devViewSwitchEnabled) return session.devView.role === "boss";
   const user = session?.user || (config.authMode === "mock" ? mockUser() : null);

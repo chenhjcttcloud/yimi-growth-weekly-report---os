@@ -15,11 +15,13 @@ export function lastTwoWorkingDays(month,calendar={}) {
 }
 
 // Only the scheduler calls tick. Preview never reserves a delivery or sends a message.
-export function createMonthEndScoreReminders({query,exec,sql,managerReviews,bossMembers=()=>[],getSettings,calendar=()=>({}),deliver,baseUrl,now=()=>new Date()}) {
+export function createMonthEndScoreReminders({query,exec,sql,managerReviews,ratingWindow,bossMembers=()=>[],getSettings,calendar=()=>({}),deliver,baseUrl,now=()=>new Date()}) {
  let running=false;
  const validMonth=month=>{if(!/^\d{4}-(0[1-9]|1[0-2])$/.test(month||''))throw Error('invalid_month');return month;};
  async function pending(month) {
   validMonth(month);
+  const reviewWindow=ratingWindow?await ratingWindow.status(month):null;
+  if(reviewWindow&&!reviewWindow.isOpen)return [];
   const people=await query('SELECT user_id,name,is_active FROM employees;'),byId=new Map(people.map(p=>[p.user_id,p]));
   const active=id=>!!id&&Number(byId.get(id)?.is_active)===1;
   const published=new Set((await query(`SELECT employee_user_id FROM all_monthly_weighted_results WHERE month=${sql(month)} UNION SELECT employee_user_id FROM performance_results WHERE month=${sql(month)} AND kind='collaboration';`)).map(p=>p.employee_user_id));
@@ -29,7 +31,7 @@ export function createMonthEndScoreReminders({query,exec,sql,managerReviews,boss
    if(!groups.has(id))groups.set(id,{userId:id,name:byId.get(id)?.name||name||id,peer:[],manager:[],boss:[]});
    const list=groups.get(id)[kind];if(!list.includes(key))list.push(key);
   }
-  const assignments=await query(`SELECT a.id,a.evaluee_user_id,a.evaluator_user_id FROM scoring360_assignments a JOIN scoring360_cycles c ON c.id=a.cycle_id LEFT JOIN scoring360_responses r ON r.assignment_id=a.id WHERE substr(c.start_date,1,7)=${sql(month)} AND c.status IN ('open','active') AND COALESCE(c.launch_at,'')<>'' AND COALESCE(a.status,'active')='active' AND (r.id IS NULL OR r.score IS NULL OR r.score<0 OR r.score>100);`);
+  const assignments=await query(`SELECT a.id,a.evaluee_user_id,a.evaluator_user_id FROM scoring360_assignments a JOIN scoring360_cycles c ON c.id=a.cycle_id LEFT JOIN scoring360_responses r ON r.assignment_id=a.id WHERE substr(c.start_date,1,7)=${sql(month)} ${reviewWindow?`AND a.cycle_id=${sql(reviewWindow.cycleId)}`:''} AND c.status IN ('open','active') AND COALESCE(c.launch_at,'')<>'' AND COALESCE(a.status,'active')='active' AND (r.id IS NULL OR r.score IS NULL OR r.score<0 OR r.score>100);`);
   for(const a of assignments)if(active(a.evaluee_user_id)&&active(a.evaluator_user_id)&&a.evaluee_user_id!==a.evaluator_user_id&&!published.has(a.evaluee_user_id))add(a.evaluator_user_id,'peer',a.id);
   const state=await managerReviews.snapshot();
   const bosses=await bossMembers();

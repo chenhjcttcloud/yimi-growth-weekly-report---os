@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import {mkdtemp,rm,readFile} from 'node:fs/promises';
+import {mkdtemp,readFile} from 'node:fs/promises';
 import {spawnSync} from 'node:child_process';
 import {tmpdir} from 'node:os';
 import path from 'node:path';
@@ -10,7 +10,7 @@ const sql=v=>v==null||v===''?'NULL':"'"+String(v).replaceAll("'","''")+"'";
 try{
  run(await readFile('db/schema.sql','utf8'));
  const roster=[{userId:'leader',name:'负责人',department:'产品部'},{userId:'other',name:'另一人',department:'研发部'}];
- const service=createDepartments({query:async s=>run(s,true),exec:async s=>run(s),sql,employees:async()=>roster});
+ const service=createDepartments({query:async s=>run(s,true),exec:async s=>run(s),sql,employees:async()=>roster,now:()=>new Date('2026-11-30T00:00:00+08:00')});
  await service.save({name:'测试事业群'});
  assert.equal(run("SELECT leader_user_id FROM organization_departments WHERE name='测试事业群'",true)[0].leader_user_id,'');
  const view=await service.overview(),dept=view.departments.find(d=>d.name==='产品部');assert.equal(view.departments.length,3);
@@ -18,8 +18,11 @@ try{
  await service.save({id:dept.id,name:'产品部',leaderUserId:'leader'});
  const research=view.departments.find(d=>d.name==='研发部');await service.save({id:research.id,name:'研发部',parentId:dept.id});
  await assert.rejects(service.save({id:dept.id,name:'产品部',leaderUserId:'leader',parentId:research.id}),/hierarchy_cycle/);
- const month=new Date().toLocaleDateString('sv-SE',{timeZone:'Asia/Shanghai'}).slice(0,7),body={departmentId:dept.id,month,score:92,comment:'明确组织目标并带领团队完成交付'};
+ const month='2026-10',body={departmentId:dept.id,month,score:92,comment:'明确组织目标并带领团队完成交付'};
  await assert.rejects(service.score({...body,score:''},{userId:'boss',name:'老板'}),/score_and/);
+ await assert.rejects(service.score(body,{userId:'boss',name:'老板'}),/scoring_cycle_not_open/);
+ assert.equal(run('SELECT COUNT(*) n FROM department_person_scores',true)[0].n,0,'a missing monthly cycle must block boss scoring');
+ run("INSERT INTO scoring360_cycles(id,label,start_date,end_date,status,launch_at) VALUES('2026-10-360','十月已开放补评','2026-10-01','2026-10-31','open','2026-10-26T00:00:00+08:00');");
  await service.score(body,{userId:'boss',name:'老板'});
  assert.equal((await service.personal({userId:'leader'}))[0].score,92);
  assert.equal((await service.personal({userId:'other'})).length,0);

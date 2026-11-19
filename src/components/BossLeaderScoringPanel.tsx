@@ -1,6 +1,7 @@
 import {useEffect,useRef,useState} from 'react';
 import {ArrowRight,Building2,CheckCheck,Clock3,LockKeyhole,Search,Send,ShieldCheck,UserRoundCheck} from 'lucide-react';
 import {ReviewMonthPicker} from './ReviewMonthPicker';
+import {ReviewWindowNotice,isReviewWindowBlocked,type ReviewWindow} from './ReviewWindowNotice';
 import {monthText,scoreText} from './PerformanceUI';
 import '../styles/boss-leader-scoring.css';
 
@@ -9,11 +10,11 @@ type Person={userId:string;name:string};
 type SavedScore={leader_user_id:string;month:string;score:number|string;comment:string;scorer_name?:string;created_at?:string};
 type DepartmentScore=SavedScore&{department_id:string};
 type LeaderTarget={leaderUserId:string;departmentIds:string[];name:string;ratingRequired:boolean;legacyScore?:number|null;unavailableReason?:string};
-type Data={departments:Department[];archivedDepartments?:Department[];employees:Person[];scores:DepartmentScore[];personScores:SavedScore[];leaderScoreTargets:LeaderTarget[];canScore:boolean;currentUserId:string};
+type Data={reviewWindow?:ReviewWindow;departments:Department[];archivedDepartments?:Department[];employees:Person[];scores:DepartmentScore[];personScores:SavedScore[];leaderScoreTargets:LeaderTarget[];canScore:boolean;currentUserId:string};
 type Draft={score:string;comment:string;submitted?:boolean};
 type Row={key:string;leaderId:string;name:string;departments:Department[];saved?:SavedScore;legacyScore?:number|null;state:'pending'|'done'|'blocked'|'exempt';reason:string;statusLabel:string};
 type Filter=Row['state']|'all';
-const errors:Record<string,string>={department_removed:'部门已从飞书移除，请刷新名单。',department_inactive:'部门已停用，不能新增评分。',rating_scope_frozen:'本月评分范围已变化，请刷新名单后核对角色与评分关系。',rating_responsibility_changed:'负责人已变化，请刷新名单后核对评分对象。',self_scoring_forbidden:'不能给自己评分。',score_and_comment_required:'请填写0–100分和具体评价。',result_locked:'本月评分已经提交并锁定，请刷新查看结果。',boss_only:'负责人评分仅可由老板本人提交。',leader_inactive:'负责人已停用，请刷新名单。',leader_not_registered:'负责人身份尚未同步，请先同步在职人员。',employee_not_employed:'负责人在所选月份未在职，不能评分。',invalid_month:'请选择有效月份。',account_inactive:'当前账号已停用，不能提交评分。'};
+const errors:Record<string,string>={department_removed:'部门已从飞书移除，请刷新名单。',department_inactive:'部门已停用，不能新增评分。',rating_scope_frozen:'本月评分范围已变化，请刷新名单后核对角色与评分关系。',rating_responsibility_changed:'负责人已变化，请刷新名单后核对评分对象。',self_scoring_forbidden:'不能给自己评分。',score_and_comment_required:'请填写0–100分和具体评价。',result_locked:'本月评分已经提交并锁定，请刷新查看结果。',boss_only:'负责人评分仅可由老板本人提交。',leader_inactive:'负责人已停用，请刷新名单。',leader_not_registered:'负责人身份尚未同步，请先同步在职人员。',employee_not_employed:'负责人在所选月份未在职，不能评分。',invalid_month:'请选择有效月份。',account_inactive:'当前账号已停用，不能提交评分。',scoring_cycle_not_open:'本月评分尚未开放，请刷新查看开放时间。'};
 const draftKey=(month:string,leaderId:string)=>JSON.stringify([month,leaderId]);
 const draftStoreKey=(owner:string)=>'boss-leader-person-drafts:'+owner;
 const priority={pending:0,done:1,blocked:2,exempt:3};
@@ -92,15 +93,15 @@ export function BossLeaderScoringPanel({month:sharedMonth,onBusyChange,active=tr
  function select(key:string){setSelected(key);setMessage('');setNextNotice('');}
  function chooseFilter(next:Filter){if(busy||loading)return;setFilter(next);select(visibleRows(rows,next,search)[0]?.key||'');}
  function changeSearch(text:string){setSearch(text);select(visibleRows(rows,filter,text)[0]?.key||'');}
- function update(field:'score'|'comment',text:string){if(!row||busy||loading)return;setDrafts(previous=>({...previous,[row.key]:{...(previous[row.key]||{score:'',comment:''}),[field]:text,submitted:false}}));setMessage('');setNextNotice('');}
+ function update(field:'score'|'comment',text:string){if(!row||busy||loading||isReviewWindowBlocked(latest?.reviewWindow))return;setDrafts(previous=>({...previous,[row.key]:{...(previous[row.key]||{score:'',comment:''}),[field]:text,submitted:false}}));setMessage('');setNextNotice('');}
  async function submit(advance:boolean){
-  if(!latest||!row||row.state!=='pending'||!latest.canScore||busy||loading)return;
+  if(!latest||!row||row.state!=='pending'||!latest.canScore||busy||loading||isReviewWindowBlocked(latest.reviewWindow))return;
   const submittedMonth=month,target=row,key=target.key,draft=draftsRef.current[key]||{score:'',comment:''};
   if(!draft.score.trim()||!Number.isFinite(Number(draft.score))||Number(draft.score)<0||Number(draft.score)>100||!draft.comment.trim()){setMessageKind('error');setMessage('请填写0–100分和具体评价。');return;}
   setBusy(true);onBusyChange?.(true);setMessage('');setNextNotice('');
   try{
    const response=await fetch('/api/departments/score',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({leaderUserId:target.leaderId,month:submittedMonth,score:draft.score,comment:draft.comment})}),result=await response.json();
-   if(!response.ok)throw Error(errors[result.error]||'提交失败，草稿已保留，请刷新名单后重试。');
+   if(!response.ok){if(result.error==='scoring_cycle_not_open')await load(submittedMonth);throw Error(errors[result.error]||'提交失败，草稿已保留，请刷新名单后重试。');}
    const receipt:SavedScore={leader_user_id:target.leaderId,month:submittedMonth,score:Number(draft.score),comment:draft.comment.trim(),scorer_name:'本人',created_at:new Date().toISOString()};
    if(!mounted.current)return;
    setReceipts(previous=>({...previous,[key]:receipt}));setDrafts(previous=>({...previous,[key]:{...draft,submitted:true}}));
@@ -125,10 +126,12 @@ export function BossLeaderScoringPanel({month:sharedMonth,onBusyChange,active=tr
  const archived=(latest?.archivedDepartments||[]).map(department=>({department,scores:departmentScores.filter(score=>score.department_id===department.id)})).filter(item=>item.scores.length);
  const nameFor=(id:string)=>latest?.employees.find(person=>person.userId===id)?.name||id;
  const departmentName=(id:string)=>[...(latest?.departments||[]),...(latest?.archivedDepartments||[])].find(department=>department.id===id)?.name||'历史部门';
- const locked=loading||busy||!latest?.canScore||row?.state!=='pending';
+ const windowBlocked=isReviewWindowBlocked(latest?.reviewWindow);
+ const locked=loading||busy||!latest?.canScore||row?.state!=='pending'||windowBlocked;
  return <section className="boss-leader-panel v2-card" aria-label="负责人评分" aria-busy={loading}>
   {sharedMonth===undefined&&<header className="bl-heading"><div><h3>负责人月度评分</h3><p>选择负责人，记录本月评分与评价。</p></div><ReviewMonthPicker aria-label="负责人评分月份" value={month} max={current} disabled={busy} onChange={setLocalMonth}/></header>}
   <div className="bl-overview"><div className="bl-counts" aria-label="负责人评分进度">{([{key:'pending',label:'待评分'},{key:'done',label:'已完成'},{key:'blocked',label:'待处理'},{key:'exempt',label:'无需评分'}] as const).map(item=><div className={'bl-metric is-'+item.key} key={item.key}><span><i aria-hidden="true"/>{item.label}</span><strong>{loading?'—':counts[item.key]}<small>项</small></strong></div>)}</div><div className="bl-rule"><span>月度综合分构成</span><p>老板评分 <b>30%</b><em>＋</em>同事互评 <b>70%</b></p><div className="bl-weight-bar" aria-hidden="true"><span/><span/></div><small>两部分完成后自动发布</small></div></div>
+  {latest&&<ReviewWindowNotice window={latest.reviewWindow} className="bl-message is-warning"/>}
   {latest&&!latest.canScore&&<p className="bl-permission"><ShieldCheck size={14}/>当前为只读查看，负责人评分由老板本人提交。</p>}
   {message&&<p className={`bl-message is-${messageKind}`} role={messageKind==='error'?'alert':'status'}>{messageKind==='success'?<CheckCheck size={15}/>:<Clock3 size={15}/>}<span>{message}</span></p>}
   {nextNotice&&<p className="bl-next-notice" role="status">{nextNotice}</p>}
@@ -139,16 +142,16 @@ export function BossLeaderScoringPanel({month:sharedMonth,onBusyChange,active=tr
     const score=item.saved?.score??item.legacyScore;
     return <button type="button" className={`bl-person is-${item.state}${selected===item.key?' is-selected':''}`} key={item.key} data-target-key={item.key} data-leader-user-id={item.leaderId||undefined} aria-pressed={selected===item.key} disabled={busy} onClick={()=>select(item.key)}>
      <span className="bl-avatar" aria-hidden="true">{!item.leaderId||item.name==='姓名待同步'?<UserRoundCheck size={15}/>:item.name.slice(-2)}</span>
-     <span className="bl-person-copy"><strong className="bl-person-name">{item.name}</strong><span className="bl-person-meta">{item.departments.length>0&&<small>{departmentText(item)}</small>}<em>{item.statusLabel}</em></span></span>
+     <span className="bl-person-copy"><strong className="bl-person-name">{item.name}</strong><span className="bl-person-meta">{item.departments.length>0&&<small>{departmentText(item)}</small>}<em>{windowBlocked&&item.state==='pending'?'尚未开放':item.statusLabel}</em></span></span>
      {score!=null?<b className="bl-list-score">{scoreText(Number(score))}</b>:<ArrowRight size={14}/>}
     </button>;
    }):<div className="bl-list-empty"><UserRoundCheck size={23}/><strong>{search?'没有匹配的负责人':filter==='pending'?'本月没有待评负责人':filter==='done'?'本月暂无已完成评分':filter==='blocked'?'当前没有待处理项目':filter==='exempt'?'本月没有无需评分项目':'所选月份暂无评分对象'}</strong><p>{search?'换一个姓名或部门关键词试试。':'可以切换筛选查看其他记录。'}</p></div>}</div>
   </aside><div className="bl-detail">{loading?<div className="bl-empty-editor" role="status">正在整理所选月份的评分资料…</div>:row?<article className="bl-editor" data-target-key={row.key} data-leader-user-id={row.leaderId||undefined}>
-   <div className="bl-editor-heading"><div className="bl-editor-identity"><span className="bl-editor-avatar" aria-hidden="true">{!row.leaderId||row.name==='姓名待同步'?<UserRoundCheck size={23}/>:row.name.slice(-2)}</span><div><span className="bl-month">{monthText(month)}</span><h4>{row.name}</h4>{row.departments.length>0&&<p><Building2 size={14}/>{departmentText(row)}</p>}</div></div><span className={`bl-status is-${row.state}`}>{row.state==='done'?<LockKeyhole size={13}/>:<Clock3 size={13}/>}<span>{row.state==='done'?'已提交锁定':row.statusLabel}</span></span></div>
+   <div className="bl-editor-heading"><div className="bl-editor-identity"><span className="bl-editor-avatar" aria-hidden="true">{!row.leaderId||row.name==='姓名待同步'?<UserRoundCheck size={23}/>:row.name.slice(-2)}</span><div><span className="bl-month">{monthText(month)}</span><h4>{row.name}</h4>{row.departments.length>0&&<p><Building2 size={14}/>{departmentText(row)}</p>}</div></div><span className={`bl-status is-${row.state}`}>{row.state==='done'?<LockKeyhole size={13}/>:<Clock3 size={13}/>}<span>{row.state==='done'?'已提交锁定':windowBlocked&&row.state==='pending'?'尚未开放':row.statusLabel}</span></span></div>
    {row.saved?<div className="bl-saved"><div><span>老板评分 · 占30%</span><strong>{scoreText(Number(row.saved.score))}<small>分</small></strong></div><div><span>评分说明</span><p>{row.saved.comment}</p><small>{row.saved.scorer_name||'已记录评分人'}{row.saved.created_at?' · '+row.saved.created_at:''}</small></div></div>:row.legacyScore!=null?<div className="bl-saved"><div><span>老板评分 · 占30%</span><strong>{scoreText(row.legacyScore)}<small>分</small></strong></div><div><span>历史评分</span><p>本月沿用已锁定的老板评分。</p></div></div>:row.state!=='pending'?<div className="bl-blocked"><ShieldCheck size={22}/><h5>{row.state==='done'?'本月评分已锁定':row.state==='exempt'?'本项无需评分':'本项暂不可评分'}</h5><p>{row.reason}</p></div>:<>
     <p className="bl-guidance">每位负责人每月评一次。请结合其本月的整体交付、团队管理与协作表现给出评价。</p>
     <div className="bl-form"><label className="bl-score-field"><span>老板评分 <small>0–100分</small></span><div><input type="number" min="0" max="100" step="0.1" aria-label={row.name+'老板评分'} placeholder="0–100" value={value.score} disabled={locked} onChange={event=>update('score',event.target.value)}/><b>/ 100</b></div></label><label className="bl-comment-field"><span>评分说明 <small>必填</small></span><textarea aria-label={row.name+'评分说明'} value={value.comment} maxLength={4000} rows={5} disabled={locked} placeholder="写清具体成果、管理或协作表现，以及下一步建议。" onChange={event=>update('comment',event.target.value)}/><small>{value.comment.length} / 4000</small></label></div>
-    <footer className="bl-submit-bar"><p><LockKeyhole size={12}/>提交后锁定。切换负责人或月份会保留草稿。</p><div><button type="button" className="secondary-button" disabled={locked} onClick={()=>void submit(false)}><Send size={13}/>{busy?'提交中…':'提交评分'}</button><button type="button" className="primary-button" disabled={locked} onClick={()=>void submit(true)}>提交并评下一位 <ArrowRight size={14}/></button></div></footer>
+    <footer className="bl-submit-bar"><p><LockKeyhole size={12}/>提交后锁定。切换负责人或月份会保留草稿。</p><div><button type="button" className="secondary-button" disabled={locked} onClick={()=>void submit(false)}><Send size={13}/>{busy?'提交中…':windowBlocked?'尚未开放':'提交评分'}</button><button type="button" className="primary-button" disabled={locked} onClick={()=>void submit(true)}>{windowBlocked?'尚未开放':'提交并评下一位'} <ArrowRight size={14}/></button></div></footer>
    </>}
    {[{label:'历史部门评分',scores:ownHistory},{label:'所负责部门的历任评分',scores:otherHistory}].filter(history=>history.scores.length).map(history=><details className="bl-history" key={history.label}><summary>{history.label}（{history.scores.length}）</summary>{history.scores.map(score=><article key={JSON.stringify([score.department_id,score.leader_user_id])}><strong>{departmentName(score.department_id)} · {nameFor(score.leader_user_id)} · {scoreText(Number(score.score))} 分</strong><p>{score.comment}</p><small>{score.scorer_name||'历史评分人'}{score.created_at?' · '+score.created_at:''}</small></article>)}</details>)}
   </article>:<div className="bl-empty-editor"><UserRoundCheck size={29}/><h4>选择一位负责人</h4><p>左侧优先展示本月待评负责人。</p></div>}</div></div>

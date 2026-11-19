@@ -49,12 +49,14 @@ export function App() {
   async function generateSummary(){if(summaryBusy)return;setSummaryBusy(true);setActionMessage('');try{const r=await fetch('/api/management/summary',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({periodId:selectedPeriodId})}),j=await r.json();if(!r.ok)throw Error(j.error==='ai_not_configured'?'请先在系统设置配置 AI 服务':j.error==='no_reports'?'本周期没有可分析周报':'摘要生成未完成，请检查服务后重试');setSummaryReady(true);setSummaryVersion(v=>v+1);setActivePage('dashboard');setActionMessage(`已根据 ${j.summary.reportCount} 份本周期周报生成摘要，尚未发送消息。`);}catch(e){setActionMessage(e instanceof Error?e.message:'生成失败');}finally{setSummaryBusy(false);}}
   const [access, setAccess] = useState<UserAccess | null>(null);
   const [sessionPerspective, setSessionPerspective] = useState<SessionPerspective>();
+  const [availableSessionPerspectives,setAvailableSessionPerspectives]=useState<SessionPerspective[]>([]);
   const [adminPerspective,setAdminPerspective]=useState<string>('management');
   const previewEmployeeId=access?.role==='system_admin'&&adminPerspective.startsWith('employee:')?adminPerspective.slice(9):'';
   const previewEmployee=access?.visibleEmployees.find(e=>e.userId===previewEmployeeId);
   const personalMode=access?.role==='system_admin'&&(adminPerspective==='personal'||Boolean(previewEmployee));
   const currentAccess = access?perspectiveAccess(access,adminPerspective):fallbackAccess;
   function changePerspective(next:string){
+    if(sessionPerspective==='admin'&&next==='personal')return;
     if(!window.dispatchEvent(new Event('organization-before-leave',{cancelable:true})))return;
     setAdminPerspective(next);
     setActivePage(next==='management'?'dashboard':'growth');
@@ -85,12 +87,15 @@ export function App() {
         if (!response.ok) throw new Error("load_me_failed");
         const result = await response.json();
         const nextAccess = normalizeAccess(result.access, result.user);
-        const activePerspective = result.activePerspective;
-        setSessionPerspective(result.canSwitchPerspective === true && (activePerspective === "boss" || activePerspective === "employee") ? activePerspective : undefined);
+        const options=normalizeSessionPerspectives(result.availablePerspectives);
+        const activePerspective=options.find(option=>option===result.activePerspective);
+        const canSwitchPerspective=result.canSwitchPerspective===true&&activePerspective!==undefined;
+        setAvailableSessionPerspectives(canSwitchPerspective?options:[]);
+        setSessionPerspective(canSwitchPerspective?activePerspective:undefined);
         setAccess(nextAccess);
         let mode='management';
         if(nextAccess.role==='system_admin'){
-          try{const saved=localStorage.getItem('admin-perspective:'+nextAccess.currentEmployee?.userId)||'';if(saved==='personal'||(saved.startsWith('employee:')&&nextAccess.visibleEmployees.some(e=>e.userId===saved.slice(9))))mode=saved;}catch{}
+          if(!canSwitchPerspective||activePerspective!=='admin')try{const saved=localStorage.getItem('admin-perspective:'+nextAccess.currentEmployee?.userId)||'';if(saved==='personal'||(saved.startsWith('employee:')&&nextAccess.visibleEmployees.some(e=>e.userId===saved.slice(9))))mode=saved;}catch{}
           setAdminPerspective(mode);
         }
         const permitted=perspectiveAccess(nextAccess,mode);
@@ -98,6 +103,7 @@ export function App() {
 
       } catch {
         setSessionPerspective(undefined);
+        setAvailableSessionPerspectives([]);
         setAccess(fallbackAccess);
         setActivePage(page=>resolvePage(page,fallbackAccess));
       }
@@ -235,6 +241,7 @@ export function App() {
           activePage={activePage}
           managementRole={currentAccess.role}
           sessionPerspective={sessionPerspective}
+          availableSessionPerspectives={availableSessionPerspectives}
           adminPerspective={access?.role==='system_admin'?adminPerspective:undefined}
           onChangeAdminPerspective={changePerspective}
           previewEmployees={access?.visibleEmployees||[]}
@@ -259,6 +266,12 @@ export function App() {
       </main>
     </div>
   );
+}
+
+function normalizeSessionPerspectives(value:unknown):SessionPerspective[]{
+  if(value===undefined)return ['boss','employee'];
+  if(!Array.isArray(value))return [];
+  return [...new Set(value.filter((option):option is SessionPerspective=>option==='boss'||option==='admin'||option==='employee'))];
 }
 
 function normalizeAccess(value: unknown, user: any): UserAccess {

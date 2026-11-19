@@ -1,6 +1,6 @@
 import {randomUUID} from 'node:crypto';
 import {employedInMonth} from './employee-lifecycle.mjs';
-export function createPersonalScoringReminders({query,exec,sql,enabled,deliver,policyFor,managerReviews,bossUserIds=()=>[],now=()=>Date.now()}) {
+export function createPersonalScoringReminders({query,exec,sql,enabled,deliver,policyFor,managerReviews,ratingWindow,bossUserIds=()=>[],now=()=>Date.now()}) {
  const inflight=new Set();
  const isEnabled=async month=>Boolean(typeof enabled==='function'?await enabled(month):enabled);
  const rules=async month=>{const p=policyFor?await policyFor(month):{};return {waitHours:p.reminderWaitHours||24,cooldownHours:p.reminderCooldownHours||24};};
@@ -13,7 +13,7 @@ export function createPersonalScoringReminders({query,exec,sql,enabled,deliver,p
   const active=id=>id!==user.userId&&(roster.has(id)?roster.get(id):bosses.has(id));
   if(periods.length&&!employedInMonth(periods,month))return {assignments:[],pending:[],aged:[],eligible:[],sends:[],handoffRequired:false};
   let handoffRequired=false;
-  const assignments=await query(`SELECT a.id,a.evaluator_user_id,a.evaluator_name,a.created_at,c.launch_at,c.status,c.created_at AS cycle_created_at,r.score,r.comment FROM scoring360_assignments a JOIN scoring360_cycles c ON c.id=a.cycle_id LEFT JOIN scoring360_responses r ON r.assignment_id=a.id WHERE substr(c.start_date,1,7)=${sql(month)} AND a.evaluee_user_id=${sql(user.userId)} AND (COALESCE(a.status,'active')='active' OR r.id IS NOT NULL);`);
+  const assignments=await query(`SELECT a.id,a.cycle_id,a.evaluator_user_id,a.evaluator_name,a.created_at,c.launch_at,c.status,c.created_at AS cycle_created_at,r.score,r.comment FROM scoring360_assignments a JOIN scoring360_cycles c ON c.id=a.cycle_id LEFT JOIN scoring360_responses r ON r.assignment_id=a.id WHERE substr(c.start_date,1,7)=${sql(month)} AND a.evaluee_user_id=${sql(user.userId)} AND (COALESCE(a.status,'active')='active' OR r.id IS NOT NULL);`);
   if(managerReviews){
    const state=await managerReviews.snapshot(),manager=managerReviews.progress(state,month,user.userId);
    const missing=manager.expectedIds.filter(id=>!manager.records?.some(r=>(manager.kind==='boss'?r.department_id:r.evaluator_user_id)===id));
@@ -24,7 +24,8 @@ export function createPersonalScoringReminders({query,exec,sql,enabled,deliver,p
    if(published.length)return {assignments,pending:[],aged:[],eligible:[],sends:[],handoffRequired:false};
   }
   const pending=assignments.filter(a=>!(typeof a.score==='number'||typeof a.score==='string'&&Boolean(a.score.trim()))||!Number.isFinite(Number(a.score))||Number(a.score)<0||Number(a.score)>100);
-  const aged=pending.filter(a=>active(a.evaluator_user_id)&&['open','active'].includes(a.status)&&now()-Math.max(timestamp(a.launch_at||a.cycle_created_at)||now(),timestamp(a.created_at)||0)>=waitMs);
+  const window=ratingWindow?await ratingWindow.status(month):null;
+  const aged=pending.filter(a=>(!window||window.isOpen&&(!a.cycle_id||a.cycle_id===window.cycleId))&&active(a.evaluator_user_id)&&['open','active'].includes(a.status)&&now()-Math.max(timestamp(a.launch_at||a.cycle_created_at)||now(),timestamp(a.created_at)||0,window?Math.max(timestamp(window.launchAt)||0,timestamp(window.opensAt)||0):0)>=waitMs);
   const sends=await query(`SELECT recipient_user_id,created_at,status FROM personal_scoring_reminders WHERE requester_user_id=${sql(user.userId)} AND month=${sql(month)} AND status IN ('pending','sent','uncertain','failed');`);
   const eligible=aged.filter(a=>a.evaluator_user_id&&!sends.some(s=>s.recipient_user_id===a.evaluator_user_id&&now()-timestamp(s.created_at)<cooldownMs));
   return {assignments,pending,aged,eligible,sends,handoffRequired,cooldownMs};

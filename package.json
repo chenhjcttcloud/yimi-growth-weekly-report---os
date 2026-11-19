@@ -30,6 +30,7 @@
     "server:dev": "AUTH_MODE=mock SERVER_PORT=5174 node server/index.mjs",
     "server:start": "node server/index.mjs",
     "test:scoring360": "node scripts/test-scoring360-policy.mjs && node scripts/test-scoring360-api.mjs && node scripts/test-scoring360-admin-api.mjs",
+    "test:monthly-scoring-window": "node scripts/test-monthly-scoring-window.mjs && node scripts/test-monthly-scoring-window-api.mjs && node scripts/test-monthly-scoring-window-reminders.mjs && node scripts/test-monthly-scoring-window-ui.mjs",
     "test:performance": "node scripts/test-performance-api.mjs",
     "test:product-score-api": "node scripts/test-product-management-score-api.mjs",
     "test:automatic-score-storage": "node scripts/test-automatic-score-history-stability.mjs && node scripts/test-automatic-evidence-storage.mjs",
@@ -48,6 +49,7 @@
     "test:navigation": "node scripts/test-navigation-refresh.mjs",
     "test:business": "node scripts/test-business-regression.mjs",
     "test:roles": "node scripts/test-role-authorization.mjs",
+    "test:perspectives": "node scripts/test-session-perspective.mjs && node scripts/test-three-perspectives-ui.mjs",
     "test:weighted-monthly": "node scripts/test-weighted-monthly.mjs && node scripts/test-weighted-monthly-api.mjs"
   },
   "dependencies": {

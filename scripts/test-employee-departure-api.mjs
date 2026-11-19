@@ -10,7 +10,8 @@ await mkdir('outputs/tests',{recursive:true});
 const dir=await mkdtemp(path.resolve('outputs/tests/employee-departure-api-')),db=dir+'/test.sqlite',data=dir+'/data';await mkdir(data);
 const sql=value=>value==null?'NULL':"'"+String(value).replaceAll("'","''")+"'";
 function run(statement,json=false){const result=spawnSync('sqlite3',['-bail',...(json?['-json']:[]),db],{input:statement,encoding:'utf8',maxBuffer:8*1024*1024});assert.equal(result.status,0,result.stderr);return json?JSON.parse(result.stdout||'[]'):result.stdout.trim();}
-const month=new Date().toLocaleDateString('sv-SE',{timeZone:'Asia/Shanghai'}).slice(0,7);
+// An already-open historical cycle isolates departure protection from this month's opening date.
+const month='2026-10';
 run(await readFile('db/schema.sql','utf8'));
 const names={admin:'测试管理员',manager:'测试负责人',departed:'离职同事',live:'在职同事',rater:'待评同事',scored:'已评同事'};
 for(const [id,name] of Object.entries(names))run(`INSERT INTO employees(user_id,name,department,manager_user_id,is_active) VALUES(${sql(id)},${sql(name)},'测试部门',${sql(id==='departed'||id==='live'?'manager':'')},1);`);

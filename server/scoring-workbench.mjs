@@ -1,9 +1,10 @@
 import {createHash,randomUUID} from 'node:crypto';
 import {employedInMonth} from './employee-lifecycle.mjs';
+import {monthlyScoringOpensAt,createMonthlyScoringWindow} from './monthly-scoring-window.mjs';
 
 // Daily configuration is separate from the scoring engine. Changes are additive:
 // unchecked ungraded relationships become inactive; responses and history stay.
-export function createScoringWorkbench({query,exec,sql,setup,managerReviews,bossMembers=()=>[],now=()=>new Date()}){
+export function createScoringWorkbench({query,exec,sql,setup,managerReviews,bossMembers=()=>[],now=()=>new Date(),ratingWindow=createMonthlyScoringWindow({query,sql,now})}){
  let busy=false;
  const current=()=>now().toLocaleDateString('sv-SE',{timeZone:'Asia/Shanghai'}).slice(0,7);
  const previous=month=>{const d=new Date(month+'-01T00:00:00Z');d.setUTCMonth(d.getUTCMonth()-1);return d.toISOString().slice(0,7);};
@@ -49,7 +50,7 @@ export function createScoringWorkbench({query,exec,sql,setup,managerReviews,boss
    }
    const after=await signature(month);if(before!==after)continue;
    const copyGroups=rows.filter(r=>pairs.some(p=>p.evalueeUserId===r.userId)).map(r=>({employee:r,raters:pairs.filter(p=>p.evalueeUserId===r.userId).map(p=>active.get(p.evaluatorUserId))}));
-   return {month,cycle:base.cycle,editable:base.editable,canOpenHistorical:!historicalOpenReason,historicalOpenReason,people:base.people,rows,revision:createHash('sha256').update(before).digest('hex'),counts:{total:rows.length,configured:rows.filter(r=>r.configured).length,pending:rows.filter(r=>!r.configured).length,issues:rows.filter(r=>r.issues.some(i=>i.type!=='peers')).length,ready:rows.filter(r=>!r.issues.length).length},checks:rows.flatMap(r=>r.issues.map(i=>({...i,userId:r.userId,name:r.name}))),copy:{sourceMonth:previous(month),sourceCount:prior.assignments.length,pairs,groups:copyGroups,skipped},_signature:before};
+   return {month,cycle:base.cycle,reviewWindow:await ratingWindow.status(month),editable:base.editable,canOpenHistorical:!historicalOpenReason,historicalOpenReason,people:base.people,rows,revision:createHash('sha256').update(before).digest('hex'),counts:{total:rows.length,configured:rows.filter(r=>r.configured).length,pending:rows.filter(r=>!r.configured).length,issues:rows.filter(r=>r.issues.some(i=>i.type!=='peers')).length,ready:rows.filter(r=>!r.issues.length).length},checks:rows.flatMap(r=>r.issues.map(i=>({...i,userId:r.userId,name:r.name}))),copy:{sourceMonth:previous(month),sourceCount:prior.assignments.length,pairs,groups:copyGroups,skipped},_signature:before};
   }
   throw Error('setup_changed');
  }
@@ -98,11 +99,27 @@ export function createScoringWorkbench({query,exec,sql,setup,managerReviews,boss
    }else if(body.action==='launch'){
     if(state.checks.length||!state.rows.length||!state.cycle)throw Error('setup_incomplete');
     if(!['open','active','scheduled'].includes(state.cycle.status)){
-     const scheduled=state.month>current();await commit(state,actor,'月度配评：检查并开放',guard=>[`UPDATE scoring360_cycles SET status=${sql(scheduled?'scheduled':'open')},launch_at=${sql(scheduled?state.month+'-01T00:00:00+08:00':now().toISOString())},updated_at=datetime('now') WHERE id=${sql(state.cycle.id)} AND ${guard};`],{scheduled});
+     const opensAt=monthlyScoringOpensAt(state.month),scheduled=now().getTime()<Date.parse(opensAt);await commit(state,actor,'月度配评：检查并开放',guard=>[`UPDATE scoring360_cycles SET status=${sql(scheduled?'scheduled':'open')},launch_at=${sql(scheduled?opensAt:now().toISOString())},updated_at=datetime('now') WHERE id=${sql(state.cycle.id)} AND ${guard};`],{scheduled,opensAt});
     }
    }else throw Error('invalid_setup_action');
    return {...publicState(await overview(state.month)),saved,messagesSent:0};
   }finally{busy=false;}
  }
- return {overview:async month=>publicState(await overview(month)),mutate};
+ async function activateDue(){
+  const month=current();
+  if(now().getTime()<Date.parse(monthlyScoringOpensAt(month)))return {skipped:'before_window'};
+  if(busy)return {skipped:'running'};
+  busy=true;
+  try{
+   const cycle=(await query(`SELECT id,status,launch_at FROM scoring360_cycles WHERE substr(start_date,1,7)=${sql(month)} ORDER BY CASE WHEN id=${sql(month+'-360')} THEN 0 ELSE 1 END,created_at DESC LIMIT 1;`))[0];
+   if(!cycle||!['draft','scheduled'].includes(cycle.status))return {skipped:'no_pending_cycle'};
+   if(cycle.status==='scheduled'&&cycle.launch_at&&Date.parse(cycle.launch_at)>now().getTime())return {skipped:'not_due'};
+   const state=await overview(month);
+   if(!state.cycle||state.cycle.id!==cycle.id||!['draft','scheduled'].includes(state.cycle.status))return {skipped:'changed'};
+   if(state.checks.length||!state.rows.length)return {skipped:'setup_incomplete',issues:state.checks};
+   await commit(state,{userId:'system',name:'系统自动开放'},'月度配评：最后一周自动开放',guard=>[`UPDATE scoring360_cycles SET status='open',launch_at=${sql(now().toISOString())},updated_at=datetime('now') WHERE id=${sql(cycle.id)} AND ${guard};`],{opensAt:monthlyScoringOpensAt(month),messagesSent:0});
+   return {month,cycleId:cycle.id,status:'open',messagesSent:0};
+  }finally{busy=false;}
+ }
+ return {overview:async month=>publicState(await overview(month)),mutate,activateDue};
 }
