@@ -1,0 +1,106 @@
+.month-end-reminders.month-end-reminders-v2{padding:26px;margin:0 0 24px;border:1px solid #e3e9e2;border-radius:16px;background:var(--v2-surface,#fff);color:var(--v2-ink,#1d2622);box-shadow:0 2px 8px #233e2c03}
+.month-end-reminders-v2 .reminder-heading{display:flex;align-items:flex-start;gap:13px;margin-bottom:23px}
+.month-end-reminders-v2 .reminder-heading-icon{display:grid;place-items:center;width:42px;height:42px;flex:0 0 auto;color:var(--v2-brand,#0d7a5f);background:var(--v2-brand-softer,#f0f7f3);border:1px solid #e1eee6;border-radius:12px}
+.month-end-reminders-v2 .reminder-heading-copy{flex:1;min-width:0}
+.month-end-reminders-v2 .reminder-heading .section-label{font-size:10px;letter-spacing:.8px;line-height:1.2;color:var(--v2-brand,#0d7a5f)}
+.month-end-reminders-v2 .reminder-heading h3{font-size:19px;letter-spacing:-.4px;line-height:1.5;margin:4px 0 5px;font-weight:650}
+.month-end-reminders-v2 .reminder-heading p{margin:0;color:var(--v2-ink-2,#55615b);font-size:12px;line-height:1.8}
+.month-end-reminders-v2 .reminder-state{display:inline-flex;gap:6px;align-items:center;white-space:nowrap;font-size:11px;border:1px solid #e5e9e2;border-radius:99px;padding:5px 10px;background:#f7f8f5;color:#778278;margin-top:5px}
+.month-end-reminders-v2 .reminder-state>span{width:5px;height:5px;border-radius:50%;background:#a1aaa2}
+.month-end-reminders-v2 .reminder-state.is-on{color:var(--v2-brand-deep,#0a5f4a);background:#edf7f0;border-color:#d7e9dd}
+.month-end-reminders-v2 .reminder-state.is-on>span{background:#34865f}
+.month-end-reminders-v2 .reminder-overview{display:grid;grid-template-columns:minmax(0,1.65fr) minmax(0,1fr);gap:12px;margin-bottom:20px}
+.month-end-reminders-v2 .reminder-dates-card,.month-end-reminders-v2 .reminder-people-card{border:1px solid #e3ebe1;border-radius:12px;padding:17px 18px;min-width:0;background:#f9fbf7}
+.month-end-reminders-v2 .reminder-people-card{background:#fff;border-color:#e7ebe4}
+.month-end-reminders-v2 .reminder-card-label{display:flex;align-items:center;gap:7px;font-size:11px;color:#69786d;line-height:1.6;flex-wrap:wrap}
+.month-end-reminders-v2 .reminder-card-label>svg{color:#789080;flex:0 0 auto}
+.month-end-reminders-v2 .reminder-card-label>span{margin-left:auto;font-size:10px;color:#89968b}
+.month-end-reminders-v2 .reminder-date-list{display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin:15px 0 12px}
+.month-end-reminders-v2 .reminder-date{display:flex;align-items:baseline;gap:8px;border:1px solid #dce9da;background:#fff;padding:9px 12px;border-radius:8px}
+.month-end-reminders-v2 .reminder-date small{color:#7b8d7e;font-size:10px;white-space:nowrap}
+.month-end-reminders-v2 .reminder-date time{font-family:var(--v2-num,inherit);font-size:20px;letter-spacing:-.5px;line-height:1.2;color:var(--v2-brand-deep,#0a5f4a);font-weight:600;white-space:nowrap}
+.month-end-reminders-v2 .reminder-date-pending{font-size:17px;font-weight:550;color:#69786d}
+.month-end-reminders-v2 .reminder-overview p{margin:0;font-size:11px;color:#67755f;line-height:1.7}
+.month-end-reminders-v2 .reminder-people-count{display:flex;align-items:baseline;gap:7px;color:var(--v2-brand-deep,#0a5f4a);font-family:var(--v2-num,inherit);font-size:32px;line-height:1.3;margin:11px 0 9px;font-weight:600;letter-spacing:-1px}
+.month-end-reminders-v2 .reminder-people-count>span{font-family:var(--v2-font,inherit);font-size:12px;letter-spacing:0;font-weight:400;color:#7a897e}
+.month-end-reminders-v2 .reminder-settings{border:1px solid #e4e9e1;border-radius:12px;overflow:hidden;margin-bottom:15px}
+.month-end-reminders-v2 .reminder-toggle{display:flex;justify-content:space-between;align-items:center;gap:20px;background:#f8faf6;padding:16px 18px;cursor:pointer;border-bottom:1px solid #e8ece4}
+.month-end-reminders-v2 .reminder-toggle>span:first-child{min-width:0}
+.month-end-reminders-v2 .reminder-toggle strong{display:block;font-size:12px;line-height:1.7;font-weight:600}
+.month-end-reminders-v2 .reminder-toggle small{display:block;font-size:11px;color:#67755f;line-height:1.8;margin-top:3px}
+.month-end-reminders-v2 .reminder-switch{position:relative;display:inline-flex;width:40px;height:23px;flex:0 0 auto}
+.month-end-reminders-v2 .reminder-switch input{position:absolute;inset:0;margin:0;width:100%;height:100%;opacity:0;z-index:1;cursor:pointer}
+.month-end-reminders-v2 .reminder-switch-track{display:flex;align-items:center;width:40px;height:23px;padding:3px;background:#d8dfd5;border:1px solid #ccd6c8;border-radius:99px;transition:background .18s,border-color .18s}
+.month-end-reminders-v2 .reminder-switch-track>span{width:15px;height:15px;display:block;border-radius:50%;background:#fff;box-shadow:0 1px 3px #1f382525;transition:transform .18s}
+.month-end-reminders-v2 .reminder-switch input:checked+.reminder-switch-track{background:var(--v2-brand,#0d7a5f);border-color:var(--v2-brand,#0d7a5f)}
+.month-end-reminders-v2 .reminder-switch input:checked+.reminder-switch-track>span{transform:translateX(16px)}
+.month-end-reminders-v2 .reminder-switch input:focus-visible+.reminder-switch-track{outline:2px solid #619a77;outline-offset:4px}
+.month-end-reminders-v2 .reminder-switch input:disabled{cursor:wait}
+.month-end-reminders-v2 .reminder-switch:has(input:disabled){opacity:.55}
+.month-end-reminders-v2 .reminder-fields{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:18px;padding:19px 18px 13px}
+.month-end-reminders-v2 .reminder-fields>label{display:grid;gap:7px;min-width:0;align-content:start}
+.month-end-reminders-v2 .reminder-fields>label>span{display:flex;align-items:center;gap:6px;font-size:11px;color:#526355;font-weight:500}
+.month-end-reminders-v2 .reminder-fields>label>span>svg{color:#8b9a8d}
+.month-end-reminders-v2 .reminder-fields input{display:block;width:100%;min-width:0;max-width:100%;min-height:43px;box-sizing:border-box;font:inherit;font-size:13px;color:#304d3b;border:1px solid #dce4d8;border-radius:8px;background:#fff;padding:10px 12px;outline:none;transition:border-color .15s,box-shadow .15s;color-scheme:light}
+.month-end-reminders-v2 .reminder-fields input:focus-visible{border-color:#589571;box-shadow:0 0 0 3px #e8f2e9}
+.month-end-reminders-v2 .reminder-fields input:disabled{background:#f6f8f3;color:#8a968a;cursor:wait}
+.month-end-reminders-v2 .reminder-fields small{font-size:11px;color:#67755f;line-height:1.6}
+.month-end-reminders-v2 .reminder-effective{display:flex;gap:7px;align-items:flex-start;margin:0;padding:0 18px 14px;font-size:10px;color:#78907d;line-height:1.7}
+.month-end-reminders-v2 .reminder-effective>svg{flex:0 0 auto;margin-top:1px}
+.month-end-reminders-v2 .reminder-actions{display:flex;align-items:center;gap:10px;flex-wrap:wrap;padding:14px 18px;border-top:1px solid #edf0e8;background:#fdfefb}
+.month-end-reminders-v2 .reminder-actions button{display:inline-flex;align-items:center;justify-content:center;gap:7px;min-height:38px;margin:0;font-size:11px;font-family:inherit;line-height:1.5;padding:9px 13px;border-radius:8px;cursor:pointer;box-shadow:none;outline:none}
+.month-end-reminders-v2 .reminder-actions .primary-button{border:1px solid var(--v2-brand,#0d7a5f);background:var(--v2-brand,#0d7a5f);color:#fff}
+.month-end-reminders-v2 .reminder-actions .primary-button:hover:not(:disabled){background:var(--v2-brand-deep,#0a5f4a);border-color:var(--v2-brand-deep,#0a5f4a)}
+.month-end-reminders-v2 .reminder-actions .secondary-button{border:1px solid #dfe6d9;background:#fff;color:#536d58}
+.month-end-reminders-v2 .reminder-actions .secondary-button:hover:not(:disabled){background:#f2f7ee;border-color:#c9d9c4}
+.month-end-reminders-v2 .reminder-actions button:focus-visible{outline:2px solid #619a77;outline-offset:3px}
+.month-end-reminders-v2 .reminder-actions button:disabled{opacity:.5;cursor:wait}
+.month-end-reminders-v2 .reminder-actions>small{font-size:10px;color:#67755f;line-height:1.7;margin-left:auto}
+.month-end-reminders-v2 .reminder-notice{display:flex;gap:8px;align-items:flex-start;font-size:11px;line-height:1.8;border:1px solid #dce9de;border-radius:8px;background:#f2f8f1;color:#57715d;padding:11px 13px;margin:12px 0}
+.month-end-reminders-v2 .reminder-notice>svg{flex:0 0 auto;margin-top:3px}
+.month-end-reminders-v2 .reminder-notice.is-warning{background:#fff8ec;border-color:#eddfc3;color:#947544}
+.month-end-reminders-v2 .reminder-calendar{border:1px solid #e7ece2;border-radius:10px;padding:0;margin:0 0 12px;font-size:11px;background:#fff}
+.month-end-reminders-v2 .reminder-calendar>summary{display:flex;align-items:center;gap:10px;padding:13px 15px;list-style:none;cursor:pointer}
+.month-end-reminders-v2 summary::-webkit-details-marker{display:none}
+.month-end-reminders-v2 .reminder-summary-icon{color:#899c87;display:flex;flex:0 0 auto}
+.month-end-reminders-v2 .reminder-summary-copy{display:grid;gap:3px;flex:1;min-width:0}
+.month-end-reminders-v2 .reminder-summary-copy strong{font-size:11px;font-weight:500;line-height:1.6}
+.month-end-reminders-v2 .reminder-summary-copy small{font-size:10px;line-height:1.6;color:#67755f}
+.month-end-reminders-v2 .reminder-calendar-badge{font-size:10px;color:#6e866b;background:#f3f7ef;border-radius:5px;padding:3px 7px;white-space:nowrap}
+.month-end-reminders-v2 .reminder-chevron{flex:0 0 auto;color:#91a18c;transition:transform .18s}
+.month-end-reminders-v2 details[open]>summary .reminder-chevron{transform:rotate(180deg)}
+.month-end-reminders-v2 .reminder-calendar-body{border-top:1px solid #edf0e7;padding:4px 15px 13px}
+.month-end-reminders-v2 .reminder-calendar-year{display:flex;align-items:center;gap:10px;flex-wrap:wrap;padding:11px 0;border-bottom:1px solid #f0f2eb;font-size:10px}
+.month-end-reminders-v2 .reminder-calendar-year>strong{font-size:11px;color:#647660;font-weight:550}
+.month-end-reminders-v2 .reminder-calendar-year>span{display:inline-flex;align-items:center;gap:4px;color:#9e8253}
+.month-end-reminders-v2 .reminder-calendar-year>.is-updated{color:#64906a}
+.month-end-reminders-v2 .reminder-calendar-year>small{margin-left:auto;color:#98a190;font-size:10px}
+.month-end-reminders-v2 .reminder-calendar-body>a{display:inline-flex;gap:5px;align-items:center;font-size:10px;color:#608966;text-decoration:none;line-height:1.7;margin-top:11px}
+.month-end-reminders-v2 .reminder-calendar-body>a:hover{text-decoration:underline;color:var(--v2-brand-deep,#0a5f4a)}
+.month-end-reminders-v2 .reminder-records{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));align-items:start;gap:10px}
+.month-end-reminders-v2 .reminder-disclosure{border:1px solid #e5ebe0;border-radius:9px;padding:0;min-width:0;overflow:hidden;background:#fcfdf9}
+.month-end-reminders-v2 .reminder-disclosure>summary{display:flex;align-items:center;gap:8px;padding:13px 14px;list-style:none;cursor:pointer;min-height:47px}
+.month-end-reminders-v2 .reminder-disclosure>summary>svg:first-child{color:#84987d;flex:0 0 auto}
+.month-end-reminders-v2 .reminder-disclosure>summary>span{font-size:11px;font-weight:500;flex:1;min-width:0}
+.month-end-reminders-v2 .reminder-disclosure>summary>small{font-size:10px;font-weight:400;white-space:nowrap;color:#7a8d71;background:#edf3e7;border-radius:5px;padding:2px 6px}
+.month-end-reminders-v2 .reminder-disclosure[open]{background:#fff}
+.month-end-reminders-v2 .reminder-disclosure>.pf-table-scroll{border-top:1px solid #edf0e8;padding:0 9px;max-height:270px;overflow:auto}
+.month-end-reminders-v2 .reminder-disclosure .pf-table{min-width:310px;font-size:10px;width:100%;white-space:normal}
+.month-end-reminders-v2 .reminder-disclosure .pf-table th{font-size:10px;white-space:nowrap;padding:11px 6px;background:#fafcf7}
+.month-end-reminders-v2 .reminder-disclosure .pf-table td{font-size:10px;padding:10px 6px;line-height:1.7}
+.month-end-reminders-v2 .reminder-delivery-status{display:inline-block;font-size:10px;color:#7b8c73;background:#f1f5ec;border-radius:5px;padding:3px 6px;line-height:1.6}
+.month-end-reminders-v2 .reminder-delivery-status[data-status=sent]{color:#3f8057;background:#edf7ed}
+.month-end-reminders-v2 .reminder-delivery-status[data-status=failed],.month-end-reminders-v2 .reminder-delivery-status[data-status=uncertain]{color:#a67d35;background:#fff7e7}
+.month-end-reminders-v2 .reminder-empty{display:grid;justify-items:center;text-align:center;gap:7px;border-top:1px solid #edf0e7;padding:23px 14px;color:#98aa8f}
+.month-end-reminders-v2 .reminder-empty strong{font-size:11px;line-height:1.7;font-weight:500;color:#63765b}
+.month-end-reminders-v2 .reminder-empty p{font-size:10px;line-height:1.7;margin:0;color:#67755f}
+.month-end-reminders-v2 .reminder-rules{border:0;padding:0;margin:15px 0 0}
+.month-end-reminders-v2 .reminder-rules>summary{list-style:none;display:inline-flex;align-items:center;gap:6px;cursor:pointer;color:#8d9c83;font-size:10px;font-weight:400;line-height:1.8}
+.month-end-reminders-v2 .reminder-rules>p{font-size:10px;color:#95a08c;line-height:1.9;margin:9px 0 0;max-width:940px}
+.month-end-reminders-v2 summary:focus-visible{outline:2px solid #619a77;outline-offset:3px;border-radius:7px}
+.month-end-reminders-v2 .reminder-loading{font-size:12px;color:#8d9b85;padding:12px 0;margin:0}
+@media(max-width:1100px){.month-end-reminders-v2 .reminder-heading{flex-wrap:wrap}.month-end-reminders-v2 .reminder-state{margin:0 0 0 55px}.month-end-reminders-v2 .reminder-records{grid-template-columns:1fr}.month-end-reminders-v2 .reminder-actions>small{flex-basis:100%;margin-left:0}}
+@media(max-width:760px){.month-end-reminders.month-end-reminders-v2{padding:19px;border-radius:13px}.month-end-reminders-v2 .reminder-heading{gap:10px;margin-bottom:18px}.month-end-reminders-v2 .reminder-heading-icon{width:36px;height:36px;border-radius:10px}.month-end-reminders-v2 .reminder-heading h3{font-size:17px}.month-end-reminders-v2 .reminder-state{margin-left:46px}.month-end-reminders-v2 .reminder-heading p{font-size:11px}.month-end-reminders-v2 .reminder-overview{grid-template-columns:1fr;gap:10px}.month-end-reminders-v2 .reminder-dates-card,.month-end-reminders-v2 .reminder-people-card{padding:15px}.month-end-reminders-v2 .reminder-people-count{font-size:28px;margin:8px 0}.month-end-reminders-v2 .reminder-date-list{gap:8px;margin:12px 0 10px}.month-end-reminders-v2 .reminder-date{padding:9px 10px;gap:6px}.month-end-reminders-v2 .reminder-date time{font-size:19px}.month-end-reminders-v2 .reminder-fields{padding:17px 15px 12px;gap:15px}.month-end-reminders-v2 .reminder-toggle{padding:15px;gap:12px}.month-end-reminders-v2 .reminder-toggle small{max-width:245px}.month-end-reminders-v2 .reminder-effective{padding-left:15px;padding-right:15px}.month-end-reminders-v2 .reminder-actions{padding:13px 15px;gap:9px}.month-end-reminders-v2 .reminder-calendar>summary{padding:12px;gap:8px}.month-end-reminders-v2 .reminder-calendar-year>small{margin-left:0;flex-basis:100%}}
+@media(max-width:480px){.month-end-reminders-v2 .reminder-fields{grid-template-columns:1fr}.month-end-reminders-v2 .reminder-actions button{width:100%;min-height:40px}.month-end-reminders-v2 .reminder-actions>small{text-align:center}.month-end-reminders-v2 .reminder-card-label>span{margin-left:0}.month-end-reminders-v2 .reminder-calendar-badge{font-size:9px;padding:3px 5px}}
+@media(max-width:760px){.month-end-reminders-v2 .reminder-heading{display:grid;grid-template-columns:36px minmax(0,1fr);gap:10px}.month-end-reminders-v2 .reminder-state{grid-column:2;justify-self:start;margin:0}.month-end-reminders-v2 .reminder-heading-copy{width:100%}}
+@media(prefers-reduced-motion:reduce){.month-end-reminders-v2 *{transition:none!important}}

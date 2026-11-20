@@ -16,7 +16,7 @@ try{
  for(let n=0;n<120;n++){if(server.exitCode!==null)throw Error(logs);try{if((await fetch(base+'/health')).ok)break;}catch{}await new Promise(r=>setTimeout(r,100));}
  const endpoint='/api/system-settings/monthly-reminders';
  assert.equal((await call(endpoint,'staff')).status,403);assert.equal((await call(endpoint,'staff',{enabled:false,time:'09:30'})).status,403);
- assert.equal((await call(endpoint,'admin')).status,200);const preview=await call(endpoint,'boss');assert.equal(preview.status,200);assert.equal(preview.body.settings.enabled,false);assert.equal(preview.body.calendarUpdate.enabled,false);assert(preview.body.recipients.some(r=>r.userId==='head'));assert(preview.body.recipients.some(r=>r.userId==='boss'));
+ assert.equal((await call(endpoint,'admin')).status,200);const preview=await call(endpoint,'boss');assert.equal(preview.status,200);assert.equal(preview.body.settings.enabled,false);assert.equal(preview.body.calendarUpdate.enabled,false);assert.deepEqual(preview.body.recipients,[],'this fixture has no opened scoring cycle, so no one is eligible for reminders');
  assert.equal((await call(endpoint+'?month=2026-99','admin')).status,400);
  assert.equal((await call(endpoint,'admin',{enabled:false,time:'30:00'})).body.error,'invalid_monthly_reminders');assert.equal((await call(endpoint,'admin',{enabled:true,time:'10:00'})).body.error,'feishu_required');
  assert.equal((await call(endpoint,'admin',{enabled:false,time:'09:30'},'https://untrusted.example')).status,403);
@@ -29,7 +29,7 @@ try{
  const page=await browser.newPage(),errors=[];page.on('pageerror',e=>errors.push(e.message));await page.goto(base+'/?page=settings&settingsTab=cycles');
  const region=page.getByRole('region',{name:'月度评分飞书提醒'});await region.getByRole('button',{name:'保存月末提醒设置'}).waitFor();await region.getByLabel('工作日日历更新状态').waitFor();assert.equal(await region.getByRole('checkbox').isChecked(),false);assert.equal(await region.getByLabel('月末提醒发送时间').inputValue(),'09:30');
  assert.equal(await region.getByLabel('月末提醒生效月份').inputValue(),'2026-11');await region.getByLabel('月末提醒生效月份').fill('2026-12');
- await region.getByLabel('月末提醒发送时间').fill('10:00');await region.getByRole('button',{name:'保存月末提醒设置'}).click();await region.getByText('已保存：自动提醒已关闭。',{exact:true}).waitFor();await region.getByText('查看待提醒名单',{exact:false}).click();await region.getByText('测试负责人',{exact:true}).waitFor();
+ await region.getByLabel('月末提醒发送时间').fill('10:00');await region.getByRole('button',{name:'保存月末提醒设置'}).click();await region.getByText('已保存：自动提醒已关闭。',{exact:true}).waitFor();await region.getByText('查看待提醒名单',{exact:false}).click();await region.getByText('当前没有待提醒人员',{exact:true}).waitFor();
  await page.screenshot({path:dir+'/month-end-settings.png',fullPage:true});await page.reload();await page.getByRole('region',{name:'月度评分飞书提醒'}).getByLabel('月末提醒发送时间').waitFor();assert.equal(await region.getByLabel('月末提醒发送时间').inputValue(),'10:00');assert.deepEqual(errors,[]);
  const overflow=await page.evaluate(()=>({outer:document.documentElement.scrollHeight>window.innerHeight,width:document.documentElement.scrollWidth>window.innerWidth}));assert.equal(overflow.width,false);assert.equal(overflow.outer,false);
  assert.equal(await region.getByLabel('月末提醒生效月份').inputValue(),'2026-12');
