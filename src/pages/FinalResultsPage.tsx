@@ -6,6 +6,7 @@ import { PersonalMonthWorkspace } from '../components/PersonalMonthWorkspace';
 import { monthText, ResultEmpty, ResultMetric, ResultStatus, scoreText, SubmissionCounts } from '../components/PerformanceUI';
 import { monthlyQualityView, qualityDate, qualityReviewNotice, type MonthlyQualitySummary } from '../components/MonthlyQuality';
 import {locationValue,rememberLocation} from '../lib/navigation';
+import { HistoricalReportArchive } from '../components/HistoricalReportArchive';
 
 export function FinalResultsPage({ module, onOpenModule, previewEmployeeId,employeeContextId,scoreFocus }: { scoreFocus?:'quality'|'collaboration'; previewEmployeeId?:string; employeeContextId?:string; module?: PersonalModule; onOpenModule: (module: PersonalModule) => void }) {
   const owner=employeeContextId||previewEmployeeId||'self';
@@ -56,6 +57,7 @@ export function FinalResultsPage({ module, onOpenModule, previewEmployeeId,emplo
     </>}
     {module==='reports'&&<p className="pf-notice">{qualityReviewNotice}</p>}
     {scoreFocus!=='collaboration'&&<div id="personal-week-workspace"><PersonalMonthWorkspace readOnly={Boolean(previewEmployeeId)} module={scoreFocus==='quality'?'reports':module} onOpenModule={onOpenModule} key={data.selectedWeekId||data.month} data={data} onSelectWeek={setWeekId} onRefresh={()=>setRevision(v=>v+1)}/></div>}
+    {module==='reports'&&<HistoricalReportArchive previewEmployeeId={previewEmployeeId} employeeContextId={owner}/>}
     {scoreFocus==='quality'&&<section className="v2-card pf-table-card"><div className="v2-card-head"><h3 className="v2-card-title">历史周报质量最终分</h3></div>{confirmedHistory.length>0?<div className="pf-table-scroll"><table className="pf-table"><thead><tr><th>月份</th><th>质量最终分</th><th>确认人</th><th>确认时间</th></tr></thead><tbody>{confirmedHistory.map((row:{month:string;monthlyQuality:MonthlyQualitySummary})=><tr key={row.month}><td>{monthText(row.month)}</td><td className="pf-tabular">{scoreText(row.monthlyQuality.finalScore)} 分</td><td>{row.monthlyQuality.confirmedBy||'—'}</td><td>{qualityDate(row.monthlyQuality.confirmedAt)}</td></tr>)}</tbody></table></div>:<ResultEmpty title="暂无已确认的质量分" description="管理人员确认后，月度最终分会显示在这里。"/>}</section>}
     {scoreFocus==='collaboration'&&<section className="v2-card pf-table-card"><div className="v2-card-head"><div><h3 className="v2-card-title">历史协同得分</h3><p className="v2-card-sub">仅展示本人的最终结果与发布状态。</p></div></div><div className="pf-table-scroll"><table className="pf-table"><thead><tr><th>月份</th><th>协同最终分</th><th>状态</th></tr></thead><tbody>{relevantHistory.map((row:any)=><tr key={row.month}><td>{monthText(row.month)}</td><td className="pf-tabular">{scoreText(row.collaboration)}{row.collaboration!=null?' 分':''}</td><td>{row.collaboration!=null?'已发布':'等待评分完成'}</td></tr>)}</tbody></table></div>{!relevantHistory.length&&<ResultEmpty title="暂无历史协同结果" description="评分全部完成后，最终分会自动显示在这里。"/>}</section>}
 

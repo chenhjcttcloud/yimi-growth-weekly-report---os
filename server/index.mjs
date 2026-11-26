@@ -1,4 +1,5 @@
 import {createEmployeeIdentity,resolveFeishuLogin} from './employee-identity.mjs';
+import {createHistoricalReportArchive} from './historical-report-archive.mjs';
 import {createProductManagementScoreApi,PRODUCT_MANAGEMENT_SCORE_PATH} from './product-management-score-api.mjs';
 import {decodeAutomaticEvidence} from './automatic-evidence-storage.mjs';
 import {createFeishuDepartmentSync} from './feishu-department-sync.mjs';
@@ -147,6 +148,7 @@ const scoring360AdminState = {
 let roleAuthorizationSaving = false;
 
 const employeeIdentity=createEmployeeIdentity({query:querySqlRows,exec:execSql,sql:sqlValue,strict:config.authMode!=='mock'});
+const historicalReportArchive=createHistoricalReportArchive({query:querySqlRows,sql:sqlValue});
 await ensureDatabase();
 const sessionPolicy=createSessionPolicy({query:querySqlRows,exec:execSql,sql:sqlValue,ttlHours:process.env.SESSION_TTL_HOURS,mock:config.authMode==='mock'});
 await sessionPolicy.load();
@@ -307,6 +309,34 @@ async function route(req, res) {
   }
   if (url.pathname === '/api/session/perspective') return switchSessionPerspective(req, res, sessionForPolicy);
   const managerForPolicy = Boolean(userForPolicy && !isExternalSession(sessionForPolicy) && isScoring360ConfigManagerSession(sessionForPolicy));
+  if(url.pathname==='/api/historical-reports'||url.pathname.startsWith('/api/historical-reports/')){
+    res.setHeader('cache-control','private, no-store');
+    if(!userForPolicy)return sendJson(res,401,{ok:false,error:'unauthorized'});
+    if(isExternalSession(sessionForPolicy))return sendJson(res,403,{ok:false,error:'historical_archive_forbidden'});
+    if(req.method!=='GET')return sendJson(res,405,{ok:false,error:'historical_archive_readonly'});
+    const archiveView=url.searchParams.get('view');
+    if(archiveView!==null&&!['personal','management'].includes(archiveView))return sendJson(res,400,{ok:false,error:'invalid_historical_archive_view'});
+    if(archiveView==='management'&&!managerForPolicy)return sendJson(res,403,{ok:false,error:'manager_only'});
+    const employeeId=url.searchParams.get('employeeId');
+    if(employeeId!==null&&(!employeeId||employeeId.trim()!==employeeId||employeeId.length>200))return sendJson(res,400,{ok:false,error:'invalid_employee_id'});
+    if(employeeId!==null&&employeeId!==userForPolicy.userId&&!managerForPolicy)return sendJson(res,403,{ok:false,error:'self_only'});
+    const scope=employeeId!==null?{employeeUserId:employeeId}:archiveView==='management'?{management:true}:{employeeUserId:userForPolicy.userId};
+    try{
+      if(url.pathname==='/api/historical-reports'){
+        const options={...scope};
+        for(const key of ['month','limit','offset'])if(url.searchParams.has(key))options[key]=url.searchParams.get(key);
+        return sendJson(res,200,{ok:true,...await historicalReportArchive.list(options)});
+      }
+      const encodedId=url.pathname.slice('/api/historical-reports/'.length);
+      if(!encodedId||encodedId.includes('/'))return sendJson(res,404,{ok:false,error:'historical_archive_not_found'});
+      let id;try{id=decodeURIComponent(encodedId);}catch{return sendJson(res,400,{ok:false,error:'invalid_historical_archive_id'});}
+      const record=await historicalReportArchive.detail(id,scope);
+      return record?sendJson(res,200,{ok:true,record}):sendJson(res,404,{ok:false,error:'historical_archive_not_found'});
+    }catch(error){
+      const invalid=['invalid_historical_archive_month','invalid_historical_archive_pagination','invalid_historical_archive_id'];
+      return sendJson(res,invalid.includes(error.message)?400:500,{ok:false,error:invalid.includes(error.message)?error.message:'historical_archive_unavailable'});
+    }
+  }
   if(url.pathname.startsWith('/api/operations')){
     if(!managerForPolicy)return sendJson(res,403,{ok:false,error:'manager_only'});
     res.setHeader('cache-control','no-store');
@@ -4060,6 +4090,7 @@ async function ensureDatabase() {
   if (!existsSync(schemaPath)) return;
   const schema = await readFile(schemaPath, "utf8");
   await execSql(schema);
+  await execSql(await readFile(path.join(rootDir,'server/historical-report-archive-schema.sql'),'utf8'));
   await ensureScoring360Schema();
   await ensureOperationsSchema({query:querySqlRows,exec:execSql});
 }
