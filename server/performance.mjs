@@ -6,6 +6,7 @@ import {ACTIVE_REPORT_QUALITY_VERSION} from './report-quality-active.mjs';
 import {reportQualityAssessment,fixedQualityWeightsFor,isStructuredQualityVersion,isPreviewQuality} from './report-quality-reader.mjs';
 import {legacyReportScore,usableQuality} from './report-rescore-state.mjs';
 import {encodeAutomaticEvidence,decodeAutomaticEvidence} from './automatic-evidence-storage.mjs';
+import {databaseCollaborationScores} from './collaboration-score-rounding.mjs';
 import {applyQualityReviews,qualityAnalysisVersion,qualityReviewDetails,qualityRound,qualityVersion,summarizeMonthlyQuality} from './weekly-quality-review.mjs';
 
 const selected=(value,keys)=>value&&typeof value==='object'?Object.fromEntries(keys.filter(key=>value[key]!==undefined).map(key=>[key,value[key]])):null;
@@ -337,6 +338,16 @@ WHERE COALESCE((SELECT calculation_hash FROM automatic_performance_results WHERE
       const complete=peerComplete&&managerProgress.complete;
       const quality=summarizeMonthlyQuality(employeeReports,confirmationBlocks.get(month));
       monthly.push({...employee,month,reports:employeeReports,quality,qualityCandidate:quality.candidateScore,timeliness:{expected,submitted,onTime,late:counted.filter(r=>r.late).length,pendingTimestamp:counted.filter(r=>r.timestampUnknown).length,pendingCalendar:new Set([...weeks.filter(p=>readSchedule(p.end,monthPolicy.deadlineTime).calendarPending).map(p=>p.end),...counted.filter(r=>r.schedule.calendarPending).map(r=>r.end)]).size,missing:Math.max(0,expected-submitted),rate:expected?round(onTime/expected*100):null},peerCandidate,peerComplete,managerProgress,collaborationCandidate:complete?round(peerCandidate*.7+managerProgress.score*.3):null,collaborationComplete:complete,collaborationExpected:assignments.length,collaborationSubmitted:assignments.filter(hasPeerScore).length});
+    }
+    // Existing publications retain their original values. Pending publications
+    // use the database's own AVG/ROUND semantics, just like its validation trigger.
+    const pendingCollaborations=monthly.filter(row=>row.collaborationComplete&&!results.some(result=>result.month===row.month&&result.employee_user_id===row.userId&&result.kind==='collaboration'));
+    const collaborationScores=await databaseCollaborationScores({query,sql},pendingCollaborations.map(row=>({month:row.month,employeeUserId:row.userId,kind:row.managerProgress.kind,expectedIds:row.managerProgress.expectedIds})));
+    for(const score of collaborationScores){
+      const row=pendingCollaborations[score.index];
+      row.peerCandidate=score.peerScore;
+      row.managerProgress={...row.managerProgress,score:score.managerScore};
+      row.collaborationCandidate=score.score;
     }
     const calculations=monthly.flatMap(row=>calculateReportResults(row,results));
     if(calculations.length)await exec(`BEGIN IMMEDIATE;${calculations.join('\n')}COMMIT;`);

@@ -40,6 +40,7 @@ jobs:
       - run: node scripts/test-month-end-score-reminders.mjs
       - run: node scripts/test-china-work-calendar.mjs
       - run: node scripts/test-weighted-monthly.mjs
+      - run: node scripts/test-collaboration-sqlite-rounding.mjs
       - run: node scripts/test-scoring360-api.mjs
       - run: node scripts/test-monthly-scoring-window.mjs
       - run: node scripts/test-monthly-scoring-window-api.mjs
