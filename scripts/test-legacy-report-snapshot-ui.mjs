@@ -1,0 +1,223 @@
+import assert from 'node:assert/strict';
+import { createServer } from 'node:http';
+import { mkdir, readFile, writeFile } from 'node:fs/promises';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
+import { build } from 'vite';
+import react from '@vitejs/plugin-react';
+import { chromium } from 'playwright';
+
+const repo = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
+const directory = path.join(repo, 'outputs', 'tests', `legacy-report-snapshot-ui-${Date.now()}`);
+const staticDirectory = path.join(directory, 'static');
+await mkdir(directory, { recursive: true });
+const relative = filename => './' + path.relative(directory, path.join(repo, filename)).split(path.sep).join('/');
+await writeFile(path.join(directory, 'entry.jsx'), `import React from 'react';
+import {createRoot} from 'react-dom/client';
+import {LegacyReportSnapshot} from ${JSON.stringify(relative('src/components/LegacyReportSnapshot.tsx'))};
+import ${JSON.stringify(relative('src/styles.css'))};
+import ${JSON.stringify(relative('src/styles/v2.css'))};
+import ${JSON.stringify(relative('src/styles/select.css'))};
+createRoot(document.getElementById('root')).render(<main style={{maxWidth:1080,margin:'24px auto',padding:'0 12px'}}><LegacyReportSnapshot/></main>);`);
+await writeFile(path.join(directory, 'index.html'), '<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>合成旧版原始档案测试</title></head><body><div id="root"></div><script type="module" src="./entry.jsx"></script></body></html>');
+await build({ configFile: false, root: directory, plugins: [react()], logLevel: 'error', build: { outDir: staticDirectory, emptyOutDir: false, target: 'esnext' } });
+const types = { '.html': 'text/html', '.js': 'text/javascript', '.css': 'text/css' };
+const server = createServer(async (request, response) => {
+  const pathname = new URL(request.url, 'http://localhost').pathname;
+  const filename = pathname === '/' ? path.join(staticDirectory, 'index.html') : path.resolve(staticDirectory, '.' + decodeURIComponent(pathname));
+  if (!filename.startsWith(staticDirectory + path.sep)) { response.writeHead(403); response.end(); return; }
+  try { response.writeHead(200, { 'content-type': types[path.extname(filename)] || 'application/octet-stream' }); response.end(await readFile(filename)); }
+  catch { response.writeHead(404); response.end(); }
+});
+await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
+const base = `http://127.0.0.1:${server.address().port}`;
+const firstId = 'snapshot/原行?1', name = '合成旧姓名甲 & 同名', otherName = '合成旧姓名乙';
+const ids = Array.from({ length: 1005 }, (_, index) => index === 0 ? firstId : `snapshot-row-${index + 1}`);
+const ownerGroups = [{ key: 'all', label: '所有原始档案', count: 1005 }, { key: 'unknown', label: '未知人员／归属待确认', count: 213 }, { key: 'existing', label: '已有正式周报', count: 785 }, { key: 'verified', label: '已核实历史补档', count: 7 }, { key: 'unreviewed', label: '档案归属待核验', count: 0 }];
+const item = id => {
+  const row = ids.indexOf(id) + 1;
+  const kind = row <= 213 ? 'unknown' : row <= 998 ? 'existing' : 'verified';
+  const group = ownerGroups.find(group => group.key === kind);
+  return { id, sourceRow: row, employeeName: row <= 2 ? name : otherName, department: '合成旧部门', weekLabel: '4月第一周 3/31-4/4', weekStart: '', weekEnd: '', submittedAt: '', status: '准时', oldScore: 0, warnings: row <= 209 ? ['原始记录缺少来源ID', '原始年份与新版员工身份待核验'] : row <= 213 ? ['已保留原来源ID，新版身份待确认'] : ['旧版日期按原值保留'], owner: { id: kind === 'unknown' ? 'legacy-unknown-person' : 'legacy-' + kind, kind, label: group.label, virtual: true } };
+};
+assert.equal(ids.map(item).filter(row => row.owner.kind === 'unknown').length, 209 + 4);
+assert.equal(ids.map(item).filter(row => row.owner.kind === 'existing').length, 785);
+assert.equal(ids.map(item).filter(row => row.owner.kind === 'verified').length, 7);
+const rawHtml = '<script>globalThis.legacySnapshotInjected=true</script><img src="https://example.invalid/should-not-load">';
+const record = id => ({ ...item(id), facts: { results: `【合成 & 旧内容】${rawHtml}`, problems: '合成原问题', nextPlan: '合成原计划', reflection: '' }, legacyScores: { results: 0, problems: 6, nextPlan: 5, reflection: 0, total: 0, onTime: 0, grade: 'C' }, savedFields: [{ label: '姓名', value: item(id).employeeName }, { label: '周次', value: '4月第一周 3/31-4/4' }, { label: '原保存分', value: '0' }, { label: '原字段合成内容', value: rawHtml }, { label: '思考与复盘摘要', value: '' }], provenance: { privatePath: '/private/server/source-must-not-render.json' }, readOnly: true, affectsPerformance: false });
+const requests = [], external = [], errors = [];
+let mode = 'normal', detailStatus = 200, browser;
+try {
+  browser = await chromium.launch({ channel: 'chrome', headless: true });
+  const context = await browser.newContext({ viewport: { width: 1180, height: 1000 } });
+  const page = await context.newPage();
+  page.on('pageerror', error => errors.push(error.message));
+  await context.route('**/*', async route => {
+    const request = route.request(), url = new URL(request.url());
+    if (url.origin !== base) { external.push(url.origin); return route.abort(); }
+    if (!url.pathname.startsWith('/api/')) return route.continue();
+    const query = Object.fromEntries(url.searchParams);
+    requests.push({ method: request.method(), path: url.pathname, query });
+    assert.equal(request.method(), 'GET', 'raw archive is a read-only interface');
+    assert(Object.keys(query).every(key => ['limit', 'offset', 'employeeName', 'search', 'owner'].includes(key)), 'raw names never become employee IDs or personal view arguments');
+    if (mode === '401' || mode === '403') return route.fulfill({ status: Number(mode), contentType: 'application/json', body: '{}' });
+    if (url.pathname === '/api/legacy-report-snapshot') {
+      assert.equal(query.limit, '20');
+      const offset = Number(query.offset);
+      const sourceRows = ids.map(item).map(row => ['metadata-missing', 'unreviewed'].includes(mode) ? { ...row, owner: { id: 'legacy-unreviewed', kind: 'unreviewed', label: '档案归属待核验', virtual: true } } : row);
+      const members = mode === 'empty' ? [] : sourceRows.filter(row => query.owner !== 'unknown' || row.owner.kind === 'unknown');
+      const selected = members.filter(row => !query.employeeName || row.employeeName === query.employeeName).filter(row => !query.search || `${row.employeeName} ${row.weekLabel} 合成 & 旧内容`.includes(query.search));
+      const grouping = mode === 'metadata-missing' ? {} : { ownershipReady: mode !== 'unreviewed', ownerTotal: members.length, ownerGroups: mode === 'unreviewed' ? ownerGroups.map(group => ({ ...group, count: group.key === 'all' || group.key === 'unreviewed' ? 1005 : 0 })) : mode === 'empty' ? ownerGroups.map(group => ({ ...group, count: 0 })) : ownerGroups };
+      return route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ ok: true, items: selected.slice(offset, offset + 20), names: mode === 'empty' ? [] : [name, otherName], total: selected.length, snapshotTotal: mode === 'empty' ? 0 : 1005, limit: 20, offset, ...grouping, readOnly: true, affectsPerformance: false }) });
+    }
+    const id = decodeURIComponent(url.pathname.slice('/api/legacy-report-snapshot/'.length));
+    assert(ids.includes(id));
+    return route.fulfill({ status: detailStatus, contentType: 'application/json', body: detailStatus === 200 ? JSON.stringify({ ok: true, record: record(id) }) : '{}' });
+  });
+  await page.goto(base);
+  const archive = page.locator('[data-legacy-report-snapshot]');
+  await archive.locator('[data-snapshot-record]').first().waitFor();
+  assert.equal(await archive.locator('[data-snapshot-record]').count(), 20);
+  assert.equal(requests.filter(request => request.path !== '/api/legacy-report-snapshot').length, 0, 'mount does not download bodies');
+  assert(await archive.getByText('管理查询 · 不计入绩效', { exact: true }).isVisible());
+  assert((await archive.locator('.legacy-snapshot-count').innerText()).includes('1005'));
+  const allButton = archive.getByRole('button', { name: /所有原始档案/ });
+  const unknownButton = archive.getByRole('button', { name: /^未知人员／归属待确认/ });
+  assert((await allButton.innerText()).includes('1005'));
+  assert((await unknownButton.innerText()).includes('213'));
+  await archive.getByRole('button', { name: '下一页', exact: true }).click();
+  await archive.locator('[data-snapshot-record="snapshot-row-21"]').waitFor();
+  assert.equal(requests.at(-1).query.offset, '20');
+  await archive.getByRole('combobox', { name: '选择旧版保存姓名' }).click();
+  await page.getByRole('option', { name: otherName, exact: true }).click();
+  await archive.getByRole('searchbox', { name: '关键词', exact: true }).fill('旧筛选待清空');
+  await unknownButton.click();
+  await archive.locator(`[data-snapshot-record="${firstId}"]`).waitFor();
+  assert.equal(requests.at(-1).query.owner, 'unknown');
+  assert.equal(requests.at(-1).query.offset, '0');
+  assert.equal(requests.at(-1).query.employeeName, undefined);
+  assert.equal(requests.at(-1).query.search, undefined);
+  assert.equal(await archive.getByRole('searchbox', { name: '关键词', exact: true }).inputValue(), '');
+  assert.equal(await archive.getByRole('combobox', { name: '选择旧版保存姓名' }).innerText(), '全部旧版姓名');
+  assert((await archive.locator('.legacy-snapshot-count').innerText()).includes('当前分组 213 条'));
+  assert((await archive.locator('.legacy-snapshot-count').innerText()).includes('当前匹配 213 条'));
+  assert(await archive.getByText('“未知人员／归属待确认”是虚拟档案分组，原保存姓名与内容仍保留，归属待进一步核验。', { exact: true }).isVisible());
+  await archive.getByRole('button', { name: '下一页', exact: true }).click();
+  await archive.locator('[data-snapshot-record="snapshot-row-21"]').waitFor();
+  assert.equal(requests.at(-1).query.owner, 'unknown');
+  assert.equal(requests.at(-1).query.offset, '20');
+
+  const beforeDraft = requests.length;
+  await archive.getByRole('combobox', { name: '选择旧版保存姓名' }).click();
+  await page.getByRole('option', { name, exact: true }).click();
+  await archive.getByRole('searchbox', { name: '关键词', exact: true }).fill('合成 & 旧内容');
+  await page.waitForTimeout(80);
+  assert.equal(requests.length, beforeDraft, 'filters apply on submission rather than each keystroke');
+  await archive.getByRole('button', { name: '查询档案', exact: true }).click();
+  await archive.locator(`[data-snapshot-record="${firstId}"]`).waitFor();
+  assert.equal(requests.at(-1).query.offset, '0');
+  assert.equal(requests.at(-1).query.employeeName, name);
+  assert.equal(requests.at(-1).query.search, '合成 & 旧内容');
+  assert.equal(requests.at(-1).query.owner, 'unknown');
+  assert((await archive.locator('.legacy-snapshot-count').innerText()).includes('当前分组 213 条'));
+  assert((await archive.locator('.legacy-snapshot-count').innerText()).includes('当前匹配 2 条'));
+  assert.equal(await archive.locator('[data-snapshot-record]').count(), 2, 'same saved name and week never collapse separate source rows');
+  const first = archive.locator(`[data-snapshot-record="${firstId}"]`);
+  await first.locator(':scope>summary').click();
+  await first.locator('[data-snapshot-module="results"] p').waitFor();
+  assert.equal(requests.at(-1).path, '/api/legacy-report-snapshot/' + encodeURIComponent(firstId));
+  assert.deepEqual(requests.at(-1).query, {});
+  assert.equal(await first.locator('[data-snapshot-module]').count(), 4);
+  assert.equal(await first.locator('[data-snapshot-module="reflection"] p').innerText(), '旧版未保存此字段内容。');
+  assert(await first.getByText('旧版保存分 0 分', { exact: true }).isVisible());
+  assert(await first.locator('[data-snapshot-module="results"]').getByText('原保存分 0 分', { exact: true }).isVisible());
+  assert(!(await first.innerText()).includes('2026'), 'missing original years and timestamps are not inferred');
+  assert.equal(await first.locator('.legacy-snapshot-warnings li').count(), 2);
+  assert((await first.locator('.legacy-snapshot-record-heading').innerText()).includes('旧版姓名：'));
+  await first.getByText('查看原始字段（5 项）', { exact: true }).click();
+  assert.equal(await first.locator('.legacy-snapshot-original-fields dl>div').count(), 5);
+  assert(await first.locator('.legacy-snapshot-original-fields dd').getByText('0', { exact: true }).isVisible());
+  assert.equal(await archive.locator('script,img,textarea,a[href]').count(), 0);
+  assert.equal(await page.evaluate(() => Boolean(globalThis.legacySnapshotInjected)), false);
+  assert(!(await archive.innerText()).includes('/private/server/'));
+  await page.screenshot({ path: path.join(directory, 'desktop.png'), fullPage: true, animations: 'disabled' });
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.evaluate(() => { if (document.activeElement instanceof HTMLElement) document.activeElement.blur(); window.scrollTo(0, 0); });
+  await page.waitForTimeout(150);
+  await page.screenshot({ path: path.join(directory, 'mobile.png'), fullPage: true, animations: 'disabled' });
+  assert(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth), 'mobile original text and fields never overflow');
+
+  detailStatus = 403;
+  const second = archive.locator('[data-snapshot-record="snapshot-row-2"]');
+  await second.locator(':scope>summary').click();
+  await second.getByRole('alert').waitFor();
+  assert.equal(await second.locator('[data-snapshot-module]').count(), 0);
+  detailStatus = 401;
+  await second.locator(':scope>summary').click();
+  await second.locator(':scope>summary').click();
+  await second.getByText('登录状态已失效，请刷新页面后重试。', { exact: true }).waitFor();
+  detailStatus = 200;
+
+  await allButton.click();
+  await archive.locator(`[data-snapshot-record="${firstId}"]`).waitFor();
+  assert.equal(requests.at(-1).query.owner, undefined, 'switching back to all omits the owner restriction');
+  assert.equal(requests.at(-1).query.employeeName, undefined, 'switching groups clears the applied raw name');
+  assert.equal(requests.at(-1).query.search, undefined, 'switching groups clears the applied search');
+  assert.equal(requests.at(-1).query.offset, '0');
+  assert.equal(await archive.getByRole('searchbox', { name: '关键词', exact: true }).inputValue(), '');
+  assert((await archive.locator('.legacy-snapshot-count').innerText()).includes('当前分组 1005 条'));
+  await unknownButton.click();
+  await archive.locator(`[data-snapshot-record="${firstId}"]`).waitFor();
+  for (let offset = 20; offset <= 200; offset += 20) {
+    await archive.getByRole('button', { name: '下一页', exact: true }).click();
+    await archive.locator(`[data-snapshot-record="snapshot-row-${offset + 1}"]`).waitFor();
+    assert.equal(requests.at(-1).query.owner, 'unknown');
+    assert.equal(requests.at(-1).query.offset, String(offset));
+  }
+  assert.equal(await archive.locator('[data-snapshot-record]').count(), 13, 'unknown group ends at its 213th source row');
+  assert.equal(await archive.locator('[data-snapshot-record="snapshot-row-214"],[data-snapshot-record="snapshot-row-999"]').count(), 0, '785 known and 7 verified records are outside the unknown group');
+  assert.equal(await archive.locator('.legacy-snapshot-record-status').getByText('已有正式周报', { exact: true }).count(), 0);
+  assert.equal(await archive.locator('.legacy-snapshot-record-status').getByText('已核实历史补档', { exact: true }).count(), 0);
+  assert(await archive.getByRole('button', { name: '下一页', exact: true }).isDisabled());
+
+  for (const status of ['401', '403']) {
+    mode = status;
+    await archive.getByRole('button', { name: '查询档案', exact: true }).click();
+    await archive.getByRole('alert').waitFor();
+    assert.equal(await archive.locator('[data-snapshot-record]').count(), 0, 'unauthorized list must not retain previously viewed records');
+    assert.equal(await archive.getByText(name, { exact: true }).count(), 0, 'unauthorized list must clear cached source names too');
+    assert(await unknownButton.isDisabled(), 'unauthorized list must clear cached ownership counts too');
+    assert((await archive.getByRole('alert').innerText()).includes(status === '401' ? '登录状态已失效' : '没有查看旧版原始档案的权限'));
+  }
+  mode = 'empty';
+  await archive.getByRole('button', { name: '查询档案', exact: true }).click();
+  await archive.getByText('旧版原始档案尚未导入。全量快照导入后，可在这里查询原保存记录。', { exact: true }).waitFor();
+  mode = 'normal';
+  await archive.getByRole('searchbox', { name: '关键词', exact: true }).fill('无匹配关键词');
+  await archive.getByRole('button', { name: '查询档案', exact: true }).click();
+  await archive.getByText('没有匹配的原始记录，请调整姓名或关键词后查询。', { exact: true }).waitFor();
+  assert((await archive.locator('.legacy-snapshot-count').innerText()).includes('1005'), 'empty filtered results are distinct from an absent snapshot');
+  mode = 'metadata-missing';
+  await archive.getByRole('button', { name: '查询档案', exact: true }).click();
+  await archive.getByText('档案归属尚未核验，未知人员分组暂不可用。', { exact: true }).waitFor();
+  assert(await unknownButton.isDisabled());
+  assert.equal(await unknownButton.locator('strong').innerText(), '待核验', 'absent metadata must not claim that zero unknown records exist');
+  assert.equal(await archive.locator('[data-snapshot-record]').count(), 0, 'unknown results remain unavailable until ownership is ready');
+  await allButton.click();
+  await archive.locator(`[data-snapshot-record="${firstId}"]`).waitFor();
+  assert.equal(requests.at(-1).query.owner, undefined);
+  assert(await unknownButton.isDisabled());
+  mode = 'unreviewed';
+  await archive.getByRole('button', { name: '查询档案', exact: true }).click();
+  await archive.locator(`[data-snapshot-record="${firstId}"]`).waitFor();
+  assert(await unknownButton.isDisabled());
+  assert.equal(await unknownButton.locator('strong').innerText(), '待核验', 'ownershipReady=false takes priority over a numeric unknown-group count of zero');
+  assert(requests.every(request => request.method === 'GET'));
+  assert.deepEqual(external, []);
+  assert.deepEqual(errors, []);
+  await writeFile(path.join(directory, 'result.json'), JSON.stringify({ ok: true, requests, external, errors }, null, 2));
+  console.log(`Legacy snapshot UI passed: backend-owned 1005/213 groups, 209+4 unknown excluding 785 existing and 7 verified, independent group/name/search pagination, duplicate preservation, lazy detail, original modules and zero scores, no year inference, escaping, 401/403, unavailable metadata, GET only and mobile layout. Evidence: ${directory}`);
+} finally {
+  await browser?.close();
+  await new Promise(resolve => server.close(resolve));
+}

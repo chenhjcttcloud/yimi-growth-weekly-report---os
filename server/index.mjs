@@ -1,5 +1,6 @@
 import {createEmployeeIdentity,resolveFeishuLogin} from './employee-identity.mjs';
 import {createHistoricalReportArchive} from './historical-report-archive.mjs';
+import {createLegacyReportSnapshot} from './legacy-report-snapshot.mjs';
 import {createProductManagementScoreApi,PRODUCT_MANAGEMENT_SCORE_PATH} from './product-management-score-api.mjs';
 import {decodeAutomaticEvidence} from './automatic-evidence-storage.mjs';
 import {createFeishuDepartmentSync} from './feishu-department-sync.mjs';
@@ -149,6 +150,10 @@ let roleAuthorizationSaving = false;
 
 const employeeIdentity=createEmployeeIdentity({query:querySqlRows,exec:execSql,sql:sqlValue,strict:config.authMode!=='mock'});
 const historicalReportArchive=createHistoricalReportArchive({query:querySqlRows,sql:sqlValue});
+const legacyReportSnapshot=createLegacyReportSnapshot({load:()=>{
+  try{return JSON.parse(readFileSync(path.join(config.dataDir,'legacyReportSnapshot.json'),'utf8'));}
+  catch(error){if(error.code==='ENOENT')return null;throw error;}
+}});
 await ensureDatabase();
 const sessionPolicy=createSessionPolicy({query:querySqlRows,exec:execSql,sql:sqlValue,ttlHours:process.env.SESSION_TTL_HOURS,mock:config.authMode==='mock'});
 await sessionPolicy.load();
@@ -309,6 +314,27 @@ async function route(req, res) {
   }
   if (url.pathname === '/api/session/perspective') return switchSessionPerspective(req, res, sessionForPolicy);
   const managerForPolicy = Boolean(userForPolicy && !isExternalSession(sessionForPolicy) && isScoring360ConfigManagerSession(sessionForPolicy));
+  if(url.pathname==='/api/legacy-report-snapshot'||url.pathname.startsWith('/api/legacy-report-snapshot/')){
+    res.setHeader('cache-control','private, no-store');
+    if(!userForPolicy)return sendJson(res,401,{ok:false,error:'unauthorized'});
+    if(!managerForPolicy)return sendJson(res,403,{ok:false,error:'manager_only'});
+    if(req.method!=='GET')return sendJson(res,405,{ok:false,error:'legacy_snapshot_readonly'});
+    try{
+      if(url.pathname==='/api/legacy-report-snapshot'){
+        const options={management:true};
+        for(const key of ['employeeName','search','limit','offset','owner'])if(url.searchParams.has(key))options[key]=url.searchParams.get(key);
+        return sendJson(res,200,{ok:true,...await legacyReportSnapshot.list(options)});
+      }
+      const encodedId=url.pathname.slice('/api/legacy-report-snapshot/'.length);
+      if(!encodedId||encodedId.includes('/'))return sendJson(res,404,{ok:false,error:'legacy_snapshot_not_found'});
+      let id;try{id=decodeURIComponent(encodedId);}catch{return sendJson(res,400,{ok:false,error:'invalid_legacy_snapshot_id'});}
+      const record=await legacyReportSnapshot.detail(id,{management:true});
+      return record?sendJson(res,200,{ok:true,record}):sendJson(res,404,{ok:false,error:'legacy_snapshot_not_found'});
+    }catch(error){
+      const invalid=['invalid_legacy_snapshot_pagination','invalid_legacy_snapshot_name','invalid_legacy_snapshot_search','invalid_legacy_snapshot_id','invalid_legacy_snapshot_owner'];
+      return sendJson(res,invalid.includes(error.message)?400:500,{ok:false,error:invalid.includes(error.message)?error.message:'legacy_snapshot_unavailable'});
+    }
+  }
   if(url.pathname==='/api/historical-reports'||url.pathname.startsWith('/api/historical-reports/')){
     res.setHeader('cache-control','private, no-store');
     if(!userForPolicy)return sendJson(res,401,{ok:false,error:'unauthorized'});

@@ -32,6 +32,7 @@ import {
 import { cnNumber, truncate } from "../lib/format";
 import type { EmployeeResultTarget, Scoring360Result } from "../lib/types";
 import { HistoricalReportArchive } from '../components/HistoricalReportArchive';
+import { LegacyReportSnapshot } from '../components/LegacyReportSnapshot';
 
 interface DashboardPageProps {
   summaryVersion?:number;
@@ -631,6 +632,7 @@ export function DashboardPage({ selectedPeriodId, onOpenEmployee, externalView =
         </div>
       </div>
       {!externalView && <HistoricalReportArchive management/>}
+      {!externalView && <LegacyReportSnapshot/>}
     </div>
   );
 }
