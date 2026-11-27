@@ -44,6 +44,7 @@ sql(`
     SELECT 'employment-'||user_id,user_id,'2026-01-01','manager' FROM employees WHERE is_active=1;
   INSERT INTO app_settings(key,value_json) VALUES
     ('boss_view_members','{"members":[{"userId":"fixture-boss","name":"测试老板"}]}'),
+    ('business_boss_members','{"members":[{"userId":"other-boss","name":"另一位老板"}]}'),
     ('scoring360_admin_members','{"members":[{"userId":"fixture-boss","name":"测试老板"}]}'),
     ('report_automation_config','{"enabled":false}');
   INSERT INTO weekly_reports(id,employee_user_id,employee_name,department,week_label,week_start,week_end,status,content_json,submitted_at)
@@ -55,7 +56,8 @@ sql(`
     VALUES ('${cycleId}','测试周期','2026-01-01','2026-01-31','open','2026-01-01T00:00:00Z');
   INSERT INTO scoring360_assignments(id,cycle_id,evaluee_name,evaluator_name,evaluee_user_id,evaluator_user_id)
     VALUES ('own-assignment','${cycleId}','测试员工','测试老板','staff','fixture-boss'),
-      ('other-assignment','${cycleId}','测试员工','测试老板','staff','same-name');
+      ('other-assignment','${cycleId}','测试员工','测试老板','staff','same-name'),
+      ('actual-boss-assignment','${cycleId}','测试员工','另一位老板','staff','other-boss');
 `);
 const fixtures = {
   prototypeData: {meta: {periods: [], collectionStartDate: '2026-01-01'}, employee_summary: [], weekly_scores: []},
@@ -86,7 +88,7 @@ const env = {...process.env,
   WEEKLY_REPORT_DB_PATH: db, WEEKLY_REPORT_UPLOAD_DIR: path.join(dir, 'uploads'), BACKUP_DIR: path.join(dir, 'backups'),
   LARK_REPORT_SYNC_STATUS_PATH: path.join(dir, 'report-sync.json'),
   BOSS_VIEW_USER_IDS: 'other-boss,switchable-boss,inactive-boss', BOSS_VIEW_NAMES: '',
-  BOSS_EMPLOYEE_PERSPECTIVE_USER_IDS: 'fixture-boss,switchable-boss,admin-only,inactive-boss',
+  BOSS_EMPLOYEE_PERSPECTIVE_USER_IDS: 'fixture-boss,other-boss,switchable-boss,admin-only,inactive-boss',
   SCORING360_CONFIG_MANAGER_USER_IDS: 'admin-only', SCORING360_CONFIG_MANAGER_NAMES: '',
   CHINA_CALENDAR_AUTO_UPDATE_ENABLED: 'false', LARK_REPORT_AUTO_SYNC_ENABLED: 'false',
   LARK_AUTH_MONITOR_ENABLED: 'false', SCORING360_REMINDER_ENABLED: 'false', SCORING360_LAUNCH_MODE: 'manual',
@@ -285,7 +287,8 @@ try {
   assert.equal(restored.body.activePerspective, 'boss');
   assert.equal(restored.body.access.role, 'boss');
   assert.equal(restored.body.user.userId, owner.userId);
-  assert.equal((await request('/api/departments?month=' + month, {cookie: restoredCookie})).body.canScore, true);
+  assert.equal((await request('/api/departments?month=' + month, {cookie: restoredCookie})).body.canScore, false,
+    'restoring a view-only boss perspective cannot grant business-boss scoring authority');
   assert.equal((await request('/api/system-settings/report-automation', {cookie: restoredCookie})).status, 200);
 
   const noAdminSession = authCookie({userId:'switchable-boss',name:'可切换的未授权管理员老板'});
@@ -301,7 +304,6 @@ try {
   for (const [user, role] of [
     [{userId: 'same-name', name: owner.name}, 'member'],
     [{userId: 'admin-only', name: '测试管理员'}, 'system_admin'],
-    [{userId: 'other-boss', name: '另一位老板'}, 'boss'],
   ]) {
     const cookie = authCookie(user);
     const profile = await access(cookie);
@@ -311,6 +313,32 @@ try {
     assert.equal((await switchView(cookie, 'boss')).status, 403);
     assert.equal((await switchView(cookie, 'admin')).status, 403);
   }
+  const actualBossSession = authCookie({userId: 'other-boss', name: '另一位老板'});
+  const actualBossProfile = await access(actualBossSession);
+  assert.equal(actualBossProfile.body.access.role, 'boss');
+  assert.equal(actualBossProfile.body.canSwitchPerspective, true);
+  assert.deepEqual(actualBossProfile.body.availablePerspectives, ['boss','employee']);
+  assert.equal((await request('/api/departments?month=' + month, {cookie: actualBossSession})).body.canScore, true,
+    'the explicit business boss retains 30% scoring authority in the boss perspective');
+  const beforeBossPeer = sql('SELECT * FROM scoring360_responses ORDER BY id;', true);
+  const deniedBossPeer = await post('/api/scoring360/submit', actualBossSession,
+    {cycleId, scores: [{assignmentId:'actual-boss-assignment', score:88}]});
+  assert.equal(deniedBossPeer.status, 403);
+  assert.equal(deniedBossPeer.body.error, 'boss_peer_forbidden');
+  const actualBossEmployee = actualBossSession + '; ' + sessionPreference(await switchView(actualBossSession, 'employee'));
+  const actualBossEmployeeProfile = await access(actualBossEmployee);
+  assert.equal(actualBossEmployeeProfile.body.activePerspective, 'employee');
+  assert.equal(actualBossEmployeeProfile.body.access.role, 'member');
+  assert.equal((await request('/api/departments?month=' + month, {cookie: actualBossEmployee})).status, 403);
+  const actualBossTasks = await request('/api/scoring360/my-tasks?month=' + month, {cookie: actualBossEmployee});
+  assert.equal(actualBossTasks.status, 200);
+  assert.deepEqual(actualBossTasks.body.tasks, [], 'a lower view cannot turn the business boss into a 70% peer scorer');
+  const deniedEmployeeBossPeer = await post('/api/scoring360/submit', actualBossEmployee,
+    {cycleId, scores: [{assignmentId:'actual-boss-assignment', score:88}]});
+  assert.equal(deniedEmployeeBossPeer.status, 403);
+  assert.equal(deniedEmployeeBossPeer.body.error, 'boss_peer_forbidden');
+  assert.deepEqual(sql('SELECT * FROM scoring360_responses ORDER BY id;', true), beforeBossPeer,
+    'neither business-boss perspective can create or transfer a peer score');
   assert.equal((await switchView(authCookie({userId: 'inactive-boss', name: '停用老板'}), 'employee')).status, 403);
   assert.equal((await switchView(authCookie({userId: 'external:legacy', name: '旧访客'}), 'employee')).status, 410);
   assert.equal((await switchView(authCookie(owner, {expiresAt: '2026-01-01T00:00:00Z'}), 'employee')).status, 401);
@@ -336,8 +364,8 @@ try {
   const explicitBossCookie = session + '; ' + explicitBossPreference;
   assert.equal((await access(explicitBossCookie)).body.activePerspective, 'boss');
   assert.equal((await access(explicitBossCookie)).body.access.role, 'boss');
-  assert.equal((await request('/api/departments?month=' + month, {cookie:explicitBossCookie})).body.canScore, true,
-    'the independently granted boss perspective requires an explicit selection after admin revocation');
+  assert.equal((await request('/api/departments?month=' + month, {cookie:explicitBossCookie})).body.canScore, false,
+    'explicitly selecting a view-only boss perspective after admin revocation does not grant business scoring authority');
   const grants = await request(bossRoute, {cookie: revokingAdmin});
   assert.equal(grants.status, 200);
   assert.equal((await post(bossRoute, revokingAdmin, {members: [], expectedRevision: grants.body.revision})).status, 200);
