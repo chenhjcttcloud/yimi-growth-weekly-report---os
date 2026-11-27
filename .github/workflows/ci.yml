@@ -43,6 +43,8 @@ jobs:
       - run: node scripts/test-collaboration-sqlite-rounding.mjs
       - run: node scripts/test-business-boss-policy.mjs
       - run: node scripts/test-boss-peer-exclusion.mjs
+      - run: node scripts/test-xlsx-workbook.mjs
+      - run: node scripts/test-performance-score-export.mjs
       - run: node scripts/test-scoring360-api.mjs
       - run: node scripts/test-monthly-scoring-window.mjs
       - run: node scripts/test-monthly-scoring-window-api.mjs

@@ -1,0 +1,10 @@
+.pf-intro-actions { display:flex; flex-wrap:wrap; align-items:center; justify-content:flex-end; gap:10px; max-width:100%; min-width:0; }
+.pf-export { display:flex; align-items:center; flex-wrap:wrap; justify-content:flex-end; gap:8px 12px; max-width:100%; }
+.pf-export button { white-space:nowrap; }
+.pf-export-scope { color:var(--v2-ink-3); font-size:11px; white-space:nowrap; }
+.pf-export-message { flex-basis:100%; margin:0; overflow-wrap:anywhere; text-align:right; }
+@media(max-width:760px) {
+ .pf-intro-actions { width:100%; justify-content:flex-start; }
+ .pf-export { justify-content:flex-start; }
+ .pf-export-message { text-align:left; }
+}

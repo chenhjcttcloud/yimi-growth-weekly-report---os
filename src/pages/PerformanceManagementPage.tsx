@@ -1,12 +1,13 @@
 import '../styles/scoring-workbench.css';
 import {locationValue,rememberLocation,scoreTargetFromLocation,useLocationSection} from '../lib/navigation';
 import {ManagerReviewsPanel} from '../components/ManagerReviewsPanel';
-import {ResultEmployeeDirectory} from '../components/ResultEmployeeDirectory';
+import {ResultEmployeeDirectory,type EmployeeEntry,type ResultEmployeeFilterSnapshot} from '../components/ResultEmployeeDirectory';
+import {PerformanceScoreExportButton} from '../components/PerformanceScoreExportButton';
 import {DepartmentScoreTrends} from '../components/DepartmentScoreTrends';
 import {BossLeaderScoringPanel} from '../components/BossLeaderScoringPanel';
 import {CollaborationScoreDetails,ManagerScoreSummary} from '../components/CollaborationScoreDetails';
 import {ReviewMonthPicker} from '../components/ReviewMonthPicker';
-import {lazy,Suspense,useEffect,useRef,useState,type ComponentProps} from 'react';
+import {lazy,Suspense,useEffect,useMemo,useRef,useState,type ComponentProps} from 'react';
 import {DeferredEvidence} from '../components/DeferredEvidence';
 import {ManagedQualityReport} from '../components/ManagedQualityReport';
 import {MonthlyQualityResultRow, monthlyQualityView, qualityConfirmationBlockNotes, qualityDate, qualityReviewNotice, type MonthlyQualitySummary} from '../components/MonthlyQuality';
@@ -79,6 +80,7 @@ export function PerformanceResults({scoreFocus}:{scoreFocus?:'quality'|'collabor
  const [reportWeek,setReportWeek]=useState<number|null>(null);
  const [tab,setTab]=useState<'review'|'reports'|'collaboration'|'history'>(()=>restoredTab(requested?.tab));
  const [tasksOpened,setTasksOpened]=useState(false),[detailRetry,setDetailRetry]=useState(0);
+ const [exportSelection,setExportSelection]=useState<ResultEmployeeFilterSnapshot|null>(null);
  const [detailState,setDetailState]=useState<{key:string;source:any;status:'loading'|'ready'|'error';value?:any;error?:string}|null>(null);
  const detailCache=useRef(new Map<string,{source:any;value:any}>());
  useEffect(()=>{
@@ -176,8 +178,15 @@ export function PerformanceResults({scoreFocus}:{scoreFocus?:'quality'|'collabor
  const locked=(kind:string)=>published.find((x:any)=>x.employee_user_id===selected?.userId&&x.kind===kind);
  const pct=totals.expected?(totals.submitted/totals.expected*100).toFixed(1):'—';
  const timePct=rows.some((r:any)=>r.timeliness.pendingTimestamp||r.timeliness.pendingCalendar)?'—':totals.expected?(totals.onTime/totals.expected*100).toFixed(1):'—';
+ const directoryContext=(scoreFocus||'all')+'|'+month;
+ const directoryEmployees=useMemo<EmployeeEntry[]>(()=>rows.map((r:any)=>{
+  const count=published.filter((p:any)=>p.employee_user_id===r.userId).length,focusedResult=scoreFocus?published.find((p:any)=>p.employee_user_id===r.userId&&p.kind===scoreFocus):undefined;
+  const focusedScore=focusedResult?.result.score,quality=monthlyQualityView(r.quality);
+  const scoreLabel=scoreFocus==='quality'?`${quality.value!=null?`${scoreText(quality.value)} 分 · `:''}${quality.status}`:focusedScore!=null?`${scoreText(focusedScore)} 分`:'待评分';
+  return {userId:r.userId,name:r.name,department:r.department,active:r.active,summary:scoreFocus?scoreLabel:`${count}/3 项已生成`};
+ }),[data,month,scoreFocus]);
  return <div className="v2-page v2-page-wide pf-page">
-  <section className="pf-intro"><div><span className="v2-eyebrow"><ShieldCheck size={14}/>月度得分</span><h2>{scoreFocus==='quality'?'周报质量':scoreFocus==='collaboration'?'360 协同得分':'让每一份结果，都有据可依。'}</h2><p>{scoreFocus==='quality'?'按员工复核 AI 评分依据，分析和汇总完成后确认月度最终分。':scoreFocus==='collaboration'?'按月份和员工查看协同最终分、评分进度与协作明细。':'查看周报质量、提交及时率和协作评分。'}</p></div>{overview&&monthOptions.length>0&&<label className="pf-month pf-month-select"><CalendarDays size={16}/><AppSelect aria-label="选择绩效月份" disabled={managerReviewBusy} value={month} placeholder="最新月份" onValueChange={value=>{setRequest({month:value});setSelectedName('');setLegacyName('');setExplicitTarget(false);setWeekId('');setReportWeek(null);setDetailState(null);}}>{monthOptions.map(m=><option value={m} key={m}>{monthText(m)}</option>)}</AppSelect></label>}</section>
+  <section className="pf-intro"><div><span className="v2-eyebrow"><ShieldCheck size={14}/>月度得分</span><h2>{scoreFocus==='quality'?'周报质量':scoreFocus==='collaboration'?'360 协同得分':'让每一份结果，都有据可依。'}</h2><p>{scoreFocus==='quality'?'按员工复核 AI 评分依据，分析和汇总完成后确认月度最终分。':scoreFocus==='collaboration'?'按月份和员工查看协同最终分、评分进度与协作明细。':'查看周报质量、提交及时率和协作评分。'}</p></div><div className="pf-intro-actions">{overview&&monthOptions.length>0&&<label className="pf-month pf-month-select"><CalendarDays size={16}/><AppSelect aria-label="选择绩效月份" disabled={managerReviewBusy} value={month} placeholder="最新月份" onValueChange={value=>{setRequest({month:value});setSelectedName('');setLegacyName('');setExplicitTarget(false);setWeekId('');setReportWeek(null);setDetailState(null);}}>{monthOptions.map(m=><option value={m} key={m}>{monthText(m)}</option>)}</AppSelect></label>}<PerformanceScoreExportButton kind={scoreFocus||'all'} month={month} rows={rows} results={published} contextKey={directoryContext} directorySource={directoryEmployees} selection={exportSelection} disabled={!data||managerReviewBusy}/></div></section>
   {!data?<section className="v2-card pf-workspace" role={error?'alert':'status'}>
    <ResultEmpty title={error?'暂时无法加载得分数据':'正在整理月度数据'} description={error||(month?`正在读取${monthText(month)}的月度结果…`:'请稍候，月度结果即将就绪。')}/>
    {error&&<button type="button" className="secondary-button" onClick={()=>setRequest({month:request.month})}>重试读取结果</button>}
@@ -204,12 +213,7 @@ export function PerformanceResults({scoreFocus}:{scoreFocus?:'quality'|'collabor
   <section className="v2-card pf-workspace">
    <div className="v2-card-head"><div><h3 className="v2-card-title">{scoreFocus==='quality'?'员工周报质量':scoreFocus==='collaboration'?'员工协同得分':'员工月度结果'}</h3><p className="v2-card-sub">{scoreFocus==='quality'?'在「周报与证据」查看逐周评分依据和人工复核记录。':scoreFocus==='collaboration'?'选择员工查看最终分和完成进度，并在「协作明细」查看评分记录。':'选择员工查看月度结果和周报评分依据。'}</p></div><span className="pf-subtle-tag">{rows.length} 位员工</span></div>
    <div className="pf-review-layout">
-    <ResultEmployeeDirectory contextKey={(scoreFocus||'all')+'|'+month} selectedUserId={selected?.userId} employees={rows.map((r:any)=>{
-     const count=published.filter((p:any)=>p.employee_user_id===r.userId).length,focusedResult=scoreFocus?published.find((p:any)=>p.employee_user_id===r.userId&&p.kind===scoreFocus):undefined;
-     const focusedScore=focusedResult?.result.score,quality=monthlyQualityView(r.quality);
-     const scoreLabel=scoreFocus==='quality'?`${quality.value!=null?`${scoreText(quality.value)} 分 · `:''}${quality.status}`:focusedScore!=null?`${scoreText(focusedScore)} 分`:'待评分';
-     return {userId:r.userId,name:r.name,department:r.department,active:r.active,summary:scoreFocus?scoreLabel:`${count}/3 项已生成`};
-    })} onSelect={userId=>{setSelectedName(userId);setLegacyName('');setExplicitTarget(false);setWeekId('');setReportWeek(null);setTab('review');setDetailState(null);}}/>
+    <ResultEmployeeDirectory contextKey={directoryContext} selectedUserId={selected?.userId} employees={directoryEmployees} onFilterChange={setExportSelection} onSelect={userId=>{setSelectedName(userId);setLegacyName('');setExplicitTarget(false);setWeekId('');setReportWeek(null);setTab('review');setDetailState(null);}}/>
     {selected ? <div className="pf-review-main">
      <div className="pf-person-heading"><div><h3>{selected.name}<span>{selected.department}</span></h3><p>月度结果 · {monthText(month)}{requestedWeekEnd&&` · 来源周次 ${requestedWeekEnd}`}</p></div><ResultStatus confirmed={scoreFocus==='quality'?selectedQuality.confirmed:Boolean(locked('collaboration'))} label={scoreFocus==='quality'?selectedQuality.status:locked('collaboration')?'月度评分已发布':'等待评分完成'}/></div>
      <div className="pf-tabs" role="tablist" aria-label="月度资料">{resultTabs.map(([k,label])=><button type="button" role="tab" aria-selected={tab===k} key={k} className={tab===k?'is-active':''} onClick={()=>setTab(k)}>{label}</button>)}</div>
