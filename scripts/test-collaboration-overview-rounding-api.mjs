@@ -40,7 +40,8 @@ INSERT INTO employee_employment_periods(id,employee_user_id,start_date,source) V
 }
 sql("INSERT INTO organization_departments(id,name,leader_user_id,updated_at) VALUES('team','合成团队','manager',datetime('now')),('management','合成管理部','boss',datetime('now'));");
 for (const [key, value] of Object.entries({
-  boss_view_members: {members: [{userId: 'boss', name: names.boss}]},
+  boss_view_members: {members: [{userId: 'boss', name: names.boss}, {userId: 'admin', name: names.admin}]},
+  business_boss_members: {members: [{userId: 'boss', name: names.boss}]},
   scoring360_admin_members: {members: [{userId: 'admin', name: names.admin}]},
   report_automation_config: {enabled: false, intervalMinutes: 15},
   operations_config: {backupEnabled: false, alertsEnabled: false, backupTime: '03:00', recipientUserIds: [], diskWarningPercent: 85},
@@ -58,6 +59,7 @@ for (const [id, score] of [['target', 96], ['history', 80]]) {
 INSERT INTO monthly_manager_scores(month,employee_user_id,evaluator_user_id,score,comment,snapshot_json,created_at) VALUES('2026-10',${quote(id)},'manager',${score},'合成负责人已评分',${quote(JSON.stringify(plan))},'2026-10-27T02:00:00Z');`);
 }
 sql(`INSERT INTO performance_results(month,employee_user_id,employee_name,kind,result_json,evidence_json,confirmed_by,confirmed_at) VALUES('2026-10','history',${quote(names.history)},'collaboration','{"score":88.2,"legacySentinel":"retain-verbatim"}','{"reviewNote":"合成旧口径原保存证据"}','合成历史系统','2026-11-01T02:00:00Z');`);
+sql("INSERT INTO scoring360_assignments(id,cycle_id,evaluee_user_id,evaluator_user_id,evaluee_name,evaluator_name,status) VALUES('boss-pending','oct','manager','boss','合成负责人','合成老板','active'),('boss-answered','oct','admin','boss','合成管理员','合成老板','active'); INSERT INTO scoring360_responses(id,assignment_id,cycle_id,evaluee_name,evaluator_name,score,comment,submitted_at) VALUES('old-boss-peer','boss-answered','oct','合成管理员','合成老板',77,'保留历史已答老板互评','2026-11-26T09:59:00Z');");
 const historyBefore = JSON.stringify(sql("SELECT * FROM performance_results WHERE employee_user_id='history';", true));
 const humanTables = ['scoring360_responses', 'monthly_manager_scores', 'monthly_review_plans', 'department_leader_scores', 'department_person_scores', 'performance_results'];
 const humanSnapshot = () => JSON.stringify(humanTables.map(table => [table, sql('SELECT * FROM ' + table + ';', true).map(row => JSON.stringify(row)).sort()]));
@@ -113,6 +115,21 @@ try {
     await pause(100);
   }
   assert(ready, 'synthetic server must start');
+  const rawApi=async (route,userId,body)=>{const response=await fetch(base+route,{method:body?'POST':'GET',headers:{cookie:'wos_session='+session(userId),...(body?{'content-type':'application/json'}:{})},...(body?{body:JSON.stringify(body)}:{})});return {status:response.status,body:await response.json()};};
+  for(const [userId,canScore] of [['boss',true],['admin',false]]){
+    const departments=await rawApi('/api/departments?month=2026-10',userId);
+    assert.equal(departments.status,200);assert.equal(departments.body.canScore,canScore,'boss-view access is independent of business scoring authority');
+  }
+  for(const route of ['/api/scoring360/my-tasks?month=2026-10','/api/admin/employee-preview/scoring-tasks?month=2026-10&employeeId=boss']){
+    const tasks=await rawApi(route,route.includes('employee-preview')?'admin':'boss');assert.equal(tasks.status,200);
+    assert.deepEqual(tasks.body.tasks.map(task=>task.id),['boss-answered']);assert.equal(tasks.body.tasks[0].score,77);assert.equal(tasks.body.tasks[0].locked,true,'retained historical boss peer scores are read only in self and preview');
+  }
+  const reminders=await rawApi('/api/scoring360/reminders?cycleId=oct','admin');assert.equal(reminders.status,200);assert(!reminders.body.pending.some(recipient=>recipient.evaluatorUserId==='boss'),'retained boss peer relationships cannot generate peer reminders');
+  const deniedBossPeer=await rawApi('/api/scoring360/submit','boss',{cycleId:'oct',scores:[{assignmentId:'target-one',score:85}]});
+  assert.equal(deniedBossPeer.status,403);assert.equal(deniedBossPeer.body.error,'boss_peer_forbidden');
+  const deniedAdminBossScore=await rawApi('/api/departments/score','admin',{month:'2026-10',leaderUserId:'manager',score:90,comment:'forbidden business-role crossover'});
+  assert.equal(deniedAdminBossScore.status,403);assert.equal(deniedAdminBossScore.body.error,'boss_only');
+  assert.equal(humanSnapshot(),humanBefore,'denied role crossover cannot write any human score');
   assert.equal((await request('2026-10', null)).status, 401);
   assert.equal((await request('2026-10', 'peer-one')).status, 403);
   assert.equal(publishedCount(), 0, 'denied requests cannot publish scores');

@@ -131,6 +131,7 @@ export function BossLeaderScoringPanel({month:sharedMonth,onBusyChange,active=tr
  return <section className="boss-leader-panel v2-card" aria-label="负责人评分" aria-busy={loading}>
   {sharedMonth===undefined&&<header className="bl-heading"><div><h3>负责人月度评分</h3><p>选择负责人，记录本月评分与评价。</p></div><ReviewMonthPicker aria-label="负责人评分月份" value={month} max={current} disabled={busy} onChange={setLocalMonth}/></header>}
   <div className="bl-overview"><div className="bl-counts" aria-label="负责人评分进度">{([{key:'pending',label:'待评分'},{key:'done',label:'已完成'},{key:'blocked',label:'待处理'},{key:'exempt',label:'无需评分'}] as const).map(item=><div className={'bl-metric is-'+item.key} key={item.key}><span><i aria-hidden="true"/>{item.label}</span><strong>{loading?'—':counts[item.key]}<small>项</small></strong></div>)}</div><div className="bl-rule"><span>月度综合分构成</span><p>老板评分 <b>30%</b><em>＋</em>同事互评 <b>70%</b></p><div className="bl-weight-bar" aria-hidden="true"><span/><span/></div><small>两部分完成后自动发布</small></div></div>
+  <p className="bl-next-notice">本页待评分、已完成仅统计老板评分（30%）。老板仅负责30%，不参与70%同事互评。</p>
   {latest&&<ReviewWindowNotice window={latest.reviewWindow} className="bl-message is-warning"/>}
   {latest&&!latest.canScore&&<p className="bl-permission"><ShieldCheck size={14}/>当前为只读查看，负责人评分由老板本人提交。</p>}
   {message&&<p className={`bl-message is-${messageKind}`} role={messageKind==='error'?'alert':'status'}>{messageKind==='success'?<CheckCheck size={15}/>:<Clock3 size={15}/>}<span>{message}</span></p>}
