@@ -15,7 +15,8 @@ const quote=value=>value==null?'NULL':"'"+String(value).replaceAll("'","''")+"'"
 const digest=value=>createHash('sha256').update(JSON.stringify(value)).digest('hex');
 const root={open_department_id:'od-root',name:'事业群',parent_department_id:'0',leader_user_id:'boss',member_count:2};
 const child={open_department_id:'od-child',name:'产品部',parent_department_id:'od-root',leader_user_id:'leader',member_count:2};
-const month=new Date().toLocaleDateString('sv-SE',{timeZone:'Asia/Shanghai'}).slice(0,7);
+// Department thirty-percent history belongs to the retained pre-cutover policy.
+const month='2026-10';
 const cases=[];
 let fixtureCount=0;
 
@@ -81,6 +82,9 @@ async function currentAndHistory(f){
   assert.equal((await f.departments.personal({userId:'leader'}))[0].score,92);
   await assert.rejects(f.departments.save({id:'old-child',name:'产品部',leaderUserId:'leader'}),/department_removed/);
   await assert.rejects(f.departments.score({departmentId:'old-child',month,leaderUserId:'leader',score:90,comment:'不得新增到移除部门'},{userId:'boss',name:'测试老板'}),/department_removed/);
+  const beforeNewPolicy=digest(f.business());
+  await assert.rejects(f.departments.score({departmentId:'old-child',month:'2026-11',leaderUserId:'leader',score:90,comment:'新月份不再另评30%'},{userId:'boss',name:'测试老板'}),/collaboration_peer_only/);
+  assert.equal(digest(f.business()),beforeNewPolicy,'new-month rejection cannot modify organization or historical scoring rows');
   await assert.rejects(f.departments.saveLayout({revision:before.layoutRevision,departments:payload(before)}),/department_layout_conflict|department_removed/);
   await f.departments.saveLayout({revision:view.layoutRevision,departments:payload(view)});
   assert.equal(digest(f.history()),originalHistory,'archiving and saving remaining departments cannot rewrite history');
