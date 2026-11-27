@@ -29,14 +29,14 @@ async function call(route,id='staff',body){const r=await fetch(base+route,{metho
 const personal=async()=> (await call('/api/performance/me')).body.history.find(r=>r.month==='2026-10');
 try{
  for(let n=0;n<100;n++){if(server.exitCode!==null)throw Error(logs);try{if((await fetch(base+'/health')).ok)break;}catch{}await new Promise(r=>setTimeout(r,100));}
- let result=await personal();assert.equal(result.quality,null);assert.equal(result.monthlyQuality.candidateScore,90);assert.equal(result.timeliness.rate,25);assert.equal(result.collaboration,null);assert.equal(result.qualityStatus,'pending_confirmation');
+ let result=await personal();assert.equal(result.quality,null);assert.equal(result.monthlyQuality.currentAverage,90);assert.equal(result.timeliness.rate,25);assert.equal(result.collaboration,null);assert.equal(result.qualityStatus,'pending_ai');
  assert.equal((await call('/api/performance/me')).body.history.find(r=>r.month==='2026-09').quality,73,'existing manually published history preserved');
  for(const kind of ['timeliness','collaboration'])assert.equal((await call('/api/performance/confirm','admin',{userId:'staff',month:'2026-10',kind,score:99,note:'旧客户端'})).body.error,'results_auto_published');
  assert.equal((await call('/api/performance/confirm','staff',{kind:'quality'})).status,403);
  const n=run('SELECT count(*) AS n FROM automatic_performance_results;')[0].n;await personal();assert.equal(run('SELECT count(*) AS n FROM automatic_performance_results;')[0].n,n,'unchanged inputs must not add duplicate versions');
  run(`INSERT INTO weekly_reports(id,employee_user_id,employee_name,department,week_label,week_start,week_end,status,content_json,submitted_at) VALUES('third','staff','测试员工','团队','第三周','2026-10-19','2026-10-23','已提交','{"results":"等待AI分析"}','2026-10-23 19:00:00');`);
  result=await personal();assert.equal(result.quality,null);assert.equal(result.monthlyQuality.currentAverage,90);assert.equal(result.monthlyQuality.pendingAnalysis,1);assert.equal(result.qualityStatus,'pending_ai');assert.equal(result.timeliness.rate,50);
- run(`UPDATE weekly_reports SET content_json=${quote(JSON.stringify(content(0)))} WHERE id='third';`);result=await personal();assert.equal(result.monthlyQuality.candidateScore,60,'zero is a valid AI score');assert.equal(result.qualityStatus,'pending_confirmation');
+ run(`UPDATE weekly_reports SET content_json=${quote(JSON.stringify(content(0)))} WHERE id='third';`);result=await personal();assert.equal(result.monthlyQuality.currentAverage,60,'zero is a valid AI score');assert.equal(result.qualityStatus,'pending_ai');
  const longChinese='中文周报事实证据需要完整保留，不能在读取时截断。'.repeat(8000);run(`UPDATE weekly_reports SET content_json=json_set(content_json,'$.longChinese',${quote(longChinese)}) WHERE id='third';`);const unicodeView=(await call('/api/performance/manage','admin')).body;const unicodeReport=unicodeView.monthly.find(r=>r.userId==='staff'&&r.month==='2026-10').reports.find(r=>r.id==='third');assert.equal(unicodeReport.content.longChinese,longChinese,'large Chinese SQLite payloads must survive streamed UTF-8 boundaries');assert.equal(unicodeReport.candidate,0);
  run("UPDATE weekly_reports SET submitted_at='' WHERE id='third';");result=await personal();assert.equal(result.timeliness.rate,null);assert.equal(result.timeliness.pendingTimestamp,1);assert.equal(result.timeliness.missing,1,'unknown timestamp is not a missing report');
  run("UPDATE weekly_reports SET submitted_at='2026-10-23 19:00:00' WHERE id='third';");result=await personal();assert.equal(result.timeliness.rate,50,'time correction recalculates without confirmation');
@@ -47,17 +47,19 @@ try{
  assert.equal((await call('/api/manager-reviews','head',{month:'2026-10',employeeUserId:'staff',score:80,comment:'负责人实际评价'})).status,200);assert.equal((await personal()).collaboration,90.5);
  const privateResult=(await call('/api/performance/me')).body;assert(!JSON.stringify(privateResult).includes('负责人实际评价'));assert(!JSON.stringify(privateResult).includes('成果分'));
  assert.equal(run("SELECT count(*) AS n FROM performance_results WHERE month='2026-10';")[0].n,0,'no manual results created');
- assert.equal((await call('/api/system-settings','admin')).body.publication.quality,'management_confirmed_monthly');
+ assert.equal((await call('/api/system-settings','admin')).body.publication.quality,'automatic_report_monthly');
  assert.equal((await call('/api/system-settings/report-automation','staff')).status,403);assert.equal((await call('/api/system-settings/report-automation','admin',{enabled:'false'})).body.error,'invalid_report_automation');assert.equal((await call('/api/system-settings/report-automation','admin',{enabled:true})).body.error,'feishu_required');assert.equal((await call('/api/system-settings/report-automation','admin',{enabled:false})).status,200);
  browser=await chromium.launchPersistentContext(dir+'/browser-profile',{channel:'chrome',headless:true,viewport:{width:1440,height:1100}});await browser.addInitScript({content:clockSource});await browser.addCookies([{name:'wos_session',value:cookie('admin'),url:base}]);
  const page=await browser.newPage(),errors=[];page.on('pageerror',e=>errors.push(e.message));await page.goto(base+'/?page=quality-scores&scoreMonth=2026-10');
- await page.getByRole('button').filter({hasText:'测试员工'}).first().click();await page.getByText('月度质量候选分 · 60.0 分',{exact:true}).waitFor();
- await page.getByRole('button',{name:'确认月度最终分',exact:true}).click();
- await page.getByText('月度周报质量最终分 · 60.0 分',{exact:true}).waitFor();
- assert.equal((await personal()).quality,60);
- assert.equal((await call('/api/departments/dashboard?month=2026-10','boss')).body.departments.find(d=>d.id==='team').metrics.quality,60);
- await page.screenshot({path:dir+'/confirmed-management.png',fullPage:true});
- await browser.addCookies([{name:'wos_session',value:cookie('staff'),url:base}]);await page.goto(base+'/?page=growth');await page.getByText('2026 年 10 月周报质量最终分',{exact:true}).waitFor();await page.screenshot({path:dir+'/confirmed-personal.png',fullPage:true});assert.deepEqual(errors,[]);
+ await page.getByRole('button').filter({hasText:'测试员工'}).first().click();
+ await page.getByText('当前已完成分析均分 · 60.0 分',{exact:true}).waitFor();
+ assert.equal(await page.getByRole('button',{name:'确认月度最终分',exact:true}).count(),0);
+ assert.equal((await personal()).quality,null,'an open month cannot publish a final');
+ assert.equal((await call('/api/performance/confirm','admin',{kind:'quality',userId:'staff',month:'2026-10'})).body.error,'results_auto_published');
+ await page.screenshot({path:dir+'/open-month-management.png',fullPage:true});
+ await browser.addCookies([{name:'wos_session',value:cookie('staff'),url:base}]);await page.goto(base+'/?page=growth');
+ await page.getByText('当前已完成分析均分',{exact:true}).first().waitFor();
+ await page.screenshot({path:dir+'/open-month-personal.png',fullPage:true});assert.deepEqual(errors,[]);
  await page.getByRole('combobox',{name:'选择个人月份'}).click();await page.getByRole('option',{name:'2026 年 9 月',exact:true}).click();await page.getByText('2026-09-24 20:00 截止（假前调整）',{exact:false}).waitFor();await page.screenshot({path:dir+'/holiday-deadline-personal.png',fullPage:true});
  await browser.addCookies([{name:'wos_session',value:cookie('admin'),url:base}]);await page.goto(base+'/?page=settings&settingsTab=integrations');
  const automation=page.getByRole('article',{name:'周报自动收集与AI评分'}),saveAutomation=automation.getByRole('button',{name:'保存自动收集设置'}),pauseScoring=automation.getByRole('checkbox',{name:'暂停周报 AI 评分'});
@@ -69,6 +71,6 @@ try{
  assert.equal((await call('/api/system-settings/report-automation','admin')).body.config.scoringPaused,false);
  await page.screenshot({path:dir+'/report-automation-settings.png',fullPage:true});assert.deepEqual(errors,[]);
  assert.equal(run('PRAGMA integrity_check;').length,0);
- console.log(JSON.stringify({ok:true,automaticCandidate:true,automaticStatistics:true,managementConfirmation:true,partialAverage:true,timeCorrection:true,historyRetained:true,departmentAggregation:true,weightedRatingGate:true,privacy:true,browserVerified:true,artifacts:dir}));
+ console.log(JSON.stringify({ok:true,automaticCandidate:true,automaticStatistics:true,manualMonthlyDisabled:true,partialAverage:true,timeCorrection:true,historyRetained:true,departmentAggregation:true,weightedRatingGate:true,privacy:true,browserVerified:true,artifacts:dir}));
 }catch(e){console.error(logs);throw e;}
 finally{if(browser)await browser.close();server.kill('SIGTERM');if(server.exitCode===null)await new Promise(r=>server.once('exit',r));console.log('Artifacts retained:',dir);}

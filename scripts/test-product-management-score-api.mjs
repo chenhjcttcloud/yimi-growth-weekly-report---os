@@ -22,6 +22,8 @@ const employees=[
  ['fixture-legacy','测试改名后',1],['fixture-inactive','测试已离职',0],
  ['fixture-parentheses','测试员工（兼职）',1],['fixture-unicode','测试É',1],
  ['fixture-old-weighted','测试旧加权',1],['fixture-boss','测试老板',1],['fixture-peer','测试同事',1],
+ ['fixture-auto','测试自动生成',1],['fixture-auto-zero','测试自动零分',1],
+ ['fixture-auto-pending','测试自动未完整',1],['fixture-auto-unmarked','测试未标记自动',1],
 ];
 const names=new Map(employees.map(([id,name])=>[id,name]));
 const quote=value=>value==null?'NULL':"'"+String(value).replaceAll("'","''")+"'";
@@ -67,6 +69,7 @@ async function startServer(label,apiToken){
  let autoSequence=0;
  const automatic=(id,result,calculatedAt='2026-10-31T10:00:00Z')=>{
   const sequence=++autoSequence;
+  if(result?.publicationMode==='automatic'&&['final','revised_final'].includes(result.status))result={sourceDependencyVersion:1,sourceReportState:[],sourceReviewRowId:'0',...result};
   statements.push(`INSERT INTO automatic_performance_results(id,month,employee_user_id,employee_name,kind,calculation_hash,result_json,evidence_json,calculated_at) VALUES(${quote('auto-'+sequence)},${quote(month)},${quote(id)},${quote(names.get(id))},'quality',${quote('fixture-hash-'+sequence)},${typeof result==='string'?quote(result):json(result)},${quote(confidentialEvidence)},${quote(calculatedAt)});`);
  };
  const weighted=(table,id,score,managerScore=80,peerScore=90)=>{
@@ -90,6 +93,11 @@ async function startServer(label,apiToken){
  automatic('fixture-invalid-json','{bad-json');automatic('fixture-invalid-score',{score:101,status:'ready'});
  automatic('fixture-legacy',{score:99,status:'ready'});automatic('fixture-inactive',{score:76,status:'ready'});
  automatic('fixture-parentheses',{score:78,status:'ready'});automatic('fixture-unicode',{score:79,status:'ready'});
+ automatic('fixture-auto',{score:41,status:'final',publicationMode:'automatic',expectedCount:1,pendingAnalysis:0},'2099-01-01T00:00:00Z');
+ automatic('fixture-auto',{score:86.4,status:'final',publicationMode:'automatic',expectedCount:4,pendingAnalysis:0});
+ automatic('fixture-auto-zero',{score:0,status:'final',publicationMode:'automatic',reportCount:1,pendingAnalysis:0});
+ automatic('fixture-auto-pending',{score:86,status:'final',publicationMode:'automatic',reportCount:2,pendingAnalysis:1});
+ automatic('fixture-auto-unmarked',{score:88,status:'final',reportCount:1,pendingAnalysis:0});
  weighted('monthly_person_weighted_results','fixture-a',87,80,90);
  weighted('monthly_person_weighted_results','fixture-zero',0,0,0);
  weighted('monthly_weighted_results','fixture-old-weighted',84,70,90);
@@ -147,10 +155,11 @@ function unavailable(score,status){assert.equal(score.score,null);assert.equal(s
 try{
  const configured=await startServer('configured',token),before=fingerprint(configured.db),historyBefore=database(configured.db,'SELECT count(*) AS count FROM automatic_performance_results;')[0].count;
  const plain=await request(configured,{params:single('fixture-a')});assert.equal(plain.status,200);assert(plain.body.ok);assert.equal(plain.body.apiVersion,'1');assert.equal(plain.body.month,month);assert(Number.isFinite(Date.parse(plain.body.generatedAt)));assert.deepEqual(plain.body.totals,{requested:1,matched:1,unmatched:0});
- const first=plain.body.data[0];assert.equal(first.matchStatus,'matched');assert.equal(first.employee.feishuUserId,'fixture-a');assert.equal(first.employee.name,'测试甲');assert.equal(first.employee.active,true);unavailable(first.weeklyQuality,'pending_confirmation');assert.equal(first.weeklyQuality.reportCount,4);published(first.collaboration360,87);assert.equal(first.weeklyQuality.source,'automatic_report');assert.equal(plain.raw.length<12000,true,'Only compact score summaries should be exported');
- const ids=['fixture-c','fixture-b','fixture-zero','fixture-rescoring','fixture-failed','fixture-pending','fixture-none','fixture-empty','fixture-invalid-json','fixture-invalid-score','fixture-legacy','fixture-inactive','fixture-parentheses','fixture-unicode','fixture-old-weighted'];
+ const first=plain.body.data[0];assert.equal(first.matchStatus,'matched');assert.equal(first.employee.feishuUserId,'fixture-a');assert.equal(first.employee.name,'测试甲');assert.equal(first.employee.active,true);unavailable(first.weeklyQuality,'pending_generation');assert.equal(first.weeklyQuality.reportCount,4);published(first.collaboration360,87);assert.equal(first.weeklyQuality.source,'automatic_report');assert.equal(plain.raw.length<12000,true,'Only compact score summaries should be exported');
+ const ids=['fixture-c','fixture-b','fixture-zero','fixture-rescoring','fixture-failed','fixture-pending','fixture-none','fixture-empty','fixture-invalid-json','fixture-invalid-score','fixture-legacy','fixture-inactive','fixture-parentheses','fixture-unicode','fixture-old-weighted','fixture-auto','fixture-auto-zero','fixture-auto-pending','fixture-auto-unmarked'];
  const batch=await request(configured,{method:'POST',body:{month,employees:ids.map(id=>identity(id))}});assert.equal(batch.status,200);assert.deepEqual(batch.body.data.map(row=>row.employee.feishuUserId),ids,'Batch preserves requested order');
- const byId=new Map(batch.body.data.map(row=>[row.employee.feishuUserId,row]));unavailable(byId.get('fixture-c').weeklyQuality,'pending_confirmation');published(byId.get('fixture-b').weeklyQuality,71);assert.equal(byId.get('fixture-b').weeklyQuality.source,'management_confirmed');published(byId.get('fixture-zero').weeklyQuality,0);published(byId.get('fixture-zero').collaboration360,0);
+ const byId=new Map(batch.body.data.map(row=>[row.employee.feishuUserId,row]));unavailable(byId.get('fixture-c').weeklyQuality,'pending_generation');published(byId.get('fixture-b').weeklyQuality,71);assert.equal(byId.get('fixture-b').weeklyQuality.source,'management_confirmed');published(byId.get('fixture-zero').weeklyQuality,0);published(byId.get('fixture-zero').collaboration360,0);
+ published(byId.get('fixture-auto').weeklyQuality,86.4);assert.equal(byId.get('fixture-auto').weeklyQuality.reportCount,4);assert.equal(byId.get('fixture-auto').weeklyQuality.source,'automatic_report');published(byId.get('fixture-auto-zero').weeklyQuality,0);unavailable(byId.get('fixture-auto-pending').weeklyQuality,'invalid_result');unavailable(byId.get('fixture-auto-unmarked').weeklyQuality,'invalid_result');
  for(const [id,status] of [['fixture-rescoring','rescoring'],['fixture-failed','rescore_failed']]){const score=byId.get(id).weeklyQuality;unavailable(score,status);assert.equal(score.previousScore,null);}
  unavailable(byId.get('fixture-pending').weeklyQuality,'pending_ai');unavailable(byId.get('fixture-none').weeklyQuality,'no_reports');unavailable(byId.get('fixture-empty').weeklyQuality,'not_published');unavailable(byId.get('fixture-empty').collaboration360,'not_published');unavailable(byId.get('fixture-invalid-json').weeklyQuality,'invalid_result');unavailable(byId.get('fixture-invalid-score').weeklyQuality,'invalid_result');
  published(byId.get('fixture-legacy').weeklyQuality,64);published(byId.get('fixture-legacy').collaboration360,60);assert.equal(byId.get('fixture-legacy').weeklyQuality.source,'legacy');assert.equal(byId.get('fixture-legacy').collaboration360.source,'legacy');assert.equal(byId.get('fixture-legacy').employee.name,'测试改名后');published(byId.get('fixture-old-weighted').collaboration360,84);assert.equal(byId.get('fixture-inactive').employee.active,false);published(byId.get('fixture-inactive').weeklyQuality,76);
@@ -159,7 +168,7 @@ try{
  const sqlIdentity=await request(configured,{params:single("'OR'1'='1",'测试甲')});assert.equal(sqlIdentity.status,200);assert.equal(sqlIdentity.body.data.length,1);assert.equal(sqlIdentity.body.data[0].matchStatus,'not_found');assert.equal(sqlIdentity.body.data[0].employee,null);assert.deepEqual(sqlIdentity.body.totals,{requested:1,matched:0,unmatched:1});unavailable(sqlIdentity.body.data[0].weeklyQuality,'identity_mismatch');unavailable(sqlIdentity.body.data[0].collaboration360,'identity_mismatch');
  const sqlName=await request(configured,{params:single('fixture-a',"测试甲' OR '1'='1")});assert.equal(sqlName.status,200);assert.equal(sqlName.body.data.length,1);assert.equal(sqlName.body.data[0].matchStatus,'name_mismatch');unavailable(sqlName.body.data[0].weeklyQuality,'identity_mismatch');unavailable(sqlName.body.data[0].collaboration360,'identity_mismatch');
  const parentheses=await request(configured,{params:single('fixture-parentheses','测试员工')});assert.equal(parentheses.body.data[0].matchStatus,'name_mismatch','Do not remove parentheses when matching names');
- const normalized=await request(configured,{params:single('fixture-unicode','  测试E\u0301  ')});assert.equal(normalized.body.data[0].matchStatus,'matched');unavailable(normalized.body.data[0].weeklyQuality,'pending_confirmation');
+ const normalized=await request(configured,{params:single('fixture-unicode','  测试E\u0301  ')});assert.equal(normalized.body.data[0].matchStatus,'matched');unavailable(normalized.body.data[0].weeklyQuality,'pending_generation');
  const inactiveCookie=await request(configured,{params:single('fixture-inactive'),cookieValue:cookie('fixture-inactive')});assert.equal(inactiveCookie.status,200,'Browser identity must not change the machine token scope');
  for(const options of [{authorization:null},{authorization:'wrong-token'},{authorization:'x'.repeat(token.length)},{authorization:null,cookieValue:cookie('fixture-boss')},{authorization:'wrong-token',cookieValue:cookie('fixture-boss')},{authorization:null,params:{...single('fixture-a'),token}}]){
   const denied=await request(configured,{params:single('fixture-a'),...options});assert.equal(denied.status,401);assert.equal(denied.body.error,'unauthorized');

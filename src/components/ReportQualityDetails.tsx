@@ -120,7 +120,7 @@ export function ReportQualityDetails({ assessment, weights = defaultWeights, pen
   if (isCoachingQualityAssessment(assessment)) return <section className="quality-assessment quality-assessment-coaching" aria-label="四模块评分说明" data-quality-version="coaching">
     <div className="quality-assessment-heading"><h4><FileCheck2 size={15} aria-hidden="true"/>四模块评分说明</h4><span className="pf-status is-warning">{previous?`旧版分数 · ${refreshLabel||'历史评分'}`:'AI 候选'}</span></div>
     {previous&&<p className="quality-assessment-caption">以下保留上次评分说明，当前候选完成后会更新。</p>}
-    <p className="quality-assessment-caption">各模块展示本次计入总分的实际贡献分。月度最终分由管理人员确认。</p>
+    <p className="quality-assessment-caption">各模块展示本次计入总分的实际贡献分。月结、周报收集齐且 AI 分析完成后自动生成月度最终分。</p>
     {assessment.totalScore != null && <p className="quality-confidence">AI 候选分 {savedPointText(assessment.totalScore)} 分</p>}
     {(assessment.anomalies?.length || assessment.verification?.recommended === true) && <div className="quality-missing quality-anomalies"><strong>如需进一步确认</strong>{assessment.anomalies?.length ? <ul>{assessment.anomalies.map((item, index) => <li key={index}>{item}</li>)}</ul> : <p>如有需要可进一步核实。</p>}</div>}
     <div className="quality-module-list">{coachingModules.map(definition => {
@@ -148,14 +148,14 @@ export function ReportQualityDetails({ assessment, weights = defaultWeights, pen
   return <section className="quality-assessment" aria-label="四模块评分说明" data-quality-version="legacy">
     <div className="quality-assessment-heading"><h4><FileCheck2 size={15} aria-hidden="true"/>四模块评分说明</h4><span className="pf-status is-warning">{previous?`旧版分数 · ${refreshLabel||'历史评分'}`:'AI 候选'}</span></div>
     {previous&&<p className="quality-missing">以下引文来自旧评分对应的周报版本。新评分完成后会更新候选分。</p>}
-    <p className="quality-assessment-caption">各模块按适用子项折算为 100 分后加权。月度最终分由管理人员确认。</p>
+    <p className="quality-assessment-caption">各模块按适用子项折算为 100 分后加权。月结、周报收集齐且 AI 分析完成后自动生成月度最终分。</p>
     {(assessment.confidence != null || assessment.totalScore != null) && <p className="quality-confidence">{[
       assessment.totalScore != null && `AI 候选分 ${assessment.totalScore.toFixed(1)} 分`,
       assessment.confidence != null && `整体置信度（模型自评）${numberText(assessment.confidence * 100)}%`,
     ].filter(Boolean).join(' · ')}</p>}
     {(assessment.factConflict != null || assessment.recommendHumanReview != null) && <p className="quality-confidence">{[
       assessment.factConflict != null && (assessment.factConflict ? '发现可能的事实冲突' : '未发现事实冲突'),
-      assessment.recommendHumanReview != null && (assessment.recommendHumanReview ? '建议重点人工复核' : '常规人工确认'),
+      assessment.recommendHumanReview != null && (assessment.recommendHumanReview ? '建议重点人工复核' : '常规复核参考'),
     ].filter(Boolean).join(' · ')}</p>}
     {!!assessment.anomalies?.length && <div className="quality-missing quality-anomalies"><strong>如需进一步确认</strong><ul>{assessment.anomalies.map((item, index) => <li key={index}>{item}</li>)}</ul></div>}
     <div className="quality-module-list">{modules.map((module, index) => {

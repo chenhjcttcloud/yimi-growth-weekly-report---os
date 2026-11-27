@@ -2,7 +2,7 @@ import { useEffect, useState, type ComponentProps, type ReactNode } from 'react'
 import { CalendarDays, ShieldCheck } from 'lucide-react';
 import { AppSelect } from '../components/AppSelect';
 import { ManagedQualityReport } from '../components/ManagedQualityReport';
-import { MonthlyQualityResultRow, monthlyQualityView, qualityReviewNotice, type MonthlyQualitySummary } from '../components/MonthlyQuality';
+import { MonthlyQualityResultRow, isMonthlyQualityReviewLocked, qualityReviewNotice, type MonthlyQualitySummary } from '../components/MonthlyQuality';
 import { DeferredEvidence } from '../components/DeferredEvidence';
 import { monthText, ResultEmpty } from '../components/PerformanceUI';
 import { locationValue, rememberLocation, useLocationSection } from '../lib/navigation';
@@ -87,14 +87,14 @@ function TeamQuality() {
   const finalRecord = current?.results.find(result=>result.kind==='quality' && result.confirmed_at);
   const resultEvidenceUrl = finalRecord && employeeId ? '/api/performance/result-evidence?'+new URLSearchParams({month,employeeId,kind:'quality',confirmedAt:finalRecord.confirmed_at || '',rule:finalRecord.scoring_rule || ''}) : undefined;
   return <div className="v2-page v2-page-wide pf-page">
-    <section className="pf-intro"><div><span className="v2-eyebrow"><ShieldCheck size={14}/>直属员工</span><h2>团队质量审核</h2><p>复核逐周证据，确认员工月度周报质量分。</p></div><label className="pf-month pf-month-select"><CalendarDays size={16}/><AppSelect aria-label="选择审核月份" value={month} onValueChange={setMonth}>{months.map(value=><option value={value} key={value}>{monthText(value)}</option>)}</AppSelect></label></section>
+    <section className="pf-intro"><div><span className="v2-eyebrow"><ShieldCheck size={14}/>直属员工</span><h2>团队质量审核</h2><p>复核逐周证据，月结、收集齐且 AI 分析完成后自动生成员工月度质量分。</p></div><label className="pf-month pf-month-select"><CalendarDays size={16}/><AppSelect aria-label="选择审核月份" value={month} onValueChange={setMonth}>{months.map(value=><option value={value} key={value}>{monthText(value)}</option>)}</AppSelect></label></section>
     <p className="pf-notice">{qualityReviewNotice}</p>
     <section className="v2-card pf-workspace">
       {scopeError ? <><p className="pf-error" role="alert">{scopeError}</p><button type="button" className="secondary-button" onClick={reload}>重试读取范围</button></> : scope?.month!==month ? <p role="status">正在读取审核范围…</p> : !employee ? <ResultEmpty title="本月暂无可审核员工" description="审核范围由直属汇报关系决定。"/> : <>
         <div className="v2-card-head"><h3 className="v2-card-title">月度周报质量</h3><AppSelect aria-label="选择审核员工" value={employeeId} onValueChange={setSelectedId}>{employees.map(item=><option key={item.userId} value={item.userId}>{item.name} · {item.department}</option>)}</AppSelect></div>
-        {current ? <><div className="pf-confirm-list"><MonthlyQualityResultRow key={employeeId+':'+month} quality={current.quality} target={{userId:employee.userId,month,onUpdated:reload}}/></div>
+        {current ? <><div className="pf-confirm-list"><MonthlyQualityResultRow key={employeeId+':'+month} quality={current.quality}/></div>
           {resultEvidenceUrl && <DeferredEvidence label="查看月度最终分计算依据" url={resultEvidenceUrl}/>}
-          {current.reports.length>0 ? <div className="pf-evidence-list">{current.reports.map(report=><ManagedQualityReport key={report.id+':'+(report.qualityReviewVersion||'')} report={report} month={month} userId={employee.userId} editable={!monthlyQualityView(current.quality).confirmed} onUpdated={reload}/>)}</div> : <ResultEmpty title="本月暂无周报" description="已同步的周报和逐周评分依据会显示在这里。"/>}
+          {current.reports.length>0 ? <div className="pf-evidence-list">{current.reports.map(report=><ManagedQualityReport key={report.id+':'+(report.qualityReviewVersion||'')} report={report} month={month} userId={employee.userId} editable={!isMonthlyQualityReviewLocked(current.quality)} onUpdated={reload}/>)}</div> : <ResultEmpty title="本月暂无周报" description="已同步的周报和逐周评分依据会显示在这里。"/>}
         </> : detailError ? <><p className="pf-error" role="alert">{detailError}</p><button type="button" className="secondary-button" onClick={reload}>重试读取评分</button></> : <p role="status">正在读取 {employee.name} 的评分…</p>}
       </>}
     </section>

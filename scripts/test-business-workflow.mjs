@@ -86,7 +86,7 @@ try{
  const confirmation={kind:'quality',userId:'staff',month,version:'0'.repeat(64)};
  assert.equal((await call('/api/performance/confirm','staff',confirmation)).status,403);
  const earlyConfirmation=await call('/api/performance/confirm','admin',confirmation);
- assert.equal(earlyConfirmation.status,409);assert.equal(earlyConfirmation.body.error,'quality_month_open');
+ assert.equal(earlyConfirmation.status,409);assert.equal(earlyConfirmation.body.error,'results_auto_published');
  assert.equal(run("SELECT count(*) FROM performance_results WHERE kind='quality';").trim(),'0');
  stages.push('飞书汇报生成四模块 AI 评分，月内显示当前均分并拒绝提前确认');
  assert.equal((await call('/api/scoring360/setup','admin',{month,action:'prepare'})).status,200);assert.equal((await call('/api/scoring360/setup','admin',{month,action:'assign',pairs:['staff','head','admin'].map(evalueeUserId=>({evalueeUserId,evaluatorUserId:'peer'}))})).status,200);
@@ -125,14 +125,14 @@ try{
  await stop();await start(afterMonthClose);
  for(const id of ['admin','staff'])assert.equal(await login(id),302);
  const qualityCandidate=await adminQuality();
- assert.equal(qualityCandidate.status,'pending_confirmation');assert.equal(qualityCandidate.canConfirm,true);assert.equal(qualityCandidate.candidateScore,83.3);
+ assert.equal(qualityCandidate.status,'final');assert.equal(qualityCandidate.canConfirm,false);assert.equal(qualityCandidate.finalScore,83.3);assert.equal(qualityCandidate.publicationMode,'automatic');
  const confirmed=await call('/api/performance/confirm','admin',{...confirmation,version:qualityCandidate.version});
- assert.equal(confirmed.status,200);assert.equal(confirmed.body.confirmedAt,new Date(afterMonthClose).toISOString());
+ assert.equal(confirmed.status,409);assert.equal(confirmed.body.error,'results_auto_published');assert.equal(run("SELECT count(*) FROM performance_results WHERE kind='quality';").trim(),'0');
  const analyzed=(await providerCalls()).filter(c=>c.kind==='ai').length;
  assert.equal((await call('/api/lark-report-sync','admin',{start:'2026-10-01',end:'2026-10-28'})).status,202);
  for(let i=0;i<100;i++){sync=(await call('/api/lark-report-sync','admin')).body;if(!sync.processRunning&&!sync.status?.running)break;await new Promise(r=>setTimeout(r,100));}
  assert.equal((await providerCalls()).filter(c=>c.kind==='ai').length,analyzed);
  const finalHistory=await ownMonth();assert.equal(finalHistory.quality,83.3);assert.equal(finalHistory.qualityStatus,'final');
- stages.push('上海时间进入次月后管理确认最终分，重复收集复用评分且保留最终分');
+ stages.push('上海时间进入次月后自动生成月度最终分，重复收集复用评分且保留自动历史');
  assert.equal(run('PRAGMA integrity_check;').trim(),'ok');await writeFile(dir+'/result.json',JSON.stringify({ok:true,stages,realMessagesSent:0,realTasksCreated:0,realAICalls:0,artifacts:dir},null,2));console.log(JSON.stringify({ok:true,stages,realMessagesSent:0,artifacts:dir}));
 }catch(error){console.error('Completed stages:',stages,'\nServer:',logs);throw error;}finally{if(browser)await browser.close();await stop();console.log('Artifacts retained:',dir);}

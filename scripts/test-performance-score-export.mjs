@@ -72,12 +72,12 @@ const results = [
   result('blank', 'collaboration', 'weighted_30_70', ' '),
 ];
 const selectedIds = ['zero', 'pending', 'candidate', 'legacy', 'weighted', 'weighted-missing-parts', 'blank', 'inactive'];
-const requiredQuality = ['月份', '姓名', '部门', '月度质量最终分', 'AI质量候选分', '已完成分析均分',
+const requiredQuality = ['月份', '姓名', '部门', '月度质量最终分', 'AI质量均分', '已完成分析均分',
   '质量状态', '应交周报数', '已交周报数', '缺交周报数', '计入质量周报数', '已分析周报数',
-  '待分析周报数', '确认人', '确认时间（北京时间）', '状态说明', '员工ID'];
+  '待分析周报数', '状态说明', '员工ID'];
 const requiredCollaboration = ['月份', '姓名', '部门', '在职状态', '月度综合最终分', '评分状态', '计分口径',
   '负责人或老板评分（30%）', '30%评分角色', '30%已评数', '30%应评数', '30%缺评数',
-  '同事互评均分（70%）', '同事已评数', '同事应评数', '同事缺评数', '发布时间（北京时间）', '状态说明', '员工ID'];
+  '同事互评均分（70%）', '同事已评数', '同事应评数', '同事缺评数', '状态说明', '员工ID'];
 
 function index(sheet, title) {
   const value = sheet.columns.findIndex(column => column.title === title);
@@ -99,6 +99,7 @@ function validateModel(model) {
   for (const sheet of model.sheets) {
     assert.equal(typeof sheet.name, 'string');
     assert.equal(new Set(sheet.columns.map(column => column.title)).size, sheet.columns.length);
+    assert(sheet.columns.every(column => !/确认人|确认时间|发布人|发布时间|生成方式|生成时间|结果来源/.test(column.title)), 'score tables omit approval metadata columns');
     for (const row of sheet.rows) {
       assert.equal(row.length, sheet.columns.length);
       row.forEach((value, position) => {
@@ -142,14 +143,12 @@ try {
     assert.equal(cell(collaboration, 'zero', '月度综合最终分'), 0);
     assert.equal(cell(collaboration, 'zero', '负责人或老板评分（30%）'), 0);
     assert.equal(cell(collaboration, 'zero', '同事互评均分（70%）'), 0);
-    assert.match(String(cell(quality, 'zero', '确认时间（北京时间）')), /08:15/u);
-    assert.match(String(cell(collaboration, 'zero', '发布时间（北京时间）')), /08:15/u);
   });
 
   check('quality candidate and analyzed average never impersonate a final score', () => {
     const quality = sheetFor(build({kind: 'quality'}), '月度质量最终分');
     assert(isBlank(cell(quality, 'candidate', '月度质量最终分')));
-    assert.equal(cell(quality, 'candidate', 'AI质量候选分'), 74.2);
+    assert.equal(cell(quality, 'candidate', 'AI质量均分'), 74.2);
     assert.equal(cell(quality, 'candidate', '已完成分析均分'), 74.2);
     assert.equal(cell(quality, 'candidate', '应交周报数'), 5);
     assert.equal(cell(quality, 'candidate', '已交周报数'), 3);
@@ -157,6 +156,27 @@ try {
     assert.equal(cell(quality, 'candidate', '计入质量周报数'), 3);
     assert.equal(cell(quality, 'pending', '待分析周报数'), 1);
     assert.equal(cell(quality, 'pending', '已分析周报数'), 1);
+    assert.equal(cell(quality, 'candidate', '质量状态'), '等待自动生成');
+  });
+
+  check('automatic monthly quality exports its final without confirmation fields', () => {
+    const automatic = person('automatic', {quality: {...zero.quality, finalScore: 86.4, candidateScore: 86.4, currentAverage: 86.4, publicationMode: 'automatic', generatedBy: '系统自动计算', generatedAt: '2026-11-01T00:15:00Z'}});
+    const automaticZero = person('automatic-zero', {quality: {...zero.quality, publicationMode: 'automatic', confirmedBy: '系统自动计算'}});
+    const sheet = sheetFor(build({kind: 'quality', rows: [automatic, automaticZero], results: [], employeeUserIds: ['automatic', 'automatic-zero']}), '月度质量最终分');
+    assert.equal(cell(sheet, 'automatic', '月度质量最终分'), 86.4);
+    assert.equal(cell(sheet, 'automatic-zero', '月度质量最终分'), 0);
+    for (const id of ['automatic', 'automatic-zero']) {
+      assert.equal(cell(sheet, id, '质量状态'), '已自动生成');
+      assert(!cell(sheet, id, '状态说明').includes('确认'));
+    }
+  });
+
+  check('waiting for automatic generation is an explicit state and never a final or a human confirmation', () => {
+    const waiting = person('waiting-generation', {quality: {...candidate.quality, status: 'pending_generation'}});
+    const sheet = sheetFor(build({kind: 'quality', rows: [waiting], results: [], employeeUserIds: ['waiting-generation']}), '月度质量最终分');
+    assert.equal(cell(sheet, 'waiting-generation', '质量状态'), '等待自动生成');
+    assert.equal(cell(sheet, 'waiting-generation', '月度质量最终分'), null);
+    assert(!cell(sheet, 'waiting-generation', '状态说明').includes('确认'));
   });
 
   check('unpublished collaboration exports current components and personal missing counts', () => {
@@ -191,7 +211,7 @@ try {
 
   check('null and whitespace are not zero or completion', () => {
     const model = build(), quality = sheetFor(model, '月度质量最终分'), sheet = sheetFor(model, '月度综合最终分');
-    for (const title of ['月度质量最终分', 'AI质量候选分', '已完成分析均分']) assert(isBlank(cell(quality, 'blank', title)));
+    for (const title of ['月度质量最终分', 'AI质量均分', '已完成分析均分']) assert(isBlank(cell(quality, 'blank', title)));
     for (const title of ['月度综合最终分', '负责人或老板评分（30%）', '同事互评均分（70%）']) assert(isBlank(cell(sheet, 'blank', title)));
     assert(!/^已发布|^全部完成/u.test(String(cell(sheet, 'blank', '评分状态'))), 'zero configured relationships cannot count as completion');
   });

@@ -41,6 +41,6 @@ export function PerformanceScoreExportButton({kind,month,rows,results,contextKey
  return <div className="pf-export">
   <span className="pf-export-scope">{disabled||!current?'加载月度结果后可导出':current.employeeUserIds.length?`当前筛选 ${current.employeeUserIds.length} 人 · 含其他页`:'当前筛选无员工'}</span>
   <button type="button" className="secondary-button" aria-label={label} disabled={!ready} onClick={download} title="导出所选月份、部门及搜索条件下的全部匹配员工"><Download size={15}/>导出Excel</button>
-  {visibleMessage&&<p role={visibleMessage.error?'alert':'status'} className={visibleMessage.error?'pf-error pf-export-message':'pf-caption pf-export-message'}>{visibleMessage.text}</p>}
+  <p role={visibleMessage?.error?'alert':'status'} className={visibleMessage?.error?'pf-export-message is-error':'pf-export-message'}>{visibleMessage?.text||''}</p>
  </div>;
 }

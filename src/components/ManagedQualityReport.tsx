@@ -50,7 +50,7 @@ const reviewErrors: Record<string, string> = {
   report_rescore_not_supported: '该周报来源暂不支持自动重新分析。',
   report_sync_running: '周报正在同步，请稍后再发起重新分析。',
   quality_candidate_changed: '周报评分已更新，请刷新后再复核。',
-  result_locked: '月度最终分已确认，请查看审核记录。',
+  result_locked: '历史人工质量最终分已锁定，请查看原审核记录。',
   invalid_quality_evidence: '请填写对应模块中的完整原文引文。',
   quality_criterion_already_not_applicable: '该子项已标记为不适用。',
   quality_module_requires_criterion: '该模块至少保留一个适用子项。',

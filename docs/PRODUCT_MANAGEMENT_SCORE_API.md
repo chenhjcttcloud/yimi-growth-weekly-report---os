@@ -148,7 +148,7 @@ JSON
 | `score` | 当前可使用的 0～100 数值或 `null`；0 是有效分数 |
 | `isFinal` | 是否为本接口当前可供业务采用的最终结果 |
 | `previousScore` | 兼容字段，当前返回 `null` |
-| `source` | `management_confirmed` 人工确认的周报质量分、`legacy` 历史人工结果、`automatic_report` 自动计算的质量进度或 `weighted_30_70` 月度加权结果 |
+| `source` | `management_confirmed` 历史人工确认的周报质量分、`legacy` 历史人工结果、`automatic_report` 自动生成的质量结果或进度、`weighted_30_70` 月度加权结果 |
 | `updatedAt` | 该结果已保存的更新时间，标准 ISO 8601 UTC 或 `null` |
 | `revision` | 评分摘要的稳定 SHA-256 版本标识，用于发现变更；不能按字符串大小判断先后 |
 
@@ -156,18 +156,18 @@ JSON
 
 自动质量结果还可能带有 `reportCount`、`pendingAnalysis`、`failedAnalysis`、`previousResultAt` 四个辅助字段，分别表示已保存的报告数量、待分析数量、失败数量及前一结果时间；数量为非负整数或 `null`，时间为标准 ISO 8601 UTC 或 `null`。这些字段不保证在所有来源或状态下出现，不能用它们替代 `status`、`isFinal` 和 `score` 判断可用性。
 
-`generatedAt` 每次查询可以变化；仅重新读取不会改变 `revision`。建议以 `(month, employee.feishuUserId, 评分类型)` 为业务唯一键，结合该类型的 `revision` 幂等更新，不以姓名、`generatedAt` 或两种分数共用的单个版本号作为唯一键。
+`generatedAt` 每次查询可以变化；仅重新读取不会改变 `revision`。自动质量结果的周报评分来源、复核记录或收集状态变化时，`revision` 也会变化，即使新的月度快照尚未保存；此时返回 `pending_generation`，不能继续采用旧最终分。建议以 `(month, employee.feishuUserId, 评分类型)` 为业务唯一键，结合该类型的 `revision` 幂等更新，不以姓名、`generatedAt` 或两种分数共用的单个版本号作为唯一键。
 
 ## 5. 分数与状态
 
-有效周报分析完成后汇总月度候选分，由管理人员确认后供接口同步。及时率单独统计。360 协同最终分为负责人或老板部分 30% 加同事互评部分 70%，必需评分完成后发布。`legacy` 历史人工结果保留原值。
+月份结束、周报收集和有效周报分析完成后，系统自动汇总生成月度质量最终分，无需管理人员或老板确认。已保存的自动最终结果以 `source: "automatic_report"`、`status: "published"`、`isFinal: true` 供接口同步；未完成汇总的旧候选快照不会直接充当最终分。及时率单独统计。360 协同最终分为负责人或老板部分 30% 加同事互评部分 70%，必需评分完成后自动发布。`legacy` 及 `management_confirmed` 历史最终结果保留原值。
 
 | `status` | `score` / `isFinal` | 调用方处理 |
 | --- | --- | --- |
 | `published` | 有效数值 / `true` | 可同步为该类型的当前最终分 |
 | `not_published` | `null` / `false` | 该类型没有既存结果快照，例如 360 必需评分未完成 |
 | `pending_ai` | `null` / `false` | 周报质量分析尚未形成可用结果 |
-| `pending_confirmation` | `null` / `false` | 已汇总周报质量候选分，等待管理人员确认 |
+| `pending_generation` | `null` / `false` | 等待系统自动汇总发布；兼容读取的旧候选快照也使用此状态，无需人工确认 |
 | `no_reports` | `null` / `false` | 已保存的质量快照表明该月份没有周报 |
 | `rescoring` | `null` / `false` | 质量重评中 |
 | `rescore_failed` | `null` / `false` | 质量重评失败 |
@@ -176,7 +176,7 @@ JSON
 
 接口不会把未交、未评分、身份未匹配或分析失败填为 0，也不会把重评前的旧分冒充当前最终分。`score` 为 `null` 时必须同时保存状态并显示“待分析”“待评分”“重评中”等相应提示。若产品管理系统已有历史分，保留其历史记录，并标记为非当前可用结果；不要将 `null` 转为 0 或继续展示为本次最终分。
 
-接口只读取快照：没有已保存快照时统一为 `not_published`，不会为了区分待分析和无周报而现场扫描、分析或重算；`pending_ai`、`no_reports` 等细分状态来自已保存的自动质量结果。未匹配或没有快照时，`revision` 为 `null`。
+接口只读取已保存快照，并用周报的评分版本与分析状态、复核记录版本及当前收集状态核对自动质量分是否仍然有效；不读取正文或证据，不调用 AI 或汇总发布。没有已保存快照时统一为 `not_published`；`pending_ai`、`no_reports` 等细分状态来自已保存的自动质量结果。未匹配或没有快照时，`revision` 为 `null`。
 
 两类结果独立处理：同一个人可能质量分已发布而 360 仍待评分，或质量重评中而 360 已发布。不要因为另一类分数未完成而丢掉已经可用的结果。
 

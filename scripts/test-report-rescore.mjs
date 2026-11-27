@@ -75,7 +75,7 @@ const sync=createLiveReportSync({query,exec,sql,config:{dataDir:dir,moonshotApiK
  if(transientPublicationFailure){transientPublicationFailure=false;throw Error('synthetic_temporary_publication_failure');}
  const view=await performance.overview(),a=monthly(view,'A'),b=monthly(view,'B');observations.push({a,b});
  const priorB=october(view,'B').reports.find(report=>report.id==='B1');
- if(phase==='first'&&a.candidateScore===95&&a.status==='pending_confirmation'&&b.currentAverage===null&&b.status==='pending_ai'&&priorB.displayQualityScore===80){independentPublication=true;releaseB();}
+ if(phase==='first'&&a.candidateScore===95&&a.status==='final'&&b.currentAverage===null&&b.status==='pending_ai'&&priorB.displayQualityScore===80){independentPublication=true;releaseB();}
 }});
 const options={mode:'rescore',targetMonth:'2026-10'};
 let timer;
@@ -96,7 +96,11 @@ try{
  assert.equal(status.publicationPending,false);assert.equal(status.publicationFailures,1,'transient monthly publication error is recorded and later updates recover');
  const firstView=await performance.overview();
  assert.equal(monthly(firstView,'A').candidateScore,95);assert.equal(monthly(firstView,'B').candidateScore,85);
- assert(!firstView.results.some(row=>row.month==='2026-10'&&row.kind==='quality'),'AI analysis never creates a monthly final result');
+ for(const [userId,score] of [['A',95],['B',85]]){
+  const result=firstView.results.find(row=>row.month==='2026-10'&&row.employee_user_id===userId&&row.kind==='quality');
+  assert.equal(result.result.score,score);assert.equal(result.scoring_rule,'automatic_report');assert.equal(result.result.publicationMode,'automatic');
+ }
+ const preservedAutomatic=run("SELECT * FROM automatic_performance_results WHERE month='2026-10' AND employee_user_id='B' AND kind='quality' ORDER BY rowid;",true);
  const september=firstView.results.find(row=>row.month==='2026-09'&&row.employee_user_id==='A'&&row.kind==='quality');
  assert.equal(september.result.score,55);assert.equal(september.confirmed_by,'虚构主管');
  assert.equal(perPhaseCalls.get('first:A1'),3);assert.equal(perPhaseCalls.get('first:A2'),2);assert.equal(perPhaseCalls.get('first:B1'),2);
@@ -114,6 +118,9 @@ try{
  await sync.run(options);assert.equal(status.phase,'partial');assert.equal(status.failed,1);assert.equal(status.cached,3);assert.equal(perPhaseCalls.get('fail:B1'),2);assert.equal(calls.filter(call=>call.phase==='fail').length,2);
  const failedView=await performance.overview(),bFailed=monthly(failedView,'B'),bPrevious=october(failedView,'B').reports.find(report=>report.id==='B1');
  assert.equal(bFailed.currentAverage,null);assert.equal(bFailed.status,'pending_ai');assert.equal(bPrevious.displayQualityScore,85);assert.equal(bPrevious.qualityRefresh.state,'failed');
+ assert(!failedView.results.some(row=>row.month==='2026-10'&&row.employee_user_id==='B'&&row.kind==='quality'),'a failed current rescore cannot expose the previous automatic final');
+ const historyAfterFailure=run("SELECT * FROM automatic_performance_results WHERE month='2026-10' AND employee_user_id='B' AND kind='quality' ORDER BY rowid;",true);
+ for(const old of preservedAutomatic)assert.deepEqual(historyAfterFailure.find(row=>row.id===old.id),old,'failed rescore preserves every prior automatic history row');
  assert.equal(content('B1').qualityRefresh.diagnostic.code,'reference_not_in_source');assert.equal(content('B1').qualityRefresh.diagnostic.stage,'initial');
  assert(!JSON.stringify(content('B1').aiAnalysisAttempts).includes('PRIVATE_'),'persisted diagnostics cannot expose provider output');
  const successfulA=stored('A1'),successfulA2=stored('A2');

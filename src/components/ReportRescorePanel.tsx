@@ -91,7 +91,7 @@ export function ReportRescorePanel({scoringPaused,scoringStartMonth=''}: {scorin
    <button type="submit" className="primary-button" disabled={!overview||!validMonth||busy||processing||scoringDisabled}>{busy?'正在启动…':'补跑本月未完成评分'}</button>
    <button type="button" className="secondary-button" disabled={busy} onClick={()=>void load()}>刷新评分进度</button>
   </form>
-  <p className="report-rescore-note">重评时，旧评分依据可供回看。月度候选分只汇总已完成分析的有效周报，最终分由管理人员确认。</p>
+  <p className="report-rescore-note">重评时，旧评分依据可供回看。当前参考均分只汇总已完成分析的有效周报，月度最终分在月结、收集齐且 AI 分析完成后自动生成。</p>
   {paused&&<p className="pf-notice" role="status">{pauseMessage}已完成评分和历史分数继续保留。</p>}
   {retryHeld>0&&<p className="report-rescore-note">{monthRetryHeld===undefined?'本次任务':'所选月份'}有 {retryHeld} 份周报已达到自动重试上限，{scoringDisabled?'评分恢复后可手动补跑。':'可手动补跑。'}</p>}
   {notice&&<p className="pf-notice" role="status">{notice}</p>}

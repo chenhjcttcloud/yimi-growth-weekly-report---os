@@ -85,7 +85,7 @@ function harness(db,performanceFactory=createPerformance,workspaceFactory=create
  return {performance,workspace,log,reset,db};
 }
 const user={name:'同名员工',userId:'a'},other={name:'同名员工',userId:'b'};
-const counts=log=>({prototypeReads:log.reads.prototypeData||0,insightReads:log.reads.kimiInsightsByPeriod||0,reportBodyQueries:log.queries.filter(q=>q.statement.startsWith('SELECT * FROM weekly_reports')).length,reportBodiesReturned:log.queries.filter(q=>q.statement.startsWith('SELECT * FROM weekly_reports')).reduce((n,q)=>n+q.rows.length,0),selects:log.queries.length,writeTransactions:log.writes.length,writeSqlBytes:log.writes.reduce((n,s)=>n+Buffer.byteLength(s),0),policyReads:log.policies.length});
+const counts=log=>({prototypeReads:log.reads.prototypeData||0,insightReads:log.reads.kimiInsightsByPeriod||0,reportBodyQueries:log.queries.filter(q=>/^SELECT (?:rowid AS review_rowid,)?\* FROM weekly_reports/.test(q.statement)).length,reportBodiesReturned:log.queries.filter(q=>/^SELECT (?:rowid AS review_rowid,)?\* FROM weekly_reports/.test(q.statement)).reduce((n,q)=>n+q.rows.length,0),selects:log.queries.length,writeTransactions:log.writes.length,writeSqlBytes:log.writes.reduce((n,s)=>n+Buffer.byteLength(s),0),policyReads:log.policies.length});
 let before=null,beforeWorkspace=null,globalBefore=null;
 if(baselinePerformance&&baselineWorkspace){const baseline=harness(initialDb,baselinePerformance,baselineWorkspace);beforeWorkspace=await baseline.workspace.workspace(user,'2026-10','oct-first');before=counts(baseline.log);globalBefore=await baseline.performance.overview();}
 const db=path.join(directory,'scoped.sqlite');await copyFile(initialDb,db);
@@ -114,8 +114,8 @@ assert.equal(new Set(current.log.policies).size,current.log.policies.length,'eac
 assert.equal(afterWorkspace.weeks.find(w=>w.id==='oct-first').closure.previousWeek,'2026-09-04');
 assert.equal(afterWorkspace.weeks.find(w=>w.id==='oct-first').closure.previousPlan,'a下期计划 2026-09-04','the selected month must not truncate the previous plan');
 assert.equal(afterWorkspace.history.find(r=>r.month==='2026-04').quality,77,'all personal history is retained');
-assert.equal(afterWorkspace.rollingMonths,1,'only management-confirmed quality contributes to the rolling result');
-assert.equal(afterWorkspace.rollingQuality,77);
+assert.equal(afterWorkspace.rollingMonths,3,'closed automatic quality finals contribute alongside retained historical results');
+assert.equal(afterWorkspace.rollingQuality,69);
 const octoberQuality=afterWorkspace.history.find(r=>r.month==='2026-10');
 assert.equal(octoberQuality.quality,null);
 assert.equal(octoberQuality.qualityStatus,'pending_ai');
@@ -127,7 +127,7 @@ assert(!Object.hasOwn(octoberQuality.monthlyQuality,'version'),'confirmation ver
 assert(!JSON.stringify(afterWorkspace).includes('B_PRIVATE'));assert(!JSON.stringify(afterWorkspace).includes('AMBIGUOUS_PRIVATE'));
 for(const entry of current.log.queries){
  const q=entry.statement;
- if(q.startsWith('SELECT * FROM weekly_reports'))assert.equal(q,"SELECT * FROM weekly_reports WHERE employee_user_id='a';");
+ if(/^SELECT (?:rowid AS review_rowid,)?\* FROM weekly_reports/.test(q))assert.equal(q,"SELECT rowid AS review_rowid,* FROM weekly_reports WHERE employee_user_id='a';");
  if(q.startsWith('SELECT user_id,name,department,is_active FROM employees'))assert(q.includes("WHERE user_id='a'"));
  // managerReviews has a separate global responsibility snapshot; the scoped
  // calculation and weeks lookup must both use exact employee employment rows.

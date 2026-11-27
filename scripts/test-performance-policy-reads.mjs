@@ -14,33 +14,41 @@ const data={meta:{collectionStartDate:'2026-08-01',periods:months.map(m=>({start
 const freeze=value=>{if(value&&typeof value==='object'){Object.values(value).forEach(freeze);Object.freeze(value);}return value;};freeze(data);
 const periods=employees.map(e=>({employee_user_id:e.user_id,start_date:'2026-01-01',end_date:''}));
 let policyReads=[],confirmedReads=0,weights=[30,25,25,20],writes=0,fixtureQueries=[];
+const automaticKeys=new Map();
 const published=employees.map(e=>({month:'2026-08',employee_user_id:e.user_id,employee_name:e.name,kind:'quality',result_json:JSON.stringify({score:e.user_id==='a'?34:55}),scoring_rule:'legacy'}));
 const query=async statement=>{
  fixtureQueries.push(statement);
  const scopes=[...statement.matchAll(/\b(?:[a-z]+\.)?(?:employee_user_id|user_id|evaluee_user_id)='([^']*)'/g)].map(match=>match[1]);
  const userId=scopes[0];if(userId)assert(scopes.every(id=>id===userId),'every scoped union arm must use the same exact identity');
  const own=rows=>userId?rows.filter(row=>(row.employee_user_id||row.user_id)===userId):rows;
- if(/^SELECT \* FROM weekly_reports(?: WHERE employee_user_id='[ab]')?;$/.test(statement))return [];
+ if(/^SELECT (?:rowid AS review_rowid,)?\* FROM weekly_reports(?: WHERE employee_user_id='[ab]')?;$/.test(statement))return [];
  if(statement.startsWith('SELECT rowid AS review_rowid,* FROM weekly_quality_reviews'))return [];
  if(statement.startsWith('SELECT key FROM app_settings WHERE key GLOB'))return [];
  if(statement==='SELECT employee_user_id,week_start,week_end FROM weekly_reports;')return [];
  if(statement==='SELECT month FROM performance_results UNION SELECT month FROM all_monthly_weighted_results UNION SELECT month FROM automatic_performance_results;')return published.map(({month})=>({month}));
- if(statement.includes('NULL AS calculation_hash FROM performance_results p'))return own(published).map(({month,employee_user_id,kind,scoring_rule})=>({month,employee_user_id,kind,scoring_rule}));
+ if(statement.includes('NULL AS calculation_hash FROM performance_results p'))return [...own(published).map(({month,employee_user_id,kind,scoring_rule})=>({month,employee_user_id,kind,scoring_rule})),...own([...automaticKeys.values()])];
  if(statement.includes('ORDER BY month DESC, employee_name;')){confirmedReads++;return own(published);}
  if(statement==='SELECT * FROM scoring360_cycles ORDER BY start_date DESC;')return [];
  if(/^SELECT user_id,name,department,is_active FROM employees(?: WHERE user_id='[ab]')?;$/.test(statement))return own(employees);
  if(/^SELECT \* FROM employee_employment_periods(?: WHERE employee_user_id='[ab]')?;$/.test(statement))return own(periods);
  throw Error('unexpected_fixture_query: '+statement);
 };
-const performance=createPerformance({query,exec:async()=>{writes++;},sql:v=>"'"+String(v).replaceAll("'","''")+"'",readData:()=>data,policyFor:async month=>{policyReads.push(month);return {weights:[...weights],deadlineTime:'20:00'};},managerReviews:{snapshot:async()=>({scores:[],bossScores:[]}),progress:()=>({kind:'unassigned',expected:0,submitted:0,complete:false,score:null})},now:()=>new Date('2026-10-29T09:00:00+08:00')});
+const performance=createPerformance({query,exec:async statement=>{
+ writes++;
+ // Retain the fixture's automatic hash metadata just as the real table does;
+ // the real-SQL section below separately verifies guarded writes and evidence.
+ const rows=[...statement.matchAll(/SELECT '[^']+','(2026-\d{2})','([^']+)','[^']+','(quality|timeliness)','([a-f0-9]+)'/g)];
+ assert.equal(rows.length,(statement.match(/INSERT INTO automatic_performance_results/g)||[]).length);
+ for(const [,month,employee_user_id,kind,calculation_hash] of rows)automaticKeys.set(`${month}|${employee_user_id}|${kind}`,{month,employee_user_id,kind,calculation_hash,scoring_rule:'automatic_report'});
+},sql:v=>"'"+String(v).replaceAll("'","''")+"'",readData:()=>data,policyFor:async month=>{policyReads.push(month);return {weights:[...weights],deadlineTime:'20:00'};},managerReviews:{snapshot:async()=>({scores:[],bossScores:[]}),progress:()=>({kind:'unassigned',expected:0,submitted:0,complete:false,score:null})},now:()=>new Date('2026-10-29T09:00:00+08:00')});
 const first=await performance.overview();assert.equal(first.monthly.length,4);assert.deepEqual(policyReads.sort(),months);assert(first.monthly.every(r=>r.reports[0].candidate===34));
 weights=[100,0,0,0];policyReads=[];
 const second=await performance.overview();assert.deepEqual(policyReads.sort(),months);assert(second.monthly.every(r=>r.reports[0].candidate===90),'next request must read the changed policy');assert(first.monthly.every(r=>r.reports[0].candidate===34),'previous request snapshot must remain unchanged');
 policyReads=[];await performance.reports();assert.deepEqual(policyReads.sort(),months);policyReads=[];await performance.reports();assert.deepEqual(policyReads.sort(),months,'standalone report requests must have independent readers');
 confirmedReads=0;policyReads=[];fixtureQueries=[];
-const personal=await performance.personal('同事甲','a');assert.equal(confirmedReads,1,'personal must only read the final full publication snapshot once');assert.equal(personal.history.length,2);assert.equal(personal.history.find(row=>row.month==='2026-08').quality,34);assert.equal(personal.history.find(row=>row.month==='2026-09').monthlyQuality.candidateScore,90);assert(!JSON.stringify(personal).includes('55'),'personal must still filter the requested employee');assert.deepEqual(policyReads.sort(),months);
-assert(fixtureQueries.includes("SELECT * FROM weekly_reports WHERE employee_user_id='a';"));
-assert(!fixtureQueries.includes('SELECT * FROM weekly_reports;'),'personal must not load global report bodies');
+const personal=await performance.personal('同事甲','a');assert.equal(confirmedReads,1,'personal must only read the final full publication snapshot once');assert.equal(personal.history.length,2);assert.equal(personal.history.find(row=>row.month==='2026-08').quality,34);assert.equal(personal.history.find(row=>row.month==='2026-09').monthlyQuality.currentAverage,90);assert(!JSON.stringify(personal).includes('55'),'personal must still filter the requested employee');assert.deepEqual(policyReads.sort(),months);
+assert(fixtureQueries.includes("SELECT rowid AS review_rowid,* FROM weekly_reports WHERE employee_user_id='a';"));
+assert(!fixtureQueries.some(q=>/^SELECT (?:rowid AS review_rowid,)?\* FROM weekly_reports;$/.test(q)),'personal must not load global report bodies');
 assert(fixtureQueries.includes("SELECT user_id,name,department,is_active FROM employees WHERE user_id='a';"));
 assert(fixtureQueries.includes("SELECT * FROM employee_employment_periods WHERE employee_user_id='a';"));
 for(const statement of fixtureQueries.filter(q=>q.includes('ORDER BY month DESC')))for(const alias of ['p','w','a'])assert(statement.includes(`${alias}.employee_user_id='a'`),'final publication union arms must remain scoped');

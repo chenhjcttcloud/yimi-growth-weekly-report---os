@@ -9,8 +9,8 @@ import {chromium} from 'playwright';
 // database, integration credentials, external service or existing output is used.
 await mkdir('outputs/tests',{recursive:true});
 const dir=await mkdtemp(path.resolve('outputs/tests/report-quality-ui-'));
-const staticDir=path.join(dir,'dist');
-const build=spawnSync(process.execPath,['node_modules/vite/bin/vite.js','build','--outDir',staticDir,'--emptyOutDir','false'],{encoding:'utf8'});
+const staticDir=process.env.TEST_STATIC_DIR?path.resolve(process.env.TEST_STATIC_DIR):path.join(dir,'dist');
+const build=process.env.TEST_STATIC_DIR?{status:0,stdout:'',stderr:''}:spawnSync(process.execPath,['node_modules/vite/bin/vite.js','build','--outDir',staticDir,'--emptyOutDir','false'],{encoding:'utf8'});
 assert.equal(build.status,0,build.stdout+'\n'+build.stderr);
 const contentTypes={'.html':'text/html','.js':'text/javascript','.css':'text/css','.svg':'image/svg+xml','.png':'image/png','.woff2':'font/woff2'};
 const server=createServer(async(request,response)=>{
@@ -53,14 +53,14 @@ const fourWeekMonth='2026-11';
 const emptyMonthOverview={scopeMonth:fourWeekMonth,months:[fourWeekMonth],employees:[employee],monthly:[{...monthly,month:fourWeekMonth,reports:[],timeliness:{...timeliness,expected:0,submitted:0,late:0}}],collaborations:[],results:[]};
 const version='a'.repeat(64);
 const reportVersion='b'.repeat(64);
-let mode='management',state='ready',qualityState='pending_ai',detailRequests=0,confirmedScore=null;
+let mode='management',state='ready',qualityState='pending_ai',detailRequests=0,confirmedScore=null,historicalFinal=false;
 let confirmationBlockedReason;
 const reviewRequests=[],confirmRequests=[],qualityReviews=[];
 const unhandledRoutes=new Set(),errors=[];
 const currentAssessment=()=>state==='ready'?assessment:null;
 const currentScore=()=>state==='pending'?null:64;
-const quality=()=>({status:qualityState,currentAverage:64,candidateScore:qualityState==='pending_ai'?null:64,finalScore:confirmedScore,pendingAnalysis:qualityState==='pending_ai'&&!confirmationBlockedReason?1:0,analyzedCount:1,expectedCount:qualityState==='pending_ai'&&!confirmationBlockedReason?2:1,canConfirm:qualityState==='pending_confirmation',confirmationBlockedReason,version,...(qualityState==='final'?{confirmedBy:supervisor.name,confirmedAt:'2026-11-02T08:00:00Z'}:{})});
-const resultRows=()=>qualityState==='final'?[{month,employee_user_id:employee.userId,kind:'quality',result:{score:confirmedScore},scoring_rule:'management_confirmed',confirmed_by:supervisor.name,confirmed_at:'2026-11-02T08:00:00Z',evidenceSummary:{qualityCandidate:64}}]:[];
+const quality=()=>({status:qualityState,currentAverage:64,candidateScore:qualityState==='pending_ai'?null:64,finalScore:confirmedScore,pendingAnalysis:qualityState==='pending_ai'&&!confirmationBlockedReason?1:0,analyzedCount:1,expectedCount:qualityState==='pending_ai'&&!confirmationBlockedReason?2:1,canConfirm:false,publicationMode:historicalFinal?'management_confirmed':'automatic',confirmationBlockedReason,version,...(qualityState==='final'?{confirmedBy:historicalFinal?supervisor.name:'系统自动计算',confirmedAt:'2026-11-02T08:00:00Z'}:{})});
+const resultRows=()=>qualityState==='final'?[{month,employee_user_id:employee.userId,kind:'quality',result:{score:confirmedScore,finalScore:confirmedScore,status:'final',publicationMode:historicalFinal?'management_confirmed':'automatic'},scoring_rule:historicalFinal?'management_confirmed':'automatic_report',confirmed_by:historicalFinal?supervisor.name:'系统自动计算',confirmed_at:'2026-11-02T08:00:00Z',evidenceSummary:{qualityCandidate:64}}]:[];
 const overview=()=>({scopeMonth:month,months:[month],employees:[employee],monthly:[{...monthly,quality:quality()}],collaborations:[],results:resultRows()});
 function personalWorkspace(){return {
   employee,months:[month],month,selectedWeekId:weekId,monthSummary:{...timeliness,upcoming:0},
@@ -97,9 +97,8 @@ try{
         qualityReviews.push({...review,details:{quote:review.quote},createdAt:'2026-11-02T08:00:00Z',reviewerName:supervisor.name});body={ok:true};break;
       }
       case '/api/performance/confirm':{
-        assert(['management','supervisor'].includes(mode));
-        const confirmation=route.request().postDataJSON();confirmRequests.push(confirmation);
-        assert.equal(qualityState,'pending_confirmation');confirmedScore=confirmation.score??64;qualityState='final';body={ok:true,score:confirmedScore};break;
+        confirmRequests.push(route.request().postDataJSON());
+        return route.fulfill({status:409,json:{ok:false,error:'results_auto_published'}});
       }
       case '/api/manager-reviews':body={month,canReview:false,hasResponsibilities:false,tasks:[]};break;
       case '/api/personal/workspace':body=personalWorkspace();break;
@@ -234,24 +233,59 @@ try{
   confirmationBlockedReason=undefined;
   qualityState='pending_confirmation';
   await page.reload();
-  await page.getByText('月度质量候选分',{exact:true}).waitFor();
-  assert(await page.getByText('待管理人员确认',{exact:true}).isVisible());
+  await page.getByText('月度质量参考均分',{exact:true}).waitFor();
+  assert(await page.getByText('等待自动生成',{exact:true}).isVisible());
   assert.equal(await page.getByRole('button',{name:'确认月度最终分'}).count(),0);
   assert.equal(confirmRequests.length,0,'opening an AI candidate never confirms it');
 
   mode='management';
+  qualityState='final';confirmedScore=64;
   await page.setViewportSize({width:1440,height:1100});
   await page.goto(base+'/?page=quality-scores&scoreMonth='+month);
-  await page.getByRole('button',{name:'确认月度最终分'}).click();
   await page.getByText('月度周报质量最终分 · 64.0 分',{exact:true}).waitFor();
-  assert.deepEqual(confirmRequests,[{kind:'quality',userId:employee.userId,month,version}]);
+  assert(await page.locator('.pf-confirm-list').getByText('已自动生成',{exact:true}).isVisible());
+  assert.deepEqual(confirmRequests,[],'viewing an automatic final never submits a confirmation');
   assert.equal(await page.getByRole('button',{name:'确认月度最终分'}).count(),0);
+  assert.equal(await page.getByLabel('调整分数后确认').count(),0);
+  await page.locator('.content-shell').evaluate(element=>{element.scrollTop=0;});
+  await page.screenshot({path:path.join(dir,'automatic-final-management.png'),fullPage:true});
+  confirmedScore=0;
+  await page.reload();
+  await page.getByText('月度周报质量最终分 · 0.0 分',{exact:true}).waitFor();
+  assert(await page.locator('.pf-confirm-list').getByText('已自动生成',{exact:true}).isVisible(),'a valid automatic zero is final');
+  confirmedScore=64;
+  await page.reload();
+  await page.getByRole('tab',{name:'周报与证据',exact:true}).click();
+  await weekButton(3).click();
+  await page.getByText('复核这份周报',{exact:true}).waitFor();
+  historicalFinal=true;confirmedScore=73;
+  await page.reload();
+  await page.getByRole('tab',{name:'结果概览',exact:true}).click();
+  await page.getByText('月度周报质量最终分 · 73.0 分',{exact:true}).waitFor();
+  assert(await page.locator('.pf-confirm-list').getByText('历史已确认',{exact:true}).isVisible());
+  await page.getByRole('tab',{name:'周报与证据',exact:true}).click();
+  await weekButton(3).click();
+  assert.equal(await page.getByText('复核这份周报',{exact:true}).count(),0,'retained manual finals keep weekly reviews locked');
+  historicalFinal=false;confirmedScore=64;
 
   mode='personal';
   await page.goto(personalUrl);
   await page.getByText('2026 年 10 月周报质量最终分',{exact:true}).waitFor();
   assert(await page.getByRole('columnheader',{name:'质量最终分'}).isVisible());
-  assert(await page.getByRole('cell',{name:supervisor.name}).isVisible());
+  assert.equal(await page.getByRole('cell',{name:'系统自动计算'}).count(),0,'automatic score tables omit generation metadata');
+  await page.locator('.content-shell').evaluate(element=>{element.scrollTop=0;});
+  await page.screenshot({path:path.join(dir,'automatic-final-personal.png'),fullPage:true});
+  await page.setViewportSize({width:390,height:844});
+  await page.locator('.content-shell').evaluate(element=>{element.scrollTop=0;});
+  await page.screenshot({path:path.join(dir,'automatic-final-personal-mobile.png'),fullPage:true});
+  await page.setViewportSize({width:1440,height:1100});
+  historicalFinal=true;confirmedScore=73;
+  await page.reload();
+  await page.locator('.pf-metrics').getByText('73.0',{exact:false}).first().waitFor();
+  const historyTable=page.locator('.pf-table-card').filter({has:page.getByRole('heading',{name:'历史周报质量最终分',exact:true})}).getByRole('table');
+  assert.deepEqual(await historyTable.getByRole('columnheader').allTextContents(),['月份','质量最终分','状态']);
+  assert.equal(await historyTable.getByRole('cell',{name:supervisor.name}).count(),0,'score tables omit historical confirmation metadata');
+  historicalFinal=false;confirmedScore=64;
   state='legacy';await page.reload();
   await page.getByText('历史记录未保存详细评分说明，已有分数保留；这里不补写历史理由。',{exact:true}).waitFor();
   assert.equal(await page.locator('[data-quality-module]').count(),0,'historical evidence must not be fabricated');
@@ -259,20 +293,17 @@ try{
   await page.getByText('AI 分析完成后，将自动展示各模块得分、评分理由和可以补充的内容。当前未生成有效评分，不按 0 分处理。',{exact:true}).waitFor();
   assert.equal(await page.locator('[data-quality-module]').count(),0,'a failed analysis must not appear as a zero-scored report');
 
-  mode='supervisor';state='ready';qualityState='pending_confirmation';confirmedScore=null;
+  mode='supervisor';state='ready';qualityState='final';confirmedScore=64;
   await page.goto(base+'/?page=quality-scores&qualityView=team&qualityReviewMonth='+month);
   await page.getByRole('heading',{name:'团队质量审核',exact:true}).waitFor();
-  await page.getByRole('button',{name:'确认月度最终分'}).waitFor();
-  await page.getByLabel('调整分数后确认').check();
-  await page.getByLabel('调整后的月度分').fill('66.5');
-  assert(await page.getByRole('button',{name:'确认月度最终分'}).isDisabled());
-  await page.getByLabel('调整原因').fill('依据复核结果调整');
-  await page.getByRole('button',{name:'确认月度最终分'}).click();
-  await page.getByText('月度周报质量最终分 · 66.5 分',{exact:true}).waitFor();
-  assert.deepEqual(confirmRequests.at(-1),{kind:'quality',userId:employee.userId,month,version,score:66.5,note:'依据复核结果调整'});
-  assert.equal(await page.getByText('复核这份周报',{exact:true}).count(),0);
+  await page.getByText('月度周报质量最终分 · 64.0 分',{exact:true}).waitFor();
+  assert.equal(await page.getByRole('button',{name:'确认月度最终分'}).count(),0);
+  assert.equal(await page.getByLabel('调整分数后确认').count(),0);
+  assert.equal(await page.getByLabel('调整后的月度分').count(),0);
+  assert.deepEqual(confirmRequests,[]);
+  assert(await page.getByText('复核这份周报',{exact:true}).isVisible(),'automatic monthly finals keep authorized weekly review available');
   assert.deepEqual(errors,[]);assert.deepEqual([...unhandledRoutes],[]);
-  console.log(JSON.stringify({ok:true,managementLazyDetails:true,personalEvidence:true,humanConfirmation:true,supervisorScope:true,reviewAudit:true,legacyHonesty:true,pendingHonesty:true,mobile:true,artifacts:dir}));
+  console.log(JSON.stringify({ok:true,managementLazyDetails:true,personalEvidence:true,automaticMonthlyFinal:true,manualMonthlyControlsAbsent:true,supervisorScope:true,reviewAudit:true,legacyHonesty:true,pendingHonesty:true,mobile:true,artifacts:dir}));
 }finally{
   if(browser)await browser.close();
   await new Promise(resolve=>server.close(resolve));

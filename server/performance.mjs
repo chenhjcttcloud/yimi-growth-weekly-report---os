@@ -7,7 +7,7 @@ import {reportQualityAssessment,fixedQualityWeightsFor,isStructuredQualityVersio
 import {legacyReportScore,usableQuality} from './report-rescore-state.mjs';
 import {encodeAutomaticEvidence,decodeAutomaticEvidence} from './automatic-evidence-storage.mjs';
 import {databaseCollaborationScores} from './collaboration-score-rounding.mjs';
-import {applyQualityReviews,qualityAnalysisVersion,qualityReviewDetails,qualityRound,qualityVersion,summarizeMonthlyQuality} from './weekly-quality-review.mjs';
+import {applyQualityReviews,qualityAnalysisVersion,qualityReviewDetails,qualityVersion,summarizeMonthlyQuality} from './weekly-quality-review.mjs';
 
 const selected=(value,keys)=>value&&typeof value==='object'?Object.fromEntries(keys.filter(key=>value[key]!==undefined).map(key=>[key,value[key]])):null;
 const hasPeerScore=assignment=>(typeof assignment.score==='number'||typeof assignment.score==='string'&&Boolean(assignment.score.trim()))&&Number.isFinite(Number(assignment.score))&&Number(assignment.score)>=0&&Number(assignment.score)<=100;
@@ -37,7 +37,7 @@ function automaticBusinessHash(row,kind,result){
   });
   return qualityVersion({version:'automatic-score-business-v1',month:row.month,userId:row.userId,name:row.name,department:row.department,kind,result:stableResult,reports});
 }
-// Weekly quality analysis supplies candidates for management confirmation.
+// Closed, fully collected/analyzed months publish their actual weekly mean.
 export function createPerformance({ query, exec, sql, readData, policyFor, managerReviews, calendar, isCollectingReports, now=()=>new Date() }) {
   const round = n => Math.round(n * 10) / 10;
   const average = xs => xs.length ? round(xs.reduce((a,b)=>a+b,0)/xs.length) : null;
@@ -116,30 +116,47 @@ WHERE key IN ('reviewNote','qualityCandidate','legitimateReason','deduction'))`;
     ];
     const automaticScope=scope('a');
     const columns=alias=>`${alias}.month,${alias}.employee_user_id,${alias}.employee_name,${alias}.kind,${alias}.result_json,${evidence(alias)} AS evidence_json,${alias}.confirmed_by,${alias}.confirmed_at`;
+    const automaticQuality=`CASE WHEN json_valid(a.result_json) THEN a.result_json ELSE '{}' END`;
+    const publishedQuality=`a.kind='quality' AND json_extract(${automaticQuality},'$.publicationMode')='automatic' AND json_extract(${automaticQuality},'$.status') IN ('final','revised_final') AND json_type(${automaticQuality},'$.score') IN ('integer','real') AND json_extract(${automaticQuality},'$.score') BETWEEN 0 AND 100 AND json_extract(${automaticQuality},'$.pendingAnalysis')=0 AND json_extract(${automaticQuality},'$.confirmationBlockedReason') IS NULL`;
     return (await query(`SELECT ${clientSummary?columns('p'):'*'}, ${manualRule('p')} AS scoring_rule FROM performance_results p${where(scope('p'))}
 UNION ALL SELECT ${clientSummary?columns('w'):'*'}, 'weighted_30_70' AS scoring_rule FROM all_monthly_weighted_results w${where(scope('w'))}
 UNION ALL SELECT a.month,a.employee_user_id,a.employee_name,a.kind,a.result_json,${evidence('a')} AS evidence_json,'系统自动计算' AS confirmed_by,a.calculated_at AS confirmed_at,'automatic_report' AS scoring_rule FROM automatic_performance_results a
-WHERE a.kind='timeliness' AND ${automaticScope.length?automaticScope.join(' AND ')+' AND ':''}a.rowid=(SELECT MAX(b.rowid) FROM automatic_performance_results b WHERE b.month=a.month AND b.employee_user_id=a.employee_user_id AND b.kind=a.kind)
+WHERE (a.kind='timeliness' OR (${publishedQuality})) AND ${automaticScope.length?automaticScope.join(' AND ')+' AND ':''}a.rowid=(SELECT MAX(b.rowid) FROM automatic_performance_results b WHERE b.month=a.month AND b.employee_user_id=a.employee_user_id AND b.kind=a.kind)
 AND NOT EXISTS(SELECT 1 FROM performance_results p WHERE p.month=a.month AND p.employee_user_id=a.employee_user_id AND p.kind=a.kind)
 ORDER BY month DESC, employee_name;`)).map(r=>({...r,...(!clientSummary&&r.scoring_rule==='automatic_report'&&typeof r.evidence_json==='string'?{evidence_json:decodeAutomaticEvidence(r.evidence_json)}:{}),result:JSON.parse(r.result_json)}));
   }
-  function calculateReportResults(row,existing) {
+  function qualitySourceDependency(row,basis) {
+    const stored=(basis.stored||[]).filter(item=>item.employee_user_id===row.userId&&monthOf(item.week_end)===row.month).sort((a,b)=>Number(a.review_rowid)-Number(b.review_rowid));
+    const reviews=(basis.reviews||[]).filter(item=>item.employee_user_id===row.userId&&item.month===row.month),reviewedReports=new Set(reviews.map(item=>item.report_id));
+    const sourceReportState=stored.map(item=>{
+      const content=basis.contents?.get(String(item.review_rowid))||JSON.parse(item.content_json),refresh=content.qualityRefresh;
+      const state=refresh?refresh.state==='ready'?'ready':refresh.state==='failed'?'failed':'pending':null;
+      return [String(item.review_rowid),...['id','source_hash','week_start','week_end','status','submitted_at'].map(key=>String(item[key]??'')),
+        content.sourceHash??null,content.aiModel??null,content.ai?.version??null,content.aiPromptVersion??content.ai?.promptVersion??null,state,refresh?.targetVersion??null,
+        ...[0,1,2,3].map(index=>content.ai?.scores?.[index]??null),...['成果分','问题分','计划分','复盘分','总分'].map(key=>content[key]??null),content.ai?.totalScore??null,
+        reviewedReports.has(item.id)?content.aiGeneratedAt??null:null];
+    });
+    const sourceReviewRowId=String(Math.max(0,...reviews.map(item=>Number(item.review_rowid))));
+    return {sourceDependencyVersion:1,sourceReportState,sourceReviewRowId};
+  }
+  function calculateReportResults(row,existing,basis,qualityWrites) {
     if(!row.reports.length&&!row.timeliness.expected)return [];
     const statements=[];
-    const quality={...row.quality,score:null,publicationMode:'ai_candidate'};
+    const quality={...row.quality,...qualitySourceDependency(row,basis),score:row.quality.finalScore,publicationMode:'automatic',...(row.quality.status==='final'?{reportCount:row.quality.expectedCount}:{})};
     const timeliness={...row.timeliness,rate:row.timeliness.pendingTimestamp||row.timeliness.pendingCalendar?null:row.timeliness.rate,status:row.timeliness.pendingCalendar?'pending_calendar':row.timeliness.pendingTimestamp?'pending_timestamp':row.timeliness.expected?'ready':'no_due_reports',publicationMode:'automatic'};
     for(const [kind,result] of [['quality',quality],['timeliness',timeliness]]){
       if(existing.some(r=>r.month===row.month&&r.employee_user_id===row.userId&&r.kind===kind&&['legacy','management_confirmed'].includes(r.scoring_rule)))continue;
-      const qualityRule='取已完成分析的有效周报算术平均，月份结束且分析完成后提交管理确认';
-      const evidence={userId:row.userId,name:row.name,department:row.department,publicationMode:result.publicationMode,rule:kind==='quality'?qualityRule:'按提交时间和周五截止时间自动统计，及时率与质量分独立',reports:row.reports,statistics:row.timeliness,reviewNote:kind==='quality'?'AI 候选汇总，须经管理人员确认':'系统自动计算，无需人工确认',deduction:0};
+      const qualityRule='取当月有效周报质量分算术平均；月份结束、收集完成且全部有效周报分析完成后自动发布';
+      const evidence={userId:row.userId,name:row.name,department:row.department,publicationMode:result.publicationMode,rule:kind==='quality'?qualityRule:'按提交时间和周五截止时间自动统计，及时率与质量分独立',reports:row.reports,statistics:row.timeliness,...(kind==='quality'?{qualityCandidate:result.candidateScore,qualityResult:result}:{}),reviewNote:kind==='quality'?(result.status==='final'?'有效周报质量分按月自动汇总，无需人工确认':'收集或分析尚未完成，当前没有月度最终分'):'系统自动计算，无需人工确认',deduction:0};
       const hash=automaticBusinessHash(row,kind,result);
       // A read with unchanged inputs does not need a write transaction. Keep the
       // SQL comparison too: another request may publish between this read/write.
       if(existing.some(r=>r.month===row.month&&r.employee_user_id===row.userId&&r.kind===kind&&r.scoring_rule==='automatic_report'&&r.calculation_hash===hash))continue;
       // Last-version comparison (rather than a unique hash) preserves A→B→A revisions too.
+      if(kind==='quality')qualityWrites.push({month:row.month,userId:row.userId,hash});
       statements.push(`INSERT INTO automatic_performance_results(id,month,employee_user_id,employee_name,kind,calculation_hash,result_json,evidence_json,calculated_at)
 SELECT ${sql(randomUUID())},${sql(row.month)},${sql(row.userId)},${sql(row.name)},${sql(kind)},${sql(hash)},${sql(JSON.stringify(result))},${sql(encodeAutomaticEvidence(JSON.stringify(evidence)))},${sql(now().toISOString())}
-WHERE COALESCE((SELECT calculation_hash FROM automatic_performance_results WHERE month=${sql(row.month)} AND employee_user_id=${sql(row.userId)} AND kind=${sql(kind)} ORDER BY rowid DESC LIMIT 1),'')<>${sql(hash)}${kind==='quality'?` AND NOT EXISTS(SELECT 1 FROM performance_results WHERE ${finalMatch(row.userId,row.month)})`:''};`);
+WHERE COALESCE((SELECT calculation_hash FROM automatic_performance_results WHERE month=${sql(row.month)} AND employee_user_id=${sql(row.userId)} AND kind=${sql(kind)} ORDER BY rowid DESC LIMIT 1),'')<>${sql(hash)}${kind==='quality'?` AND (${qualityWriteGuard(row.userId,row.month,basis)})`:''};`);
     }
     return statements;
   }
@@ -158,8 +175,14 @@ WHERE COALESCE((SELECT calculation_hash FROM automatic_performance_results WHERE
     const rows = new Map();
     const identity=prototypeIdentity(data);
     for(const r of data.weekly_scores || []) {const employeeUserId=identity(r);if(userId&&employeeUserId!==userId||month&&monthOf(r['结束日期'])!==month)continue;rows.set(`${employeeUserId}|${r['结束日期']}`, {employeeUserId,id:r['源记录ID'], name:r['姓名'], department:r['部门'], end:r['结束日期'], start:r['开始日期'], submittedAt:r['提交时间'], content:r, status:r['状态']});}
-    for(const r of stored) rows.set(`${r.employee_user_id}|${r.week_end}`, {employeeUserId:r.employee_user_id,id:r.id,name:r.employee_name,department:r.department,end:r.week_end,start:r.week_start,submittedAt:r.submitted_at,content:JSON.parse(r.content_json),status:r.status});
+    if(writeBasis)writeBasis.contents=new Map();
+    for(const r of stored){
+      const content=JSON.parse(r.content_json);
+      if(writeBasis)writeBasis.contents.set(String(r.review_rowid),content);
+      rows.set(`${r.employee_user_id}|${r.week_end}`, {employeeUserId:r.employee_user_id,id:r.id,name:r.employee_name,department:r.department,end:r.week_end,start:r.week_start,submittedAt:r.submitted_at,content,status:r.status});
+    }
     const reviews=new Map();
+    if(writeBasis)writeBasis.reviews=[];
     if(rows.size){
       const records=await query(`SELECT rowid AS review_rowid,* FROM weekly_quality_reviews${where(resultScope(userId,month))} ORDER BY rowid;`);
       for(const record of records){
@@ -167,7 +190,7 @@ WHERE COALESCE((SELECT calculation_hash FROM automatic_performance_results WHERE
         if(!reviews.has(key))reviews.set(key,[]);
         reviews.get(key).push(record);
       }
-      if(writeBasis)writeBasis.lastReview=records.at(-1)?.review_rowid??0;
+      if(writeBasis){writeBasis.lastReview=records.at(-1)?.review_rowid??0;writeBasis.reviews=records;}
     }
     if(writeBasis)writeBasis.stored=stored;
     const approvedOnTime=rows.size?await readWeeklyOnTimeApprovals({query,sql,month,employeeUserId:userId}):null;
@@ -245,19 +268,20 @@ WHERE COALESCE((SELECT calculation_hash FROM automatic_performance_results WHERE
   async function createReportContext(userId) {
     employeeScope(userId);
     if(!userId)throw Error('invalid_employee_identity');
-    const data=readData('prototypeData'),readPolicy=policyReader();
+    const data=readData('prototypeData'),readPolicy=policyReader(),writeBasis={};
+    const reports=await readReports(data,userId,readPolicy,undefined,scheduleReader(),writeBasis);
     const context={userId};
-    Object.defineProperties(context,{data:{value:data},reports:{value:await readReports(data,userId,readPolicy)},readPolicy:{value:readPolicy}});
+    Object.defineProperties(context,{data:{value:data},reports:{value:reports},readPolicy:{value:readPolicy},writeBasis:{value:writeBasis}});
     Object.freeze(context);reportContexts.add(context);
     return context;
   }
-  async function overview({clientSummary=false,employeeUserId,reportContext,month:requestedMonth,includeTrendResults=false}={}) {
+  async function overview({clientSummary=false,employeeUserId,reportContext,month:requestedMonth,includeTrendResults=false,qualityRetry=0}={}) {
     const userId=employeeScope(employeeUserId);
     const context=reportContext===undefined?null:assertReportContext(reportContext,userId);
     const data=context?.data||readData('prototypeData'),readPolicy=context?.readPolicy||policyReader();
     const readSchedule=scheduleReader();
-    const scoped=requestedMonth!==undefined;
-    let rs=scoped?[]:context?.reports||await readReports(data,userId,readPolicy,undefined,readSchedule);
+    const scoped=requestedMonth!==undefined,writeBasis=context?.writeBasis||{};
+    let rs=scoped?[]:context?.reports||await readReports(data,userId,readPolicy,undefined,readSchedule,writeBasis);
     let results=scoped?[]:await publishedKeys(userId);
     const managerState=await managerReviews.snapshot();
     const cycles=await query('SELECT * FROM scoring360_cycles ORDER BY start_date DESC;');
@@ -289,7 +313,7 @@ WHERE COALESCE((SELECT calculation_hash FROM automatic_performance_results WHERE
     const months=[...new Set([...periods.map(p=>monthOf(p.end)),...rs.map(r=>r.month),...cycles.map(c=>monthOf(c.start_date)),...ratingMonths,...publicationMonths.map(r=>r.month)])].filter(m=>/^\d{4}-\d{2}$/.test(m)).sort().reverse();
     const scopeMonth=requestedMonth==='latest'?months[0]||'':requestedMonth;
     if(scoped&&months.includes(scopeMonth)){
-      rs=context?context.reports.filter(report=>report.month===scopeMonth):await readReports(data,userId,readPolicy,scopeMonth,readSchedule);
+      rs=context?context.reports.filter(report=>report.month===scopeMonth):await readReports(data,userId,readPolicy,scopeMonth,readSchedule,writeBasis);
       results=await publishedKeys(userId,scopeMonth);
     }
     const selectedCycles=scoped?cycles.filter(c=>monthOf(c.start_date)===scopeMonth):cycles;
@@ -349,8 +373,17 @@ WHERE COALESCE((SELECT calculation_hash FROM automatic_performance_results WHERE
       row.managerProgress={...row.managerProgress,score:score.managerScore};
       row.collaborationCandidate=score.score;
     }
-    const calculations=monthly.flatMap(row=>calculateReportResults(row,results));
+    const qualityWrites=[];
+    const calculations=monthly.flatMap(row=>calculateReportResults(row,results,writeBasis,qualityWrites));
     if(calculations.length)await exec(`BEGIN IMMEDIATE;${calculations.join('\n')}COMMIT;`);
+    if(qualityWrites.length){
+      const latest=await publishedKeys(userId,scopeMonth);
+      const changed=qualityWrites.some(item=>!latest.some(record=>record.month===item.month&&record.employee_user_id===item.userId&&record.kind==='quality'&&(['legacy','management_confirmed'].includes(record.scoring_rule)||record.calculation_hash===item.hash)));
+      if(changed){
+        if(qualityRetry<1)return overview({clientSummary,employeeUserId,month:requestedMonth,includeTrendResults,qualityRetry:qualityRetry+1});
+        throw Object.assign(Error('quality_candidate_changed'),{status:409});
+      }
+    }
     for(const row of monthly.filter(r=>r.collaborationComplete)) {
       if(results.some(r=>r.month===row.month&&r.employee_user_id===row.userId&&r.kind==='collaboration'))continue;
       const snapshot={...row,publicationMode:'weighted_30_70',reviewNote:'负责人或老板评分30%＋同事互评70%，两部分完成后自动发布',reviewer:'系统自动发布'};
@@ -370,7 +403,7 @@ WHERE NOT EXISTS(SELECT 1 FROM all_monthly_weighted_results WHERE ${match})
       const final=finals.get(`${row.month}|${row.userId}`);
       if(final){
         const {version,confirmationBlockedReason,...quality}=row.quality;
-        row.quality={...quality,status:'final',currentAverage:final.result.candidateScore??null,candidateScore:final.result.candidateScore??null,finalScore:final.result.score??null,
+        row.quality={...quality,status:'final',publicationMode:final.result.publicationMode||'legacy',scoring_rule:final.scoring_rule,score:final.result.score??null,currentAverage:final.result.candidateScore??null,candidateScore:final.result.candidateScore??null,finalScore:final.result.score??null,
           confirmedBy:final.confirmed_by,confirmedAt:final.confirmed_at,canConfirm:false,
           ...(final.result.version?{version:final.result.version}:{}),
           ...(final.result.reportCount!==undefined?{pendingAnalysis:0,analyzedCount:final.result.reportCount,expectedCount:final.result.reportCount}:{}),
@@ -416,56 +449,18 @@ WHERE NOT EXISTS(SELECT 1 FROM all_monthly_weighted_results WHERE ${match})
     // late submission or a rescore/review that finishes after the candidate read.
     const scope=weeklyReportScope(userId,month,'w.').join(' AND ');
     const keys=['id','week_start','week_end','status','submitted_at','content_json','source_hash','employee_name','department'];
-    const expected=basis.stored.map(row=>({rowid:String(row.review_rowid),...Object.fromEntries(keys.map(key=>[key,String(row[key]??'')]))}));
+    const stored=(basis.stored||[]).filter(row=>row.employee_user_id===userId&&monthOf(row.week_end)===month);
+    const expected=stored.map(row=>({rowid:String(row.review_rowid),...Object.fromEntries(keys.map(key=>[key,String(row[key]??'')]))}));
+    const lastReview=basis.reviews?Math.max(0,...basis.reviews.filter(row=>row.employee_user_id===userId&&row.month===month).map(row=>Number(row.review_rowid))):basis.lastReview??0;
     const equal=keys.map(key=>`COALESCE(w.${key},'')=json_extract(s.value,'$.${key}')`).join(' AND ');
     return `(SELECT count(*) FROM weekly_reports w WHERE ${scope})=${expected.length}
       AND NOT EXISTS(SELECT 1 FROM json_each(${sql(JSON.stringify(expected))}) s WHERE NOT EXISTS(
         SELECT 1 FROM weekly_reports w WHERE ${scope} AND w.rowid=CAST(json_extract(s.value,'$.rowid') AS INTEGER) AND ${equal}))
-      AND COALESCE((SELECT MAX(rowid) FROM weekly_quality_reviews WHERE ${resultScope(userId,month).join(' AND ')}),0)=${sql(basis.lastReview??0)}+0
+      AND COALESCE((SELECT MAX(rowid) FROM weekly_quality_reviews WHERE ${resultScope(userId,month).join(' AND ')}),0)=${sql(lastReview)}+0
       AND NOT EXISTS(SELECT 1 FROM performance_results WHERE ${finalMatch(userId,month)})`;
   }
-  async function confirm(body,user) {
-    if(body?.kind!=='quality')throw Error('results_auto_published');
-    const {userId,month,version,reviewerName}=qualityWriteIdentity(body,user);
-    await assertQualityUnlocked(userId,month);
-    const readPolicy=policyReader(),readSchedule=scheduleReader();
-    const monthPolicy=await readPolicy(month);
-    function assertConfirmationOpen() {
-      const instant=now();
-      const blocked=qualityConfirmationBlock(month,shanghaiDate.format(instant),instant,monthPolicy,readSchedule);
-      if(blocked)throw Error('quality_'+blocked);
-    }
-    assertConfirmationOpen();
-    const basis={};
-    const reports=await readReports(readData('prototypeData'),userId,readPolicy,month,readSchedule,basis);
-    const quality=summarizeMonthlyQuality(reports);
-    if(!quality.canConfirm)throw Error('quality_not_ready');
-    if(version!==quality.version)throw Error('quality_candidate_changed');
-    if(body.note!==undefined&&(typeof body.note!=='string'||body.note.length>4000))throw Error('quality_adjustment_reason_required');
-    if(body.score!==undefined&&(typeof body.score!=='number'||!Number.isFinite(body.score)||body.score<0||body.score>100))throw Error('invalid_quality_score');
-    const note=body.note?.trim()||'';
-    const score=body.score===undefined?quality.candidateScore:qualityRound(body.score);
-    if(score!==quality.candidateScore&&!note)throw Error('quality_adjustment_reason_required');
-    const confirmedAt=now().toISOString(),confirmationId=randomUUID();
-    const {name,department}=reports.find(report=>report.submitted&&!report.qualityExcluded);
-    const result={score,status:'final',candidateScore:quality.candidateScore,reportCount:quality.expectedCount,publicationMode:'management_confirmation',version,confirmationId};
-    const evidence={userId,name,department,publicationMode:result.publicationMode,qualityCandidate:quality.candidateScore,reports,
-      reviewerId:user.userId,reviewerName,confirmedAt,reviewNote:note||'管理人员确认月度质量候选分',
-      rule:'取当月有效周报候选分算术平均后由管理人员确认'};
-    const audit={month,employeeUserId:userId,confirmationId,score,candidateScore:quality.candidateScore,reason:note};
-    assertConfirmationOpen();
-    await exec(`BEGIN IMMEDIATE;
-      INSERT INTO performance_results(month,employee_user_id,employee_name,kind,result_json,evidence_json,confirmed_by,confirmed_at)
-      SELECT ${sql(month)},${sql(userId)},${sql(name)},'quality',${sql(JSON.stringify(result))},${sql(JSON.stringify(evidence))},${sql(reviewerName)},${sql(confirmedAt)}
-      WHERE ${qualityWriteGuard(userId,month,basis)};
-      INSERT INTO system_operation_logs(id,actor_user_id,actor_name,action,details_json,created_at)
-      SELECT ${sql(confirmationId)},${sql(user.userId)},${sql(reviewerName)},'月度周报质量最终分已确认',${sql(JSON.stringify(audit))},${sql(confirmedAt)} WHERE changes()=1;
-      COMMIT;`);
-    if(!(await query(`SELECT 1 AS saved FROM system_operation_logs WHERE id=${sql(confirmationId)};`)).length){
-      await assertQualityUnlocked(userId,month);
-      throw Error('quality_candidate_changed');
-    }
-    return {score,status:'final',confirmedBy:reviewerName,confirmedAt,version};
+  async function confirm() {
+    throw Object.assign(Error('results_auto_published'),{status:409});
   }
   async function reviewQuality(body,user) {
     const {userId,month,version,reviewerName}=qualityWriteIdentity(body,user);

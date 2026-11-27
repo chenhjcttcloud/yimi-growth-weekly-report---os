@@ -42,14 +42,20 @@ function readBody(req){
  });
 }
 function resultScore(row,month,userId){
- const output={...emptyScore('invalid_result'),source:row.source,updatedAt:timestamp(row.updated_at),revision:digest(JSON.stringify([month,userId,row.kind,row.source,row.version_id,row.updated_at,row.result_json]))};
+ const liveBasis=row.source==='automatic_report'?[row.current_report_state,row.current_review_rowid,Boolean(row.collection_pending)]:[];
+ const output={...emptyScore('invalid_result'),source:row.source,updatedAt:timestamp(row.updated_at),revision:digest(JSON.stringify([month,userId,row.kind,row.source,row.version_id,row.updated_at,row.result_json,...liveBasis]))};
  let result;try{result=JSON.parse(row.result_json);}catch{return output;}
  if(!result||typeof result!=='object'||Array.isArray(result))return output;
  const value=score(result.score);
  if(row.source!=='automatic_report')return value===null?output:{...output,score:value,status:'published',isFinal:true};
- const metadata={reportCount:count(result.reportCount),pendingAnalysis:count(result.pendingAnalysis),failedAnalysis:count(result.failedAnalysis),previousResultAt:timestamp(result.previousResultAt)};
+ const metadata={reportCount:count(result.reportCount??result.expectedCount),pendingAnalysis:count(result.pendingAnalysis),failedAnalysis:count(result.failedAnalysis),previousResultAt:timestamp(result.previousResultAt)};
+ if(['final','revised_final'].includes(result.status)&&result.publicationMode==='automatic'&&value!==null&&metadata.pendingAnalysis===0&&!result.confirmationBlockedReason){
+  let reports;try{reports=JSON.parse(row.current_report_state);}catch{}
+  const current=!row.collection_pending&&result.sourceDependencyVersion===1&&Array.isArray(result.sourceReportState)&&JSON.stringify(result.sourceReportState)===JSON.stringify(reports)&&typeof result.sourceReviewRowId==='string'&&result.sourceReviewRowId===row.current_review_rowid;
+  return current?{...output,...metadata,score:value,status:'published',isFinal:true}:{...output,...metadata,status:'pending_generation'};
+ }
  if(result.status==='ready'&&value===null)return {...output,...metadata};
- if(['ready','pending_confirmation','candidate'].includes(result.status))return {...output,...metadata,status:'pending_confirmation'};
+ if(['ready','pending_confirmation','pending_generation','candidate'].includes(result.status))return {...output,...metadata,status:'pending_generation'};
  if(['rescoring','rescore_failed'].includes(result.status))return {...output,...metadata,status:result.status};
  if(['pending_ai','no_reports'].includes(result.status))return {...output,...metadata,status:result.status};
  return {...output,...metadata};
@@ -57,7 +63,7 @@ function resultScore(row,month,userId){
 
 // This service deliberately receives no exec(), performance.overview(), or
 // provider client. Reading saved summaries cannot publish or recalculate scores.
-export function createProductManagementScoreApi({query,sql,sendJson,token='',now=()=>new Date()}){
+export function createProductManagementScoreApi({query,sql,sendJson,token='',isCollectingReports=()=>false,now=()=>new Date()}){
  const configured=typeof token==='string'&&/^[\x21-\x7e]{32,4096}$/.test(token);
  const expected=configured?createHash('sha256').update(token).digest():null;
  function authorized(req){
@@ -69,6 +75,19 @@ export function createProductManagementScoreApi({query,sql,sendJson,token='',now
  }
  async function readScores(body){
   const {month,employees}=validateRequest(body),ids=employees.map(employee=>sql(employee.feishuUserId)).join(',');
+  // Fence saved automatic finals against report/review changes between a
+  // queue/review write and the sync job's final aggregation. Read metadata
+  // only; no report body, evidence, AI call or publication is requested.
+  const reportContent="CASE WHEN json_valid(w.content_json) THEN w.content_json ELSE '{}' END";
+  const currentReportState=`(SELECT json_group_array(json(item)) FROM (
+ SELECT json_array(CAST(w.rowid AS TEXT),CAST(w.id AS TEXT),COALESCE(CAST(w.source_hash AS TEXT),''),COALESCE(CAST(w.week_start AS TEXT),''),COALESCE(CAST(w.week_end AS TEXT),''),COALESCE(CAST(w.status AS TEXT),''),COALESCE(CAST(w.submitted_at AS TEXT),''),
+ json_extract(${reportContent},'$.sourceHash'),json_extract(${reportContent},'$.aiModel'),json_extract(${reportContent},'$.ai.version'),COALESCE(json_extract(${reportContent},'$.aiPromptVersion'),json_extract(${reportContent},'$.ai.promptVersion')),
+ CASE WHEN json_extract(${reportContent},'$.qualityRefresh') IS NULL THEN NULL WHEN json_extract(${reportContent},'$.qualityRefresh.state')='ready' THEN 'ready' WHEN json_extract(${reportContent},'$.qualityRefresh.state')='failed' THEN 'failed' ELSE 'pending' END,
+ json_extract(${reportContent},'$.qualityRefresh.targetVersion'),json_extract(${reportContent},'$.ai.scores[0]'),json_extract(${reportContent},'$.ai.scores[1]'),json_extract(${reportContent},'$.ai.scores[2]'),json_extract(${reportContent},'$.ai.scores[3]'),
+ json_extract(${reportContent},'$.成果分'),json_extract(${reportContent},'$.问题分'),json_extract(${reportContent},'$.计划分'),json_extract(${reportContent},'$.复盘分'),json_extract(${reportContent},'$.总分'),json_extract(${reportContent},'$.ai.totalScore'),
+ CASE WHEN EXISTS(SELECT 1 FROM weekly_quality_reviews review WHERE review.employee_user_id=w.employee_user_id AND review.month=${sql(month)} AND review.report_id=w.id) THEN json_extract(${reportContent},'$.aiGeneratedAt') END) AS item
+ FROM weekly_reports w WHERE w.employee_user_id=e.user_id AND w.week_end>=${sql(month+'-01')} AND w.week_end<date(${sql(month+'-01')},'+1 month') ORDER BY w.rowid
+))`;
   // One SELECT gives a consistent snapshot of the current identity and selected
   // saved scores. Limit by month/IDs and never load evidence or report content.
   const rows=await query(`WITH selected AS (
@@ -87,10 +106,13 @@ export function createProductManagementScoreApi({query,sql,sendJson,token='',now
  FROM automatic_performance_results a JOIN selected e ON e.user_id=a.employee_user_id
  WHERE a.month=${sql(month)} AND a.kind='quality' AND a.rowid=(SELECT MAX(b.rowid) FROM automatic_performance_results b WHERE b.month=a.month AND b.employee_user_id=a.employee_user_id AND b.kind=a.kind)
 )
-SELECT e.user_id,e.name,e.department,e.is_active,c.kind,c.result_json,c.updated_at,c.source,c.version_id
+SELECT e.user_id,e.name,e.department,e.is_active,c.kind,c.result_json,c.updated_at,c.source,c.version_id,
+CASE WHEN c.source='automatic_report' THEN ${currentReportState} END AS current_report_state,
+CASE WHEN c.source='automatic_report' THEN (SELECT CAST(COALESCE(MAX(r.rowid),0) AS TEXT) FROM weekly_quality_reviews r WHERE r.employee_user_id=e.user_id AND r.month=${sql(month)}) END AS current_review_rowid
 FROM selected e LEFT JOIN candidates c ON c.employee_user_id=e.user_id
 AND NOT EXISTS(SELECT 1 FROM candidates preferred WHERE preferred.employee_user_id=c.employee_user_id AND preferred.kind=c.kind AND preferred.priority<c.priority);`);
   const identities=new Map();
+  const collecting=Boolean(isCollectingReports(month));
   for(const row of rows){
    if(!identities.has(row.user_id))identities.set(row.user_id,{employee:{feishuUserId:row.user_id,name:row.name,department:row.department||'',active:Number(row.is_active)===1},scores:new Map()});
    if(row.kind)identities.get(row.user_id).scores.set(row.kind,row);
@@ -98,7 +120,7 @@ AND NOT EXISTS(SELECT 1 FROM candidates preferred WHERE preferred.employee_user_
   const data=employees.map(input=>{
    const found=identities.get(input.feishuUserId),employee=found?.employee||null;
    const matchStatus=!employee?'not_found':employee.name.trim().normalize('NFC')===input.name?'matched':'name_mismatch';
-   const get=kind=>matchStatus!=='matched'?emptyScore('identity_mismatch'):found.scores.has(kind)?resultScore(found.scores.get(kind),month,input.feishuUserId):emptyScore('not_published');
+   const get=kind=>matchStatus!=='matched'?emptyScore('identity_mismatch'):found.scores.has(kind)?resultScore({...found.scores.get(kind),collection_pending:collecting},month,input.feishuUserId):emptyScore('not_published');
    return {input,matchStatus,employee,weeklyQuality:get('quality'),collaboration360:get('collaboration')};
   });
   const matched=data.filter(row=>row.matchStatus==='matched').length;

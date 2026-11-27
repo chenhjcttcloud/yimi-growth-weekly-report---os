@@ -212,7 +212,7 @@ const departments=createDepartments({query:querySqlRows,exec:execSql,sql:sqlValu
 let organizationMutationRunning=false;
 const managerReviews=createManagerReviews({query:querySqlRows,exec:execSql,sql:sqlValue,ratingWindow:monthlyScoringWindow,organization:departments.overview,reports:options=>performance.reports(options),isBossUserId:isBusinessBossUserId});
 const performance = createPerformance({managerReviews,calendar:()=>chinaWorkCalendar,policyFor:systemSettings.policyFor,isCollectingReports:liveReportSync.isCollectingReports,query: querySqlRows, exec: execSql, sql: sqlValue, readData:readSourceReadonly});
-const productManagementScores=createProductManagementScoreApi({query:querySqlRows,sql:sqlValue,sendJson,token:process.env.PRODUCT_MANAGEMENT_SCORE_API_TOKEN||''});
+const productManagementScores=createProductManagementScoreApi({query:querySqlRows,sql:sqlValue,sendJson,isCollectingReports:liveReportSync.isCollectingReports,token:process.env.PRODUCT_MANAGEMENT_SCORE_API_TOKEN||''});
 const reportAutomation=createReportAutomation({query:querySqlRows,exec:execSql,sql:sqlValue,getConfig:systemSettings.reportAutomationConfig,getAiRequestsToday:systemSettings.reportAiRequestsToday,calendar:()=>chinaWorkCalendar,policyFor:systemSettings.policyFor,isRunning:()=>liveReportSync.isRunning(),start:options=>liveReportSync.start(options)});
 const scoringSetup=createScoringSetup({query:querySqlRows,exec:execSql,sql:sqlValue,isBoss:isBusinessBossUserId});
 const scoringWorkbench=createScoringWorkbench({query:querySqlRows,exec:execSql,sql:sqlValue,setup:scoringSetup,managerReviews,bossMembers:businessBossMembers});
@@ -651,7 +651,7 @@ async function route(req, res) {
       if(month!==null&&(!validMonth(month)||month>currentMonth))return sendJson(res,400,{ok:false,error:'invalid_month'});
       const employees=managerForPolicy?(await loadManagedEmployees()).map(({userId,name,department})=>({userId,name,department})):await getSupervisorScope();
       const ids=employees.map(employee=>sqlValue(employee.userId)).join(',');
-      const stored=ids?await querySqlRows(`SELECT DISTINCT substr(week_end,1,7) AS month FROM weekly_reports WHERE employee_user_id IN (${ids}) UNION SELECT month FROM performance_results WHERE kind='quality' AND employee_user_id IN (${ids});`):[];
+      const stored=ids?await querySqlRows(`SELECT DISTINCT substr(week_end,1,7) AS month FROM weekly_reports WHERE employee_user_id IN (${ids}) UNION SELECT month FROM performance_results WHERE kind='quality' AND employee_user_id IN (${ids}) UNION SELECT month FROM automatic_performance_results WHERE kind='quality' AND employee_user_id IN (${ids});`):[];
       const months=[...new Set([currentMonth,...stored.map(row=>row.month),...(readSourceReadonly('prototypeData').meta?.periods||[]).map(period=>String(period.end||'').slice(0,7))])].filter(value=>validMonth(value)&&value<=currentMonth).sort().reverse();
       return sendJson(res,200,{ok:true,employees,months});
     }
@@ -717,7 +717,7 @@ async function route(req, res) {
         if(confirm&&body.kind!=='quality')return sendJson(res,managerForPolicy?409:403,{ok:false,error:managerForPolicy?'results_auto_published':'quality_scope_forbidden'});
         if(!validId(body.userId)||!validMonth(body.month))return sendJson(res,400,{ok:false,error:'invalid_employee_month'});
         if(!await canReviewQuality(body.userId))return sendJson(res,403,{ok:false,error:'quality_scope_forbidden'});
-        if(confirm)return sendJson(res,200,{ok:true,...await performance.confirm(body,userForPolicy)});
+        if(confirm)return sendJson(res,409,{ok:false,error:'results_auto_published'});
         if(body.action!=='reanalyze')return sendJson(res,200,{ok:true,...await performance.reviewQuality(body,userForPolicy)});
         if(!validId(body.reportId))return sendJson(res,400,{ok:false,error:'invalid_report_id'});
         const automation=await systemSettings.reportAutomationConfig();
@@ -762,7 +762,7 @@ async function route(req, res) {
       {name:'登录与身份',ready:true,label:config.authMode==='mock'?'开发演示':'飞书认证',description:config.authMode==='mock'?'使用开发身份，可切换老板、管理员与员工视角。':'使用已配置的飞书身份认证。'},
       {name:'本地数据与存储',ready:true,label:'运行中',description:demoData?'虚构开发数据已载入；数据库与上传文件持久化保存。':'SQLite 数据库已连接，运行数据持久化保存。'},
       {name:'飞书服务',ready:feishuReady,label:feishuReady?'已配置':'未配置',description:feishuReady?'已提供应用凭据；实际可用范围以应用授权为准。':'尚未提供飞书应用凭据，本地人员、评分和审核功能可以继续使用。'},
-      {name:'AI 分析服务',ready:aiReady,label:aiReady?'已配置':'未配置',description:aiReady?'已提供模型服务凭据。周报分析后汇总候选分，由管理人员确认月度最终分。':'尚未配置模型凭据；不会执行实时 AI 分析。'},
+      {name:'AI 分析服务',ready:aiReady,label:aiReady?'已配置':'未配置',description:aiReady?'已提供模型服务凭据。月结、收集及周报分析完成后自动汇总月度质量最终分，无需管理人员确认。':'尚未配置模型凭据；不会执行实时 AI 分析。'},
       {name:'月末评分提醒',ready:reminders.enabled,label:future?'已预约':reminders.enabled?'已启用':'未开启',description:reminders.enabled?`${reminders.startMonth?reminders.startMonth+' 起，':''}每月最后两个工作日 ${reminders.time}（北京时间）提醒未评分人员。`:'在周期与提醒中配置，周报提醒独立控制。'},
       {name:'备份与告警',ready:backupSettings.backupEnabled,label:backupSettings.backupEnabled?'自动备份已开启':'待配置',description:`备份保存在本服务器；告警${backupSettings.alertsEnabled?'已开启':'未开启'}，可在备份与告警中设置接收人。`},
     ]});

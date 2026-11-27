@@ -14,7 +14,7 @@ const dir=await mkdtemp(path.resolve('outputs/tests/weekly-quality-confirmation-
 const db=path.join(dir,'test.sqlite'),data=path.join(dir,'data');
 await mkdir(data);
 const month='2026-10',secret='weekly-quality-synthetic-session',auditReason='只供管理人员查看的测试调整原因';
-const names={boss:'测试老板',lead:'测试主管',staff:'测试员工',other:'其他员工'};
+const names={admin:'测试管理员',zero:'零分员工',departed:'离职员工',boss:'测试老板',lead:'测试主管',staff:'测试员工',other:'其他员工'};
 const quote=value=>"'"+String(value).replaceAll("'","''")+"'";
 function run(statement,json=false){
  const result=spawnSync('sqlite3',['-bail',...(json?['-json']:[]),db],{input:statement,encoding:'utf8'});
@@ -33,12 +33,14 @@ function storeReport(id,userId,end,scores){
 }
 run(await readFile('db/schema.sql','utf8'));
 run(`INSERT INTO employees(user_id,name,department,manager_user_id,is_active) VALUES
- ('boss',${quote(names.boss)},'管理','',1),('lead',${quote(names.lead)},'测试团队','boss',1),
+ ('admin',${quote(names.admin)},'管理','',1),('zero',${quote(names.zero)},'测试团队','lead',1),('departed',${quote(names.departed)},'其他团队','boss',0),('boss',${quote(names.boss)},'管理','',1),('lead',${quote(names.lead)},'测试团队','boss',1),
  ('staff',${quote(names.staff)},'测试团队','lead',1),('other',${quote(names.other)},'其他团队','boss',1);
  INSERT INTO app_settings(key,value_json) VALUES('report_automation_config','{"enabled":false,"scoringStartMonth":"2026-10"}');`);
 storeReport('duplicate','staff','2026-10-16',[10,10,10,10]);
 storeReport('score-first','staff','2026-10-16',[70,82,78,70]);
 storeReport('score-second','staff','2026-10-23');
+storeReport('zero-score','zero','2026-10-16',[0,0,0,0]);
+storeReport('departed-score','departed','2026-10-16',[20,20,20,20]);
 storeReport('other-score','other','2026-10-16',[96,96,96,96]);
 for(const name of ['prototypeData','scoring360','kimiInsights','kimiInsightsByPeriod','monthlyMeetingInsights']){
  const payload=name==='prototypeData'?{meta:{periods:[]},employee_summary:[],weekly_scores:[]}:{};
@@ -66,7 +68,7 @@ globalThis.fetch=async (url,request)=>{
 const server=spawn(process.execPath,['--import',provider,'server/index.mjs'],{stdio:['ignore','pipe','pipe'],env:{...process.env,
  AUTH_MODE:'mock',DEV_VIEW_SWITCH_ENABLED:'false',SESSION_SECRET:secret,SERVER_PORT:String(port),BASE_URL:base,APP_DATA_DIR:data,
  WEEKLY_REPORT_DB_PATH:db,WEEKLY_REPORT_UPLOAD_DIR:dir+'/uploads',BACKUP_DIR:dir+'/backups',LARK_REPORT_SYNC_STATUS_PATH:dir+'/sync.json',
- BOSS_VIEW_USER_IDS:'boss',SCORING360_CONFIG_MANAGER_USER_IDS:'',SCORING360_CONFIG_MANAGER_NAMES:'',FEISHU_APP_ID:'',FEISHU_APP_SECRET:'',
+ BOSS_VIEW_USER_IDS:'boss',SCORING360_CONFIG_MANAGER_USER_IDS:'admin',SCORING360_CONFIG_MANAGER_NAMES:'',FEISHU_APP_ID:'',FEISHU_APP_SECRET:'',
  MOONSHOT_API_KEY:'fixture-model-key',MOONSHOT_BASE_URL:'https://weekly-quality-fixture.invalid/v1',KIMI_API_KEY:'',KIMI_FOLLOWUP_MODEL:'fixture-model',
  CHINA_CALENDAR_AUTO_UPDATE_ENABLED:'false',LARK_REPORT_AUTO_SYNC_ENABLED:'false',LARK_AUTH_MONITOR_ENABLED:'false',SCORING360_REMINDER_ENABLED:'false',
  WEEKLY_REMINDER_ENABLED:'false',WEEKLY_UPDATE_REMINDER_ENABLED:'false',FEISHU_TASK_CREATE_ENABLED:'false',
@@ -91,7 +93,7 @@ try{
  assert(ready,logs);
  assert.equal((await api('/api/me','staff')).body.access.canReviewWeeklyQuality,false);
  assert.equal((await api('/api/me')).body.access.canReviewWeeklyQuality,true);
- assert.deepEqual((await api('/api/performance/quality-scope')).body.employees.map(employee=>employee.userId),['staff']);
+ assert.deepEqual((await api('/api/performance/quality-scope')).body.employees.map(employee=>employee.userId).sort(),['staff','zero']);
  assert.equal((await api('/api/performance/manage')).status,403);
  assert.equal((await detail('staff')).status,403);
  assert.equal((await detail('lead','other')).status,403);
@@ -119,12 +121,12 @@ try{
  assert.equal(openDetail.body.monthly.quality.canConfirm,false);
  const premature=await confirm({userId:'other',month:openMonth,version:'a'.repeat(64)},'boss');
  assert.equal(premature.status,409);
- assert.equal(premature.body.error,'quality_month_open');
+ assert.equal(premature.body.error,'results_auto_published');
 
  const next=reportContent('score-second',[81,81,81,81]);
  run(`UPDATE weekly_reports SET content_json=${quote(JSON.stringify(next))} WHERE id='score-second';`);
  const candidate=(await detail()).body.monthly.quality;
- assert.equal(candidate.status,'pending_confirmation');assert.equal(candidate.candidateScore,78);
+ assert.equal(candidate.status,'final');assert.equal(candidate.candidateScore,78);
  assert.equal(run("SELECT count(*) FROM performance_results WHERE kind='quality';"),'0');
  const adjustment={action:'adjust_score',version:initialWeek.qualityReviewVersion,score:77};
  assert.equal((await review(adjustment)).status,400,'manual adjustments require a reason');
@@ -151,28 +153,41 @@ try{
  let refreshed;
  for(let attempt=0;attempt<100;attempt++){
   refreshed=(await detail()).body.monthly.quality;
-  if(refreshed.status==='pending_confirmation')break;
+  if(refreshed.status==='final')break;
   await pause(60);
  }
- assert.equal(refreshed.status,'pending_confirmation',logs);
+ assert.equal(refreshed.status,'final',logs);
  assert.equal(refreshed.candidateScore,82.5);
  const inputs=(await readFile(providerLog,'utf8')).trim().split('\n').map(line=>JSON.parse(line));
  assert.deepEqual(inputs,[{report:facts,week:'2026-10-16'},{report:facts,week:'2026-10-16'}],'only the requested report reaches the initial and review calls');
  assert.deepEqual(JSON.parse(run("SELECT content_json FROM weekly_reports WHERE id='score-second';")),next);
  const attempts=await Promise.all([confirm({version:refreshed.version}),confirm({version:refreshed.version},'boss')]);
- assert.deepEqual(attempts.map(result=>result.status).sort(),[200,409]);
+ assert.deepEqual(attempts.map(result=>result.status).sort(),[409,409]);
  const final=(await detail()).body.monthly.quality;
  assert.equal(final.status,'final');assert.equal(final.finalScore,82.5);assert(final.confirmedBy);assert(final.confirmedAt);
- const snapshotPath='/api/performance/result-evidence?'+new URLSearchParams({month,employeeId:'staff',kind:'quality',rule:'management_confirmed',confirmedAt:final.confirmedAt});
+ const snapshotPath='/api/performance/result-evidence?'+new URLSearchParams({month,employeeId:'staff',kind:'quality',rule:'automatic_report',confirmedAt:final.confirmedAt});
  const snapshot=await api(snapshotPath);assert.equal(snapshot.status,200);
  assert.equal(snapshot.body.detail.reports.find(report=>report.id==='score-first').qualityAssessment.model,'fixture-model');
- assert(snapshot.body.detail.reviewerId);assert.equal((await api(snapshotPath,'other')).status,403);
+ assert.equal(snapshot.body.detail.publicationMode,'automatic');assert.equal((await api(snapshotPath,'other')).status,403);
  const own=(await api('/api/performance/me','staff')).body.history.find(row=>row.month===month);
  assert.equal(own.monthlyQuality.finalScore,82.5);assert(!JSON.stringify(own).includes(auditReason));
- assert.equal(run("SELECT count(*) FROM performance_results WHERE kind='quality';"),'1');
+ assert.equal(run("SELECT count(*) FROM performance_results WHERE kind='quality';"),'0');
+ const automaticRows=run("SELECT id,result_json,evidence_json FROM automatic_performance_results WHERE kind='quality' ORDER BY id;",true);
+ for(const userId of ['admin','boss']){
+  const managed=await api('/api/performance/manage?view=overview&month='+month,userId);
+  assert.equal(managed.status,200);const row=managed.body.monthly.find(row=>row.userId==='staff'&&row.month===month);
+  assert.equal(row.quality.finalScore,82.5);assert.equal(row.quality.publicationMode,'automatic');assert.equal(row.quality.canConfirm,false);
+  const zero=managed.body.monthly.find(row=>row.userId==='zero'&&row.month===month);assert.equal(zero.quality.finalScore,0);
+ }
+ assert.equal((await detail('boss')).body.monthly.quality.finalScore,82.5);
+ const zeroPersonal=(await api('/api/performance/me','zero')).body.history.find(row=>row.month===month);
+ assert.equal(zeroPersonal.quality,0);assert.equal(zeroPersonal.monthlyQuality.finalScore,0);
+ assert.equal((await detail('lead','departed')).status,403);assert.equal((await detail('lead','missing')).status,403);
+ const staffView=await api('/api/performance/me','staff');assert(!JSON.stringify(staffView.body).includes(names.other));assert(!JSON.stringify(staffView.body).includes(names.departed));
+ assert.deepEqual(run("SELECT id,result_json,evidence_json FROM automatic_performance_results WHERE kind='quality' ORDER BY id;",true),automaticRows,'repeated GETs and disabled confirms retain every automatic history row');
  assert.equal(run('SELECT count(*) FROM weekly_quality_reviews;'),'2');
  assert.equal(run('PRAGMA integrity_check;'),'ok');
- console.log(JSON.stringify({ok:true,supervisorScope:true,employeeEvidence:true,pendingIsExcluded:true,onlyTargetReanalyzed:true,oneHumanFinal:true,artifacts:dir}));
+ console.log(JSON.stringify({ok:true,supervisorScope:true,employeeEvidence:true,pendingIsExcluded:true,onlyTargetReanalyzed:true,automaticFinal:true,zeroValid:true,allRolesAgree:true,artifacts:dir}));
 }catch(error){console.error(logs);throw error;}
 finally{
  if(server.exitCode===null){server.kill('SIGTERM');await new Promise(resolve=>server.once('exit',resolve));}

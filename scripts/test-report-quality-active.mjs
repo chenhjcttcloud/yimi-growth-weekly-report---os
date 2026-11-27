@@ -26,10 +26,13 @@ assert.equal(active.promptVersion,'weekly-quality-coaching-prompt-2026-11-19-v1'
 assert.equal(ACTIVE_REPORT_QUALITY_REVIEW_PROMPT_VERSION,'weekly-quality-coaching-review-2026-11-19-v1');
 assert.deepEqual(ACTIVE_REPORT_QUALITY_WEIGHTS,[30,25,25,20]);
 assert.deepEqual(active.scores,[100,100,100,100]);assert.equal(active.totalScore,100);
-assert.equal(active.publicationMode,'management_confirmation');assert.equal(active.requiresMonthlyConfirmation,true);
+assert.equal(active.publicationMode,'automatic');assert.equal(active.requiresMonthlyConfirmation,false);
 assert(!Object.hasOwn(active,'previewOnly'));assert(!Object.hasOwn(active,'humanConfirmationRequired'));
 assert(!JSON.stringify(active).includes('evidenceLevel'));assert(!JSON.stringify(active).includes('"level"'));
-assert.deepEqual(validateActiveReportQualityAnalysis(active,facts),active,'active output revalidates under its own version and monthly confirmation contract');
+assert.deepEqual(validateActiveReportQualityAnalysis(active,facts),active,'active output revalidates under its own version and automatic monthly publication contract');
+const oldSaved={...active,publicationMode:'management_confirmation',requiresMonthlyConfirmation:true},oldSavedBefore=structuredClone(oldSaved);
+assert.deepEqual(validateActiveReportQualityAnalysis(oldSaved,facts),active,'old saved publication markers normalize without requiring AI reanalysis');
+assert.deepEqual(oldSaved,oldSavedBefore,'normalization does not rewrite an old saved assessment');
 assert.deepEqual(validateActiveReportQualityAnalysis(raw,facts,{evidenceFragments:buildReportEvidenceFragments(facts)}),active);
 const preview=validateReportQualityCoachingAnalysis(raw,facts,{mode:'preview'});
 assert.equal(preview.version,REPORT_QUALITY_COACHING_VERSION);assert(preview.previewOnly&&preview.humanConfirmationRequired);
@@ -40,7 +43,8 @@ assert.throws(()=>validateActiveReportQualityAnalysis({...raw,promptVersion:REPO
 for(const marker of [{previewOnly:true},{previewOnly:false},{humanConfirmationRequired:true},{humanConfirmationRequired:false},{publicationMode:'preview_only'}]){
  assert.throws(()=>validateActiveReportQualityAnalysis({...raw,...marker},facts),error=>activeQualityDiagnostic(error).code==='preview_input_forbidden');
 }
-for(const marker of [{publicationMode:'automatic'},{requiresMonthlyConfirmation:false}])assert.throws(()=>validateActiveReportQualityAnalysis({...raw,...marker},facts),error=>activeQualityDiagnostic(error).code==='invalid_confirmation_mode');
+for(const marker of [{publicationMode:'automatic'},{requiresMonthlyConfirmation:false},{publicationMode:'management_confirmation',requiresMonthlyConfirmation:true}])assert.deepEqual(validateActiveReportQualityAnalysis({...raw,...marker},facts),active);
+for(const marker of [{publicationMode:'invented_mode'},{requiresMonthlyConfirmation:'false'}])assert.throws(()=>validateActiveReportQualityAnalysis({...raw,...marker},facts),error=>activeQualityDiagnostic(error).code==='invalid_confirmation_mode');
 assert.throws(()=>validateActiveReportQualityAnalysis(raw,facts,{mode:'preview'}),error=>activeQualityDiagnostic(error).code==='invalid_active_mode');
 assert.throws(()=>validateReportQualityCoachingAnalysis(active,facts,{mode:'preview'}),'the strict offline preview entry point cannot silently rebrand an active assessment');
 assert.throws(()=>buildReportQualityCoachingPrompt(),/coaching_preview_required/);
@@ -50,7 +54,8 @@ const prompt=buildActiveReportQualityPrompt(),review=buildActiveReportQualityRev
 for(const value of [prompt,review]){
  assert(value.includes(ACTIVE_REPORT_QUALITY_VERSION)&&value.includes(ACTIVE_REPORT_QUALITY_PROMPT_VERSION));
  for(const removed of ['preview','当前为显式','四份实际周报并人工确认后才能考虑启用','试评不得替换既有','这次候选对比'])assert(!value.includes(removed),removed);
- assert(value.includes('月度最终分仍需主管确认'));
+ assert(!value.includes('月度最终分仍需主管确认'));
+ assert(value.includes('自动')&&value.includes('月度'),'active prompts explain automatic monthly publication');
  for(const rule of ['下周计划默认期限是下周','不要求附件','不生成A/B/C/D','最多2条','没有最低分托底'])assert(value.includes(rule),rule);
  for(const taskField of ['tasks数组','最多4项','title','description','priority','evidenceRef','metric','firstStep','supportNeeded'])assert(value.includes(taskField),taskField);
  assert(value.includes('任务不影响质量分'));assert(value.includes('不代表已创建任务、发送消息或执行任何写入'));
@@ -83,4 +88,4 @@ assert.deepEqual(activeQualityDiagnostic(falsified),{code:'analysis_failed',path
 assert.deepEqual(activeQualityDiagnostic(new SyntaxError('PRIVATE_JSON')),{code:'invalid_json',path:'$',retryable:true});
 assert.equal(isActiveQualityValidationFailure('response_truncated'),true);assert.equal(isActiveQualityValidationFailure('invented_provider_error'),false);
 assert(!JSON.stringify(activeQualityDiagnostic(falsified)).includes('PRIVATE_'));
-console.log('Active coaching adapter tests passed: distinct active/preview versions; explicit monthly confirmation; preview rejection; exact citations, strict scoring and safe diagnostics; active prompts retain task extraction and reviewer task preservation; no data writes or provider calls.');
+console.log('Active coaching adapter tests passed: automatic monthly publication; compatible old saved markers without mutation; distinct active/preview versions; preview rejection; exact citations, strict scoring and safe diagnostics; task extraction and reviewer task preservation; no data writes or provider calls.');

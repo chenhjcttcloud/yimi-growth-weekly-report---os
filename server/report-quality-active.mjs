@@ -42,18 +42,18 @@ function activeOptions(options={}){
  return options;
 }
 const taskContract=`保留既有AI行动任务提取功能：输出顶层可选tasks数组（可为[]，最多4项），每项包含title、description、priority（P0/P1/P2）、evidenceRef（本份周报evidenceFragments中实际存在的片段id）、metric、firstStep、supportNeeded。只提取本份原文支持的必要行动候选，不能为了生成任务而编造工作、额外验收指标、员工必须补交的材料或审批；无必要任务时留空。任务不影响质量分，也不代表已创建任务、发送消息或执行任何写入。
-完整JSON沿用四模块、summary、questions、riskSignals，并保留tasks:[]这个独立字段。月度最终分仍需主管确认，AI不直接发布月度成绩。`;
+完整JSON沿用四模块、summary、questions、riskSignals，并保留tasks:[]这个独立字段。月度最终分由系统在月结、收集与分析完成后按有效周报质量分均值自动生成，无需主管确认；本次AI只分析本周内容。`;
 
 function activatePrompt(source){
  const firstBreak=source.indexOf('\n');
  if(firstBreak<0||!source.startsWith('候选规则版本：'+REPORT_QUALITY_COACHING_VERSION)||!source.slice(0,firstBreak).includes('当前为显式preview试评'))throw Error('active_prompt_template_mismatch');
- const header=`评分规则版本：${ACTIVE_REPORT_QUALITY_VERSION}；提示词版本：${ACTIVE_REPORT_QUALITY_PROMPT_VERSION}。使用用户已确认的成长教练规则生成本周AI质量候选；月度最终分仍需主管确认。既有历史分数、发布快照和趋势保持原版本记录，不由AI自行覆写。`;
+ const header=`评分规则版本：${ACTIVE_REPORT_QUALITY_VERSION}；提示词版本：${ACTIVE_REPORT_QUALITY_PROMPT_VERSION}。使用用户已确认的成长教练规则生成本周AI质量分；月度最终分在月结、收集与分析完成后自动汇总，无需主管确认。既有历史分数、发布快照和趋势保持原版本记录，不由AI自行覆写。`;
  const prompt=header+source.slice(firstBreak)
   .replaceAll(REPORT_QUALITY_COACHING_VERSION,ACTIVE_REPORT_QUALITY_VERSION)
   .replaceAll(REPORT_QUALITY_COACHING_PROMPT_VERSION,ACTIVE_REPORT_QUALITY_PROMPT_VERSION)
   .replaceAll(REPORT_QUALITY_COACHING_REVIEW_PROMPT_VERSION,ACTIVE_REPORT_QUALITY_REVIEW_PROMPT_VERSION)
   .replace('所有引用和建议仅服务于这次候选对比，不得修改其他功能。','所有引用和建议用于本周内容质量评分与成长反馈，不改变其他功能。')
-  .replace('维持上面的主规则v1、主提示词v4及preview隔离。','沿用已经确认的线上成长教练主规则，只更正AI输出；月度最终分仍需主管确认。');
+  .replace('维持上面的主规则v1、主提示词v4及preview隔离。','沿用已经确认的线上成长教练主规则，只更正AI输出；月度最终分按完整有效周报均分自动汇总。');
  if(prompt.includes('preview')||prompt.includes('四份实际周报并人工确认后才能考虑启用')||prompt.includes('当前为显式'))throw Error('active_prompt_template_mismatch');
  return prompt;
 }
@@ -73,8 +73,8 @@ export function validateActiveReportQualityAnalysis(value,facts,options={}){
  if(Object.hasOwn(value,'previewOnly')||Object.hasOwn(value,'humanConfirmationRequired')||value.publicationMode==='preview_only')fail('preview_input_forbidden','$');
  if(value.version!==undefined&&value.version!==ACTIVE_REPORT_QUALITY_VERSION)fail('wrong_version','version');
  if(value.promptVersion!==undefined&&value.promptVersion!==ACTIVE_REPORT_QUALITY_PROMPT_VERSION)fail('wrong_version','promptVersion');
- if(value.publicationMode!==undefined&&value.publicationMode!=='management_confirmation')fail('invalid_confirmation_mode','publicationMode');
- if(value.requiresMonthlyConfirmation!==undefined&&value.requiresMonthlyConfirmation!==true)fail('invalid_confirmation_mode','requiresMonthlyConfirmation');
+ if(value.publicationMode!==undefined&&!['automatic','management_confirmation'].includes(value.publicationMode))fail('invalid_confirmation_mode','publicationMode');
+ if(value.requiresMonthlyConfirmation!==undefined&&typeof value.requiresMonthlyConfirmation!=='boolean')fail('invalid_confirmation_mode','requiresMonthlyConfirmation');
  let normalized;
  try{
   normalized=validateReportQualityCoachingAnalysis({...value,version:REPORT_QUALITY_COACHING_VERSION,
@@ -87,6 +87,6 @@ export function validateActiveReportQualityAnalysis(value,facts,options={}){
  const {previewOnly,humanConfirmationRequired,publicationMode,version,promptVersion,...assessment}=normalized;
  const confidences=assessment.modules.flatMap(module=>module.confidence===null?[]:[module.confidence]);
  return {...assessment,version:ACTIVE_REPORT_QUALITY_VERSION,promptVersion:ACTIVE_REPORT_QUALITY_PROMPT_VERSION,
-  publicationMode:'management_confirmation',requiresMonthlyConfirmation:true,
+  publicationMode:'automatic',requiresMonthlyConfirmation:false,
   confidence:confidences.length?confidences.reduce((sum,value)=>sum+value,0)/confidences.length:null};
 }

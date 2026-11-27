@@ -43,7 +43,7 @@ function monthly(person, month) {
   const zero = person.userId === people[0].userId && month === october, waiting = person.userId === people[1].userId;
   const score = zero ? 0 : month === october ? 88.2 : 96.4;
   return {...person, month, reports: [], timeliness, peerCandidate: waiting ? null : score,
-    quality: {status: waiting ? 'pending_confirmation' : 'final', currentAverage: waiting ? 82 : score, candidateScore: waiting ? 82 : score, finalScore: waiting ? null : score, pendingAnalysis: 0, analyzedCount: 4, expectedCount: 4, canConfirm: false, confirmedBy: waiting ? undefined : '合成审核人', confirmedAt: month + '-28T02:00:00Z'},
+    quality: {status: waiting ? 'pending_ai' : 'final', publicationMode: 'automatic', currentAverage: waiting ? 82 : score, candidateScore: waiting ? null : score, finalScore: waiting ? null : score, pendingAnalysis: waiting ? 1 : 0, analyzedCount: waiting ? 3 : 4, expectedCount: 4, canConfirm: false, generatedBy: waiting ? undefined : '系统自动计算', generatedAt: month + '-28T02:00:00Z', confirmedBy: waiting ? undefined : '系统自动计算', confirmedAt: month + '-28T02:00:00Z'},
     managerProgress: {kind: 'boss', expectedIds: [''], expected: 1, submitted: waiting ? 0 : 1, complete: !waiting, score: waiting ? null : score, records: []},
     collaborationExpected: 3, collaborationSubmitted: waiting ? 1 : 3, collaborationComplete: !waiting, collaborationCandidate: waiting ? null : score,
   };
@@ -51,10 +51,10 @@ function monthly(person, month) {
 function overview(month) {
   const rows = people.map(person => monthly(person, month));
   return {scopeMonth: month, months: [november, october], employees: people, monthly: rows, collaborations: [],
-    results: rows.filter(row => row.userId !== people[1].userId).flatMap(row => ['quality', 'collaboration'].map(kind => ({month, employee_user_id: row.userId, employee_name: row.name, kind, result: {score: row.quality.finalScore, peerScore: row.peerCandidate, managerScore: row.managerProgress.score}, scoring_rule: kind === 'quality' ? 'management_confirmed' : 'weighted_30_70', evidenceSummary: {}, evidenceDeferred: true, confirmed_by: '合成审核人', confirmed_at: month + '-28T02:00:00Z'}))),
+    results: rows.filter(row => row.userId !== people[1].userId).flatMap(row => ['quality', 'collaboration'].map(kind => ({month, employee_user_id: row.userId, employee_name: row.name, kind, result: {score: row.quality.finalScore, status: 'final', publicationMode: kind === 'quality' ? 'automatic' : 'weighted_30_70', pendingAnalysis: 0, peerScore: row.peerCandidate, managerScore: row.managerProgress.score}, scoring_rule: kind === 'quality' ? 'automatic_report' : 'weighted_30_70', evidenceSummary: {}, evidenceDeferred: true, confirmed_by: '合成审核人', confirmed_at: month + '-28T02:00:00Z'}))),
   };
 }
-const qualityHeaders = ['月份', '姓名', '部门', '月度质量最终分', 'AI质量候选分', '质量状态'];
+const qualityHeaders = ['月份', '姓名', '部门', '月度质量最终分', 'AI质量均分', '质量状态'];
 const collaborationHeaders = ['月份', '姓名', '部门', '月度综合最终分', '评分状态', '负责人或老板评分（30%）', '同事互评均分（70%）', '同事已评数', '同事应评数'];
 const readWorkbookPython = String.raw`
 import json,sys,zipfile,posixpath,xml.etree.ElementTree as E
@@ -102,6 +102,7 @@ function verifySheet(book, name, expectedPeople, month) {
   const sheet = book.sheets.find(item => item.name === name); assert(sheet, 'workbook includes ' + name);
   const headers = name === '周报质量' ? qualityHeaders : collaborationHeaders;
   for (const header of headers) assert(sheet.headers.includes(header), 'exported header: ' + header);
+  assert(sheet.headers.every(header => !/确认人|确认时间|发布人|发布时间|生成方式|生成时间|结果来源/.test(header)), 'downloaded score tables omit approval metadata columns');
   assert.deepEqual(sheet.rows.map(row => row.values['姓名']).sort(), expectedPeople.map(person => person.name).sort(), 'export includes every matching employee, once, across all pages');
   assert(sheet.rows.every(row => row.values['月份'] === month && !row.hasFormula));
   const zero = sheet.rows.find(row => row.values['姓名'] === zeroName), waiting = sheet.rows.find(row => row.values['姓名'] === waitingName);
@@ -111,7 +112,7 @@ function verifySheet(book, name, expectedPeople, month) {
   if (waiting) {
     assert.equal(waiting.values[finalColumn] ?? null, null, 'waiting final scores stay blank');
     assert.match(String(waiting.values[name === '周报质量' ? '质量状态' : '评分状态']), /待|等待|暂定|尚未/);
-    if (name === '周报质量') assert.equal(waiting.values['AI质量候选分'], 82);
+    if (name === '周报质量') {assert.equal(waiting.values['AI质量均分'] ?? null, null); assert.equal(waiting.values['已完成分析均分'], 82);}
     else {
       assert.equal(waiting.values['负责人或老板评分（30%）'] ?? null, null);
       assert.equal(waiting.values['同事互评均分（70%）'] ?? null, null);
@@ -199,6 +200,8 @@ try {
   await admin.page.goto(base + '/?page=quality-scores&scoreMonth=' + october);
   await admin.page.getByRole('button', {name: buttonName('quality'), exact: true}).waitFor();
   verifySheet(await downloadExport(admin.page, 'quality', '周报质量_2026-10_全部部门.xlsx'), '周报质量', people, october);
+  assert.equal(await admin.page.getByRole('button', {name: '确认月度最终分', exact: true}).count(), 0);
+  assert.equal(await admin.page.getByText('待管理人员确认', {exact: true}).count(), 0);
   await filterSupply(admin.page);
   verifySheet(await downloadExport(admin.page, 'quality', '周报质量_2026-10_供应链_筛选.xlsx'), '周报质量', selectedPeople, october);
   await admin.page.locator('.content-shell').evaluate(element => {element.scrollTop = 0;});

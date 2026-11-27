@@ -1,10 +1,16 @@
-.pf-intro-actions { display:flex; flex-wrap:wrap; align-items:center; justify-content:flex-end; gap:10px; max-width:100%; min-width:0; }
-.pf-export { display:flex; align-items:center; flex-wrap:wrap; justify-content:flex-end; gap:8px 12px; max-width:100%; }
-.pf-export button { white-space:nowrap; }
-.pf-export-scope { color:var(--v2-ink-3); font-size:11px; white-space:nowrap; }
-.pf-export-message { flex-basis:100%; margin:0; overflow-wrap:anywhere; text-align:right; }
+.pf-results-intro { flex-wrap:wrap; }
+.pf-results-intro > :first-child { flex:1 1 300px; min-width:0; }
+.pf-intro-actions { display:grid; grid-template-columns:160px minmax(0,1fr); align-items:start; gap:12px; width:440px; max-width:100%; min-width:0; flex:0 0 auto; margin-left:auto; }
+.pf-intro-actions > .pf-month { width:160px; min-width:0; }
+.pf-intro-actions > .pf-export { grid-column:2; }
+.pf-export { display:grid; grid-template-columns:minmax(0,1fr) auto; grid-template-rows:42px 26px; align-items:center; gap:4px 12px; min-width:0; max-width:100%; }
+.pf-export button.secondary-button { min-height:42px; white-space:nowrap; }
+.pf-export-scope { color:var(--v2-ink-3); font-size:11px; line-height:16px; overflow-wrap:anywhere; }
+.pf-intro .pf-export-message { grid-column:1 / -1; align-self:start; margin:0; padding:0; background:none; border-radius:0; color:var(--v2-ink-2); font-size:12px; line-height:26px; overflow-wrap:anywhere; text-align:right; }
+.pf-intro .pf-export-message.is-error { color:var(--v2-risk); }
 @media(max-width:760px) {
- .pf-intro-actions { width:100%; justify-content:flex-start; }
- .pf-export { justify-content:flex-start; }
- .pf-export-message { text-align:left; }
+ .pf-results-intro > :first-child { flex:none; width:100%; }
+ .pf-intro-actions { grid-template-columns:minmax(0,1fr); width:100%; margin-left:0; }
+ .pf-intro-actions > .pf-export { grid-column:1; }
+ .pf-intro .pf-export-message { text-align:left; }
 }

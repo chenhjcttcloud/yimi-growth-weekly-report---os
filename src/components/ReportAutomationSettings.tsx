@@ -33,7 +33,7 @@ export function ReportAutomationSettings(){
      <span className="feishu-settings-icon"><CalendarClock size={18} aria-hidden="true"/></span>
      <div>
       <h2>周报自动收集与 AI 评分</h2>
-      <p className="feishu-settings-note">飞书周报同步后，AI 分析四个模块并汇总月度候选分。最终分由管理人员确认。</p>
+      <p className="feishu-settings-note">飞书周报同步后，AI 分析四个模块；月结、周报收集齐且分析完成后自动生成月度质量最终分。</p>
      </div>
     </div>
     {status&&<span className="pf-subtle-tag fi-automation-status" data-active={status.config.enabled&&!savedScoringPaused}>

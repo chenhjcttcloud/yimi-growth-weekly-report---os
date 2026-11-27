@@ -31,6 +31,7 @@ jobs:
       - run: node scripts/test-active-quality-live-sync.mjs
       - run: node scripts/test-report-evidence-fragments.mjs
       - run: node scripts/test-report-quality-publication.mjs
+      - run: node scripts/test-weekly-quality-confirmation-api.mjs
       - run: node scripts/test-report-rescore-state.mjs
       - run: node scripts/test-report-rescore.mjs
       - run: node scripts/test-report-rate-limit.mjs
@@ -52,6 +53,7 @@ jobs:
       - run: node scripts/test-peer-comment-policy-upgrade-preparation.mjs
       - run: node scripts/test-performance-policy-reads.mjs
       - run: node scripts/test-product-management-score-api.mjs
+      - run: node scripts/test-automatic-score-api-freshness.mjs
       - run: node scripts/test-automatic-score-history-stability.mjs
       - run: node scripts/test-automatic-evidence-storage.mjs
       - run: node scripts/test-personal-loading-scope.mjs

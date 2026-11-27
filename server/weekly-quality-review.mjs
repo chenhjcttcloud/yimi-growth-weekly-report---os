@@ -12,8 +12,12 @@ export const qualityVersion = value => createHash('sha256').update(JSON.stringif
 
 export function qualityAnalysisVersion(report) {
   const {content,qualityAssessment} = report;
+  const assessment=qualityAssessment||content.ai;
+  // Publication policy is not a new weekly analysis. Keep the old active
+  // fingerprint so already saved report reviews retain their exact scope.
+  const analysis=assessment?.version===ACTIVE_REPORT_QUALITY_VERSION?{...assessment,publicationMode:'management_confirmation',requiresMonthlyConfirmation:true}:assessment;
   return qualityVersion({id:report.id,sourceHash:content.sourceHash,source:report.evidence,
-    model:content.aiModel,generatedAt:content.aiGeneratedAt,ai:qualityAssessment||content.ai,
+    model:content.aiModel,generatedAt:content.aiGeneratedAt,ai:analysis,
     scores:['成果分','问题分','计划分','复盘分'].map(key=>content[key]),archiveScore:content['总分'],
     weights:report.scoringPolicy.weights,submitted:report.submitted});
 }
@@ -48,16 +52,16 @@ export function applyQualityReviews(report,records) {
 
 export function summarizeMonthlyQuality(reports,confirmationBlockedReason) {
   const submitted=reports.filter(report=>report.submitted&&!report.qualityExcluded);
-  const analyzed=submitted.filter(report=>report.candidate!==null);
+  const analyzed=submitted.filter(report=>typeof report.candidate==='number'&&Number.isFinite(report.candidate)&&report.candidate>=0&&report.candidate<=100);
   const pendingAnalysis=submitted.length-analyzed.length;
   const currentAverage=analyzed.length?qualityRound(analyzed.reduce((sum,report)=>sum+report.candidate,0)/analyzed.length):null;
-  const status=!submitted.length?'no_reports':confirmationBlockedReason||pendingAnalysis?'pending_ai':'pending_confirmation';
-  const canConfirm=status==='pending_confirmation';
-  const version=canConfirm?qualityVersion(reports.filter(report=>report.submitted).map(report=>[
+  const status=!submitted.length?'no_reports':confirmationBlockedReason||pendingAnalysis?'pending_ai':'final';
+  const ready=status==='final';
+  const version=ready?qualityVersion(reports.filter(report=>report.submitted).map(report=>[
     report.end,report.id,report.submittedAt,report.candidate,report.qualityReviewVersion,report.qualityExcluded
   ]).sort((left,right)=>String(left[0]).localeCompare(String(right[0])))):undefined;
-  return {status,currentAverage,candidateScore:canConfirm?currentAverage:null,finalScore:null,pendingAnalysis,
-    analyzedCount:analyzed.length,expectedCount:submitted.length,canConfirm,
+  return {status,currentAverage,candidateScore:ready?currentAverage:null,score:ready?currentAverage:null,finalScore:ready?currentAverage:null,pendingAnalysis,
+    analyzedCount:analyzed.length,expectedCount:submitted.length,canConfirm:false,publicationMode:'automatic',
     ...(confirmationBlockedReason?{confirmationBlockedReason}:{}),...(version?{version}:{})};
 }
 

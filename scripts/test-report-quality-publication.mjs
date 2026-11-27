@@ -21,9 +21,9 @@ const run=(statement,json=false)=>{
  assert.equal(result.status,0,result.stderr);
  return json?JSON.parse(result.stdout||'[]'):result.stdout.trim();
 };
-let beforeQualityConfirm;
+let beforeAutomaticQualityWrite;
 const query=async statement=>run(statement,true),exec=async statement=>{
- if(statement.includes('月度周报质量最终分已确认'))beforeQualityConfirm?.();
+ if(statement.includes('INSERT INTO automatic_performance_results')){const hook=beforeAutomaticQualityWrite;beforeAutomaticQualityWrite=undefined;hook?.();}
  return run(statement);
 };
 run(await readFile('db/schema.sql','utf8'));
@@ -66,13 +66,13 @@ try{
  assert.equal(quality.candidateScore,null);
  assert.equal(quality.canConfirm,false);
  assert.equal(quality.version,undefined);
- await assert.rejects(()=>performance.confirm({month,userId:'staff',kind:'quality',version:'a'.repeat(64)},{userId:'manager'}),/quality_month_open/);
+ await assert.rejects(()=>performance.confirm({month,userId:'staff',kind:'quality',version:'a'.repeat(64)},{userId:'manager'}),/results_auto_published/);
  assert.equal(run("SELECT count(*) FROM performance_results WHERE kind='quality';"),'0');
  currentTime='2026-10-01T00:00:00+08:00';
  view=await performance.overview();quality=ownMonth(view).quality;
- assert.equal(quality.candidateScore,36,'low quality can be presented for human review');
- assert.equal(quality.status,'pending_confirmation');
- assert.equal(qualityRow(view),undefined,'AI cannot publish the final result');
+ assert.equal(quality.candidateScore,36,'low valid quality is included without a score floor');
+ assert.equal(quality.status,'final');assert.equal(quality.finalScore,36);assert.equal(quality.publicationMode,'automatic');assert.equal(quality.canConfirm,false);
+ assert.equal(qualityRow(view).result.score,36);assert.equal(qualityRow(view).scoring_rule,'automatic_report');
  const firstCandidate=latestCandidate();
  const firstSnapshot=decodeAutomaticEvidence(firstCandidate.evidence_json);
  const snapshot=JSON.parse(firstSnapshot),assessment=ownMonth(view).reports[0].qualityAssessment;
@@ -95,8 +95,8 @@ try{
  const detail=performanceClientEmployeeMonth(view,'staff',month);
  assert.deepEqual(detail.monthly.reports[0].qualityAssessment,assessment);
  assert(!JSON.stringify(detail).includes('OTHER_EMPLOYEE_PRIVATE_QUOTE'),'employee details are limited to the chosen employee');
- await assert.rejects(()=>performance.confirm({month,userId:'staff',kind:'quality',score:99},{userId:'manager'}),/quality_version_required/);
- await assert.rejects(()=>performance.confirm({month,userId:'staff',kind:'quality',score:99,version:quality.version},{userId:'manager'}),/quality_adjustment_reason_required/);
+ await assert.rejects(()=>performance.confirm({month,userId:'staff',kind:'quality',score:99},{userId:'manager'}),/results_auto_published/);
+ await assert.rejects(()=>performance.confirm({month,userId:'staff',kind:'quality',score:99,version:quality.version,note:'不得绕过自动月均'},{userId:'manager'}),/results_auto_published/);
  let workspace=await personal.workspace({userId:'staff',name:'评分测试员工'},month,'period-2026-09-04');
  const ownWeek=workspace.weeks.find(week=>week.end==='2026-09-04');
  assert.deepEqual(ownWeek.qualityAssessment,assessment);
@@ -173,7 +173,7 @@ try{
  run(`UPDATE weekly_reports SET content_json=${sql(JSON.stringify({...zero,'周期ID':'period-2026-09-18'}))} WHERE id='pending-score';`);
  view=await performance.overview();quality=ownMonth(view).quality;
  assert.equal(quality.candidateScore,40.3);
- assert.equal(quality.status,'pending_confirmation');
+ assert.equal(quality.status,'final');assert.equal(quality.finalScore,40.3);assert.equal(quality.canConfirm,false);
  assert.equal(ownMonth(view).reports.find(report=>report.id==='pending-score').candidate,0);
  assert.equal(run(`SELECT evidence_json FROM automatic_performance_results WHERE id=${sql(firstPublicationId)};`),firstStoredSnapshot,'later automatic publications retain the original stored explanation bytes');
  assert.equal(decodeAutomaticEvidence(firstStoredSnapshot),firstSnapshot,'the original complete explanation remains readable after later publications');
@@ -210,24 +210,19 @@ try{
  assert.equal(quality.currentAverage,100);assert.equal(quality.status,'pending_ai');
  assert.equal((await performance.personal('评分测试员工','staff')).history.find(row=>row.month===month).qualityRefresh.failedAnalysis,1);
  complete('legacy-score',60);complete('pending-score',20);view=await performance.overview();quality=ownMonth(view).quality;
- assert.equal(quality.candidateScore,60,'all completed reports provide a monthly candidate');
- assert.equal(quality.status,'pending_confirmation');assert.equal(quality.pendingAnalysis,0);
+ assert.equal(quality.candidateScore,60,'all completed reports provide the automatic monthly mean');
+ assert.equal(quality.status,'final');assert.equal(quality.finalScore,60);assert.equal(quality.pendingAnalysis,0);assert.equal(quality.canConfirm,false);
  const otherQuality=view.monthly.find(row=>row.userId==='other'&&row.month===month).quality;
  assert.equal(otherQuality.finalScore,null);assert.equal(otherQuality.status,'pending_ai','another employee can remain in progress without blocking the ready employee');
- beforeQualityConfirm=()=>run("UPDATE weekly_reports SET submitted_at='2026-09-18T11:00:00Z' WHERE id='pending-score';");
- await assert.rejects(()=>performance.confirm({month,userId:'staff',kind:'quality',version:quality.version},reviewer),/quality_candidate_changed/);
- beforeQualityConfirm=undefined;
- assert.equal(run('SELECT count(*) FROM performance_results;'),'0','concurrent report changes block confirmation');
- run("UPDATE weekly_reports SET submitted_at='2026-09-18T10:00:00Z' WHERE id='pending-score';");
- const confirmed=await performance.confirm({month,userId:'staff',kind:'quality',version:quality.version},reviewer);
- assert.equal(confirmed.score,60);assert.equal(confirmed.confirmedBy,reviewer.name);
- view=await performance.overview();
- assert.equal(qualityRow(view).scoring_rule,'management_confirmed');
- assert.equal(ownMonth(view).quality.finalScore,60);
+ await assert.rejects(()=>performance.confirm({month,userId:'staff',kind:'quality',version:quality.version},reviewer),/results_auto_published/);
+ assert.equal(run('SELECT count(*) FROM performance_results;'),'0','automatic publication never creates human-confirmed rows');
+ const automaticBeforeRace=run("SELECT count(*) FROM automatic_performance_results WHERE month='2026-09' AND employee_user_id='staff' AND kind='quality';");
+ beforeAutomaticQualityWrite=()=>complete('pending-score',80);
  complete('low-score',95);view=await performance.overview();
- assert.equal(ownMonth(view).quality.currentAverage,60,'subsequent AI changes do not alter confirmed monthly summary');
- assert.equal((await performance.personal('评分测试员工','staff')).history.find(row=>row.month===month).quality,60);
- await assert.rejects(()=>performance.confirm({month,userId:'staff',kind:'quality',version:quality.version},reviewer),/result_locked/);
+ assert.equal(qualityRow(view).scoring_rule,'automatic_report');
+ assert.equal(ownMonth(view).quality.finalScore,78.3,'a concurrent report revision is re-read before publication; obsolete 58.3 must never be saved');
+ assert.equal(run("SELECT count(*) FROM automatic_performance_results WHERE month='2026-09' AND employee_user_id='staff' AND kind='quality';"),String(Number(automaticBeforeRace)+1));
+ assert.equal((await performance.personal('评分测试员工','staff')).history.find(row=>row.month===month).quality,78.3);
  // Recover the deployed pre-fix form: ai was removed but its archived snapshot
  // and a previously published month still exist behind later pending rows.
  const otherContent=run("SELECT content_json FROM weekly_reports WHERE id='other-report';",true)[0];
@@ -257,7 +252,7 @@ try{
  view=await performance.overview();
  assert.equal(view.results.find(row=>row.employee_user_id==='staff'&&row.month==='2026-08'&&row.kind==='quality').result.score,77);
  assert.deepEqual(run("SELECT * FROM performance_results WHERE month='2026-08';",true),manualBefore,'rescore never edits historical human-confirmed results');
- assert.equal(run('SELECT count(*) FROM performance_results;'),'2');
+ assert.equal(run('SELECT count(*) FROM performance_results;'),'1');
  assert.equal(run('SELECT count(*) FROM scoring360_responses;'),'0');
  assert.equal(run('SELECT count(*) FROM monthly_manager_scores;'),'0');
  assert.equal(run('SELECT count(*) FROM feishu_tasks;'),'0');
@@ -279,21 +274,21 @@ try{
  assert.equal(waitingCollection.status,'pending_ai');
  assert.equal(waitingCollection.confirmationBlockedReason,'collection_pending');
  assert.equal(waitingCollection.canConfirm,false);
- await assert.rejects(()=>withCalendar.confirm({month:october,userId:'staff',kind:'quality',version:'a'.repeat(64)},reviewer),/quality_collection_pending/);
+ await assert.rejects(()=>withCalendar.confirm({month:october,userId:'staff',kind:'quality',version:'a'.repeat(64)},reviewer),/results_auto_published/);
  currentTime='2026-11-02T10:00:00+08:00';
  collectingMonth=october;
  assert.equal((await octoberQuality()).confirmationBlockedReason,'collection_pending');
- await assert.rejects(()=>withCalendar.confirm({month:october,userId:'staff',kind:'quality',version:'a'.repeat(64)},reviewer),/quality_collection_pending/);
+ await assert.rejects(()=>withCalendar.confirm({month:october,userId:'staff',kind:'quality',version:'a'.repeat(64)},reviewer),/results_auto_published/);
  collectingMonth='2026-11';
  const collectionEnded=await octoberQuality();
- assert.equal(collectionEnded.status,'pending_confirmation');
+ assert.equal(collectionEnded.status,'final');assert.equal(collectionEnded.finalScore,36);
  assert.equal(collectionEnded.candidateScore,36);
- assert.equal(collectionEnded.canConfirm,true);
+ assert.equal(collectionEnded.canConfirm,false);
  assert.equal(collectionEnded.confirmationBlockedReason,undefined);
 
  assert.equal(run('PRAGMA integrity_check;'),'ok');
  assert.equal(outboundRequests,0);
- const result={ok:true,shanghaiMonthEndGate:true,crossMonthDeadlineGate:true,lowScoreAvailableForReview:true,lowConfidenceAndAnomaliesDoNotBlockCandidate:true,exactEvidenceAndReasonsPreserved:true,monthlySnapshotsRetained:true,pendingExcludedFromCurrentAverage:true,forgedStoredEvidenceRejected:true,validZeroIncluded:true,legacyScoresCompatible:true,individualEmployeeConfirmedIndependently:true,archivedBlankedScoreRecovered:true,noInventedFirstMonthlyFinal:true,manualHistoricalFinalImmutable:true,personalEvidenceScoped:true,overviewHeadersRemainLean:true,humanApprovalRequired:true,externalRequests:outboundRequests,messagesSent:0,artifacts:dir};
+ const result={ok:true,shanghaiMonthEndGate:true,crossMonthDeadlineGate:true,automaticMonthlyFinal:true,lowConfidenceAndAnomaliesDoNotBlockValidScore:true,exactEvidenceAndReasonsPreserved:true,monthlySnapshotsRetained:true,pendingExcludedFromCurrentAverage:true,forgedStoredEvidenceRejected:true,validZeroIncluded:true,legacyScoresCompatible:true,individualEmployeePublishedIndependently:true,concurrentInputGuard:true,archivedBlankedScoreRecovered:true,noInventedFirstMonthlyFinal:true,manualHistoricalFinalImmutable:true,personalEvidenceScoped:true,overviewHeadersRemainLean:true,manualMonthlyWritesDisabled:true,externalRequests:outboundRequests,messagesSent:0,artifacts:dir};
  await writeFile(path.join(dir,'result.json'),JSON.stringify(result,null,2));
  console.log(JSON.stringify(result));
 }finally{

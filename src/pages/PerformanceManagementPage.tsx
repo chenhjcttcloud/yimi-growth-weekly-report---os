@@ -10,7 +10,7 @@ import {ReviewMonthPicker} from '../components/ReviewMonthPicker';
 import {lazy,Suspense,useEffect,useMemo,useRef,useState,type ComponentProps} from 'react';
 import {DeferredEvidence} from '../components/DeferredEvidence';
 import {ManagedQualityReport} from '../components/ManagedQualityReport';
-import {MonthlyQualityResultRow, monthlyQualityView, qualityConfirmationBlockNotes, qualityDate, qualityReviewNotice, type MonthlyQualitySummary} from '../components/MonthlyQuality';
+import {MonthlyQualityResultRow, monthlyQualityView, isMonthlyQualityReviewLocked, qualityGenerationBlockNotes, qualityDate, qualityReviewNotice, type MonthlyQualitySummary} from '../components/MonthlyQuality';
 const ManualScoringSetup=lazy(()=>import('../components/ManualScoringSetup').then(module=>({default:module.ManualScoringSetup})));
 import { AppSelect } from '../components/AppSelect';
 import { CalendarDays, ChevronRight, Clock3, FileCheck2, History, ShieldCheck, UsersRound } from 'lucide-react';
@@ -159,12 +159,12 @@ export function PerformanceResults({scoreFocus}:{scoreFocus?:'quality'|'collabor
  const mean=(kind:string)=>{const xs=published.filter((r:any)=>r.kind===kind&&r.result.score!=null);return xs.length?(xs.reduce((n:number,r:any)=>n+r.result.score,0)/xs.length).toFixed(1):'—';};
  const summaries:MonthlyQualitySummary[]=rows.flatMap(row=>row.quality?[row.quality]:[]);
  const pending=summaries.reduce((n,quality)=>n+quality.pendingAnalysis,0);
- const qualityBlock=summaries.find(quality=>quality.confirmationBlockedReason)?.confirmationBlockedReason;
+ const qualityBlock=summaries.map(quality=>quality.generationBlockedReason||quality.confirmationBlockedReason).find(Boolean);
  const provisional=Boolean(qualityBlock)||pending>0;
  const scoredSummaries=summaries.filter(quality=>quality.currentAverage!=null||quality.finalScore!=null);
- const allQualityConfirmed=Boolean(scoredSummaries.length)&&!provisional&&scoredSummaries.every(quality=>monthlyQualityView(quality).confirmed);
+ const allQualityFinal=Boolean(scoredSummaries.length)&&!provisional&&scoredSummaries.every(quality=>monthlyQualityView(quality).confirmed);
  const analyzed=summaries.reduce((n,quality)=>n+quality.analyzedCount,0);
- const qualityMean=allQualityConfirmed?mean('quality'):scoreText(analyzed?summaries.reduce((sum,quality)=>sum+(quality.currentAverage??0)*quality.analyzedCount,0)/analyzed:null);
+ const qualityMean=allQualityFinal?mean('quality'):scoreText(analyzed?summaries.reduce((sum,quality)=>sum+(quality.currentAverage??0)*quality.analyzedCount,0)/analyzed:null);
  const kinds=[['quality','周报质量'],['timeliness','提交及时率'],['collaboration','月度综合评分']].filter(([kind])=>!scoreFocus||kind===scoreFocus);
  const selectedQuality=monthlyQualityView(selected?.quality);
  const reloadOverview=()=>{setOverview(null);setFailedRequest(null);setRequest(current=>current===request?{month}:{...current});};
@@ -186,7 +186,7 @@ export function PerformanceResults({scoreFocus}:{scoreFocus?:'quality'|'collabor
   return {userId:r.userId,name:r.name,department:r.department,active:r.active,summary:scoreFocus?scoreLabel:`${count}/3 项已生成`};
  }),[data,month,scoreFocus]);
  return <div className="v2-page v2-page-wide pf-page">
-  <section className="pf-intro"><div><span className="v2-eyebrow"><ShieldCheck size={14}/>月度得分</span><h2>{scoreFocus==='quality'?'周报质量':scoreFocus==='collaboration'?'360 协同得分':'让每一份结果，都有据可依。'}</h2><p>{scoreFocus==='quality'?'按员工复核 AI 评分依据，分析和汇总完成后确认月度最终分。':scoreFocus==='collaboration'?'按月份和员工查看协同最终分、评分进度与协作明细。':'查看周报质量、提交及时率和协作评分。'}</p></div><div className="pf-intro-actions">{overview&&monthOptions.length>0&&<label className="pf-month pf-month-select"><CalendarDays size={16}/><AppSelect aria-label="选择绩效月份" disabled={managerReviewBusy} value={month} placeholder="最新月份" onValueChange={value=>{setRequest({month:value});setSelectedName('');setLegacyName('');setExplicitTarget(false);setWeekId('');setReportWeek(null);setDetailState(null);}}>{monthOptions.map(m=><option value={m} key={m}>{monthText(m)}</option>)}</AppSelect></label>}<PerformanceScoreExportButton kind={scoreFocus||'all'} month={month} rows={rows} results={published} contextKey={directoryContext} directorySource={directoryEmployees} selection={exportSelection} disabled={!data||managerReviewBusy}/></div></section>
+  <section className="pf-intro pf-results-intro"><div><span className="v2-eyebrow"><ShieldCheck size={14}/>月度得分</span><h2>{scoreFocus==='quality'?'周报质量':scoreFocus==='collaboration'?'360 协同得分':'让每一份结果，都有据可依。'}</h2><p>{scoreFocus==='quality'?'查看员工 AI 评分依据，月结、收集齐且分析完成后自动生成月度最终分。':scoreFocus==='collaboration'?'按月份和员工查看协同最终分、评分进度与协作明细。':'查看周报质量、提交及时率和协作评分。'}</p></div><div className="pf-intro-actions">{overview&&monthOptions.length>0&&<label className="pf-month pf-month-select"><CalendarDays size={16}/><AppSelect aria-label="选择绩效月份" disabled={managerReviewBusy} value={month} placeholder="最新月份" onValueChange={value=>{setRequest({month:value});setSelectedName('');setLegacyName('');setExplicitTarget(false);setWeekId('');setReportWeek(null);setDetailState(null);}}>{monthOptions.map(m=><option value={m} key={m}>{monthText(m)}</option>)}</AppSelect></label>}<PerformanceScoreExportButton kind={scoreFocus||'all'} month={month} rows={rows} results={published} contextKey={directoryContext} directorySource={directoryEmployees} selection={exportSelection} disabled={!data||managerReviewBusy}/></div></section>
   {!data?<section className="v2-card pf-workspace" role={error?'alert':'status'}>
    <ResultEmpty title={error?'暂时无法加载得分数据':'正在整理月度数据'} description={error||(month?`正在读取${monthText(month)}的月度结果…`:'请稍候，月度结果即将就绪。')}/>
    {error&&<button type="button" className="secondary-button" onClick={()=>setRequest({month:request.month})}>重试读取结果</button>}
@@ -195,7 +195,7 @@ export function PerformanceResults({scoreFocus}:{scoreFocus?:'quality'|'collabor
   {scoreFocus!=='collaboration'&&<p className="pf-notice">{qualityReviewNotice}</p>}
   <section className={`pf-metrics ${scoreFocus?'pf-metrics-focused':''}`}>
    {scoreFocus!=='collaboration'&&<ResultMetric icon={Clock3} label="全员周报提交率" value={pct} unit="%" description={`准时提交率 ${timePct}${timePct==='—'?'':'%'}`}><span className="pf-caption">迟交 <b>{rows.filter((r:any)=>r.timeliness.late>0).length}</b> 人</span><span className="pf-caption">未交 <b>{rows.filter((r:any)=>r.timeliness.missing>0).length}</b> 人</span></ResultMetric>}
-   {scoreFocus!=='collaboration'&&<ResultMetric icon={FileCheck2} label={allQualityConfirmed?'周报质量最终均分':provisional?'当前已完成分析均分':analyzed?'月度质量候选均分':'月度周报质量'} value={qualityMean} unit="分" description={allQualityConfirmed?'管理人员已确认的员工质量最终分':qualityBlock?qualityConfirmationBlockNotes[qualityBlock]:provisional?'汇总已完成分析的有效周报 · 暂定':analyzed?'汇总已完成分析的有效周报 · 待管理人员确认':'本月暂无可评分周报'}><span className="pf-caption">本月待完成 AI 分析</span><span className="pf-status">{pending} 份</span></ResultMetric>}
+   {scoreFocus!=='collaboration'&&<ResultMetric icon={FileCheck2} label={allQualityFinal?'周报质量最终均分':analyzed?'当前已完成分析均分':'月度周报质量'} value={qualityMean} unit="分" description={allQualityFinal?'已生成的月度最终分；历史人工结果保留原记录':qualityBlock?qualityGenerationBlockNotes[qualityBlock]:provisional?'有效周报分析尚未完成，当前均分仅作参考':analyzed?'月结、收集齐且 AI 分析完成后自动生成最终分':'本月暂无可评分周报'}><span className="pf-caption">本月待完成 AI 分析</span><span className="pf-status">{pending} 份</span></ResultMetric>}
    {scoreFocus!=='quality'&&<ResultMetric icon={UsersRound} label="月度综合最终均分" value={mean('collaboration')} unit="分" description="负责人/老板30%＋同事70%，全部完成后发布">
     <dl className="pf-collaboration-progress" aria-label="协同评分待完成人数">
      <div>
@@ -220,7 +220,7 @@ export function PerformanceResults({scoreFocus}:{scoreFocus?:'quality'|'collabor
      {tab==='review'&&<>
       {scoreFocus!=='quality'&&<p className="pf-review-hint">月度最终分＝负责人或老板评分30%＋同事互评均分70%，两部分完成后自动发布。</p>}
       <div className="pf-confirm-list">
-       {scoreFocus!=='collaboration'&&<MonthlyQualityResultRow key={detailKey} quality={selected.quality} target={{userId:selected.userId,month,onUpdated:reloadOverview}}/>}
+       {scoreFocus!=='collaboration'&&<MonthlyQualityResultRow key={detailKey} quality={selected.quality}/>}
        {kinds.filter(([kind])=>kind!=='quality').map(([kind,label])=>{
         const saved=locked(kind),value=kind==='timeliness'?saved?.result.rate:saved?.result.score,ready=value!=null;
         const note=kind==='timeliness'?'按原始提交时间自动统计，无需审核或确认':'负责人或老板30%＋同事70%，全部必需评分完成后自动发布';
@@ -238,13 +238,13 @@ export function PerformanceResults({scoreFocus}:{scoreFocus?:'quality'|'collabor
       </div>
       {reportDetailsNeeded&&!loadedDetail?detailPlaceholder:<div className="pf-evidence-list">
        {reportRows.map(report=><div key={report.id+':'+(report.qualityReviewVersion||'')} hidden={reportWeekNumber(report.end)!==activeReportWeek}>
-        <ManagedQualityReport report={report} userId={selected.userId} month={month} editable={!selectedQuality.confirmed} onUpdated={reloadOverview}/>
+        <ManagedQualityReport report={report} userId={selected.userId} month={month} editable={!isMonthlyQualityReviewLocked(selected.quality)} onUpdated={reloadOverview}/>
        </div>)}
        {!hasReportsForWeek&&<ResultEmpty title="本周暂无周报记录" description="请选择其他周次查看。"/>}
       </div>}
      </>}
      {tab==='collaboration'&&(collaborationDetailsNeeded&&!loadedDetail?detailPlaceholder:<CollaborationScoreDetails cycles={collaborationRows} employeeUserId={selected.userId} progress={selected.managerProgress}/>)}
-     {tab==='history'&&<div className="pf-evidence-list">{published.filter((x:any)=>x.employee_user_id===selected.userId).map((x:any)=>{const snapshot=x.evidenceSummary??JSON.parse(x.evidence_json);return <article className="pf-evidence" key={x.kind}><div className="pf-evidence-head"><h4><History size={16}/>{kinds.find(([k])=>k===x.kind)?.[1]}</h4><ResultStatus confirmed label={x.scoring_rule==='management_confirmed'?'管理人员已确认':x.scoring_rule==='automatic_report'?'系统自动生成':'已发布'}/></div><dl className="pf-audit"><div><dt>最终结果</dt><dd>{x.result.score!=null?`${scoreText(x.result.score)} 分`:x.kind==='quality'?'等待 AI 分析':`准时率 ${scoreText(x.result.rate)}${x.result.rate!=null?'%':''}`}</dd></div><div><dt>确认人或生成方式</dt><dd>{x.confirmed_by}</dd></div><div><dt>结果时间</dt><dd>{qualityDate(x.confirmed_at)}</dd></div><div><dt>记录说明</dt><dd>{snapshot.reviewNote||'—'}</dd></div>{x.kind==='quality'&&snapshot.qualityCandidate!=null&&<div><dt>候选 → 最终</dt><dd>{scoreText(snapshot.qualityCandidate)} → {scoreText(x.result.score)}</dd></div>}{x.kind==='timeliness'&&x.scoring_rule==='legacy'&&<><div><dt>正当理由</dt><dd>{snapshot.legitimateReason||'无'}</dd></div><div><dt>人工确认扣分</dt><dd>{snapshot.deduction??0} 分</dd></div></>}</dl><DeferredEvidence key={month+':'+x.employee_user_id+':'+x.kind} label="查看结果计算依据" url={'/api/performance/result-evidence?month='+encodeURIComponent(month)+'&employeeId='+encodeURIComponent(x.employee_user_id)+'&kind='+encodeURIComponent(x.kind)+'&confirmedAt='+encodeURIComponent(x.confirmed_at)+'&rule='+encodeURIComponent(x.scoring_rule)} initialValue={x.evidenceDeferred?undefined:snapshot}/></article>;})}{!published.some((x:any)=>x.employee_user_id===selected.userId)&&<ResultEmpty title="暂无结果记录" description="管理人员确认质量分后，可在这里查看最终分和审核依据。"/>}</div>}
+     {tab==='history'&&<div className="pf-evidence-list">{published.filter((x:any)=>x.employee_user_id===selected.userId).map((x:any)=>{const snapshot=x.evidenceSummary??JSON.parse(x.evidence_json),automaticQuality=x.kind==='quality'&&(x.result.publicationMode==='automatic'||x.scoring_rule==='automatic_report');return <article className="pf-evidence" key={x.kind}><div className="pf-evidence-head"><h4><History size={16}/>{kinds.find(([k])=>k===x.kind)?.[1]}</h4><ResultStatus confirmed label={automaticQuality?'已自动生成':x.scoring_rule==='management_confirmed'?'历史人工确认':x.scoring_rule==='automatic_report'?'系统自动生成':'已发布'}/></div><dl className="pf-audit"><div><dt>最终结果</dt><dd>{x.result.score!=null?`${scoreText(x.result.score)} 分`:x.kind==='quality'?'等待 AI 分析':`准时率 ${scoreText(x.result.rate)}${x.result.rate!=null?'%':''}`}</dd></div><div><dt>{automaticQuality?'生成方式':'确认人或生成方式'}</dt><dd>{x.confirmed_by|| (automaticQuality?'系统自动计算':'—')}</dd></div><div><dt>{automaticQuality?'生成时间':'结果时间'}</dt><dd>{qualityDate(x.confirmed_at)}</dd></div><div><dt>记录说明</dt><dd>{snapshot.reviewNote||'—'}</dd></div>{x.kind==='quality'&&snapshot.qualityCandidate!=null&&<div><dt>{automaticQuality?'汇总均分 → 最终':'候选 → 最终'}</dt><dd>{scoreText(snapshot.qualityCandidate)} → {scoreText(x.result.score)}</dd></div>}{x.kind==='timeliness'&&x.scoring_rule==='legacy'&&<><div><dt>正当理由</dt><dd>{snapshot.legitimateReason||'无'}</dd></div><div><dt>人工确认扣分</dt><dd>{snapshot.deduction??0} 分</dd></div></>}</dl><DeferredEvidence key={month+':'+x.employee_user_id+':'+x.kind} label="查看结果计算依据" url={'/api/performance/result-evidence?month='+encodeURIComponent(month)+'&employeeId='+encodeURIComponent(x.employee_user_id)+'&kind='+encodeURIComponent(x.kind)+'&confirmedAt='+encodeURIComponent(x.confirmed_at)+'&rule='+encodeURIComponent(x.scoring_rule)} initialValue={x.evidenceDeferred?undefined:snapshot}/></article>;})}{!published.some((x:any)=>x.employee_user_id===selected.userId)&&<ResultEmpty title="暂无结果记录" description="月度质量分自动生成后，可在这里查看最终分和计算依据；历史人工结果保留原记录。"/>}</div>}
     </div> : <ResultEmpty title={explicitTarget?"未找到指定员工的月度数据":"本月暂无结果数据"} description={explicitTarget?(matchingNames.length>1?"存在同名员工，请从左侧按部门选择要查看的人员。":"请核对员工身份和月份，或从左侧选择人员；系统不会自动打开其他员工。"):"同步周报或完成评分后，可在这里查看月度结果。"}/>}
    </div>
   </section>
