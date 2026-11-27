@@ -1,3 +1,4 @@
+import {isPeersOnly} from '../lib/collaborationPolicy';
 import { useEffect, useMemo, useState } from "react";
 import { AppSelect } from "../components/AppSelect";
 import { CheckCircle2, ClipboardList, Send, SlidersHorizontal, Trophy, UsersRound } from "lucide-react";
@@ -73,6 +74,7 @@ export function ScoresPage({ visibleEmployees = [], access }: ScoresPageProps) {
   const [launchMessage, setLaunchMessage] = useState("");
   const visibleNames = useMemo(() => new Set(visibleEmployees.map((employee) => employee.name).filter(Boolean)), [visibleEmployees]);
   const currentCycle = apiLoaded ? apiCycle : currentScoring360Cycle;
+  const peerOnly = isPeersOnly(String((currentCycle as any)?.startDate||(currentCycle as any)?.start_date||new Date().toLocaleDateString('sv-SE',{timeZone:'Asia/Shanghai'})).slice(0,7));
   const weeklyEmployees = visibleNames.size > 0
     ? appData.employeeSummary.filter((employee) => visibleNames.has(employee.name))
     : appData.employeeSummary;
@@ -291,8 +293,8 @@ export function ScoresPage({ visibleEmployees = [], access }: ScoresPageProps) {
               </div>
               <div>
                 <span>月度合分</span>
-                <strong>负责人／老板 30% + 同事互评 70%</strong>
-                <p>两部分全部评分并填写评价后自动发布月度最终分，无需管理员或老板再次确认；旧版历史记录保留原口径。</p>
+                <strong>{peerOnly?'同事互评100%':'负责人／老板30%＋同事互评70%'}</strong>
+                <p>{peerOnly?'全部必要同事互评完成后自动发布月度最终分，无需负责人或老板另行评分；旧版历史记录保留原口径。':'两部分评分全部完成后自动发布月度最终分，无需再次确认；旧版历史记录保留原口径。'}</p>
               </div>
             </div>
             {launchMessage ? <p className={launchState === "error" ? "form-error" : "settings-success"}>{launchMessage}</p> : null}

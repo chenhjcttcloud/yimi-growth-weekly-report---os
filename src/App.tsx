@@ -69,8 +69,8 @@ export function App() {
     const bossScoringEntry=page==='scores'&&currentAccess.role==='boss'&&!externalView;
     if((page!==activePage||bossScoringEntry)&&!window.dispatchEvent(new Event('organization-before-leave',{cancelable:true})))return;
     if(bossScoringEntry){
-      rememberLocation('scoreTab','leaders');
-      window.dispatchEvent(new Event('score-leaders-target'));
+      rememberLocation('scoreTab','results');
+      window.dispatchEvent(new Event('score-result-target'));
     }
     setActivePage(page);
   }

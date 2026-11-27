@@ -19,14 +19,20 @@ const hasScore=(assignment:Assignment)=>{
  return (typeof value==='number'||typeof value==='string'&&value.trim()!=='')&&Number.isFinite(Number(value))&&Number(value)>=0&&Number(value)<=100;
 };
 
-export function ManagerScoreSummary({progress}:{progress:ManagerProgress}){
+export function ManagerScoreSummary({progress,peerOnly=false,saved}:{progress:ManagerProgress;peerOnly?:boolean;saved?:any}){
+ if(peerOnly)return null;
+ const validScore=(value:unknown)=>(typeof value==='number'||typeof value==='string'&&value.trim()!=='')&&Number.isFinite(Number(value))&&Number(value)>=0&&Number(value)<=100;
+ if(saved&&['weighted_30_70','legacy'].includes(saved.scoring_rule)&&validScore(saved.result?.score)){
+  const score=saved.result?.managerScore;
+  return <p className="pf-notice">{validScore(score)?<>历史30%评分 · {scoreText(Number(score))} 分</>:'历史30%分项未保存'}</p>;
+ }
  return <p className="pf-notice">{progress.kind==='boss'?'老板':'负责人'}评分（30%）：{progress.submitted}/{progress.expected} 已完成 · {scoreText(progress.score)} 分。{progress.handoffRequired?'原负责人已停用或身份缺失，请到「系统设置 → 月度评分交接」指定接任负责人。':!progress.expected&&'请先同步飞书部门负责人或直属上级。'}</p>;
 }
 
-export function CollaborationScoreDetails({cycles,employeeUserId,progress}:{cycles:Cycle[];employeeUserId:string;progress:ManagerProgress}){
+export function CollaborationScoreDetails({cycles,employeeUserId,progress,peerOnly=false,saved}:{cycles:Cycle[];employeeUserId:string;progress:ManagerProgress;peerOnly?:boolean;saved?:any}){
  return <div className="pf-evidence-list">
-  <ManagerScoreSummary progress={progress}/>
-  <p className="pf-caption"><strong>同事互评（70%）</strong>按本月有效配评记录计算。老板仅负责30%，不参与70%同事互评。</p>
+  <ManagerScoreSummary progress={progress} peerOnly={peerOnly} saved={saved}/>
+  <p className="pf-caption"><strong>同事互评（{peerOnly?'100%':'70%'}）</strong>按本月有效配评记录计算。老板不参与同事互评。</p>
   {cycles.map(cycle=>{
    const assignments=cycle.assignments.filter(assignment=>assignment.evaluee_user_id===employeeUserId);
    const submitted=assignments.filter(hasScore).length;

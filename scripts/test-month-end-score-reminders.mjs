@@ -51,12 +51,17 @@ time=new Date('2026-10-30T02:00:00Z');assert.deepEqual(await service.tick(),{sen
 assert.equal(run("SELECT count(*) AS n FROM monthly_score_reminder_deliveries WHERE status='sent';",true)[0].n,4);
 
 // A fresh month automatically resolves new pending tasks and a new daily key.
-time=new Date('2026-11-26T02:00:00Z');assert.equal((await service.tick()).skipped,'not_due');time=new Date('2026-11-30T02:00:00Z');await service.tick();assert(calls.at(-1).text.includes('2026-11'));assert.equal(calls.at(-1).id,'head');assert(calls.some(c=>c.id==='boss'&&c.text.includes('2026-11')));
+run(`INSERT INTO employees(user_id,name,department,is_active) VALUES('boss','老板','管理',1);
+ INSERT INTO scoring360_cycles(id,label,start_date,end_date,status,launch_at) VALUES('nov','十一月','2026-11-01','2026-11-30','open','2026-11-30T00:00:00Z'),('dec','十二月','2026-12-01','2026-12-31','open','2026-12-30T00:00:00Z');
+ INSERT INTO scoring360_assignments(id,cycle_id,evaluee_name,evaluator_name,evaluee_user_id,evaluator_user_id) VALUES
+ ('nov-peer','nov','员工','负责人','staff','head'),('nov-old-boss','nov','员工','老板','staff','boss'),('nov-old-self','nov','员工','员工','staff','staff'),('dec-peer','dec','员工','负责人','staff','head');`);
+const novemberPreview=await service.preview('2026-11');assert.deepEqual(novemberPreview.recipients.map(recipient=>[recipient.userId,recipient.counts]),[['head',{peer:1,manager:0,boss:0}]],'new month only reminds valid peer raters, not boss/self or former thirty-percent tasks');
+time=new Date('2026-11-26T02:00:00Z');assert.equal((await service.tick()).skipped,'not_due');time=new Date('2026-11-30T02:00:00Z');await service.tick();assert(calls.at(-1).text.includes('2026-11'));assert.equal(calls.at(-1).id,'head');assert(!calls.some(c=>c.id==='boss'&&c.text.includes('2026-11')));assert(calls.at(-1).text.includes('100%'));assert(!/下属月度评分|部门负责人评分|30%|70%/.test(calls.at(-1).text));
 
 // A process interrupted after reservation must not resend an uncertain delivery.
 time=new Date('2026-11-30T02:20:00Z');const beforeRestart=calls.length;
-run("UPDATE monthly_score_reminder_deliveries SET status='pending',updated_at='2026-11-30T02:00:00.000Z' WHERE month='2026-11' AND recipient_user_id='boss';");
-await createMonthEndScoreReminders(options).tick();assert.equal(calls.length,beforeRestart);assert.equal(run("SELECT status FROM monthly_score_reminder_deliveries WHERE month='2026-11' AND recipient_user_id='boss';",true)[0].status,'uncertain');
+run("UPDATE monthly_score_reminder_deliveries SET status='pending',updated_at='2026-11-30T02:00:00.000Z' WHERE month='2026-11' AND recipient_user_id='head';");
+await createMonthEndScoreReminders(options).tick();assert.equal(calls.length,beforeRestart);assert.equal(run("SELECT status FROM monthly_score_reminder_deliveries WHERE month='2026-11' AND recipient_user_id='head';",true)[0].status,'uncertain');
 
 // Completing after reservation must cancel the delivery before any network call.
 time=new Date('2026-12-30T02:00:00Z');const before=calls.length;

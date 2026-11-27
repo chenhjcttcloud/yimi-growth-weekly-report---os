@@ -1,3 +1,4 @@
+import {isPeersOnly} from '../lib/collaborationPolicy';
 import {BossLeaderScoringPanel} from './BossLeaderScoringPanel';
 import {useEffect,useState} from 'react';
 import {OrganizationEditor} from './OrganizationEditor';
@@ -11,8 +12,9 @@ export function LegacyDepartmentScoreManagement({mode='scores'}:{mode?:'all'|'or
  const [month,setMonth]=useState(new Date().toLocaleDateString('sv-SE',{timeZone:'Asia/Shanghai'}).slice(0,7));
  async function load(){try{const r=await fetch('/api/departments?month='+month);if(!r.ok)throw Error();setData(await r.json());}catch{setMessage('部门数据加载失败，请刷新重试');}}
  useEffect(()=>{void load();},[month]);
- async function post(path:string,body:any){setBusy(true);setMessage('');try{const r=await fetch('/api/departments/'+path,{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify(body)});const j=await r.json();if(!r.ok)throw Error(errors[j.error]||'保存失败，请检查输入');setMessage(path==='score'?'老板评分已保存，占30%；同事互评完成后自动合成最终分':'部门配置已保存');setName('');if(path==='save')setDraft({});await load();}catch(e){setMessage(e instanceof Error?e.message:'保存失败');}finally{setBusy(false);}}
+ async function post(path:string,body:any){if(path==='score'&&isPeersOnly(month,data))return;setBusy(true);setMessage('');try{const r=await fetch('/api/departments/'+path,{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify(body)});const j=await r.json();if(!r.ok)throw Error(errors[j.error]||'保存失败，请检查输入');setMessage(path==='score'?'老板评分已保存，占30%；同事互评完成后自动合成最终分':'部门配置已保存');setName('');if(path==='save')setDraft({});await load();}catch(e){setMessage(e instanceof Error?e.message:'保存失败');}finally{setBusy(false);}}
  if(!data)return <p>{message||'正在加载部门…'}</p>;
+ if(mode!=='organization'&&isPeersOnly(month,data))return <BossLeaderScoringPanel month={month}/>;
  const historicalDepartments=(data.archivedDepartments||[]).map((department:any)=>({...department,records:data.scores.filter((score:any)=>score.department_id===department.id&&score.month===month)})).filter((department:any)=>department.records.length);
  return <article className="panel department-management"><div className="v2-card-head"><div><h3>{mode==='scores'?'负责人月度评分':'部门与负责人'}</h3><p className="pf-caption">{mode==='organization'?'成员归属由飞书同步，可在这里配置上级部门与在职负责人。':'老板评分占部门负责人月度最终分的30%，同事互评占70%；两部分完成后自动合成发布。'}</p></div>{mode!=='organization'&&<input type="month" aria-label="部门评分月份" disabled={busy} value={month} onChange={e=>setMonth(e.target.value)}/>}</div>
  {mode!=='scores'&&<form className="pf-form" onSubmit={e=>{e.preventDefault();void post('save',{name});}}><label>新增部门<input value={name} required maxLength={80} onChange={e=>setName(e.target.value)} placeholder="部门名称"/></label><button className="primary-button" disabled={busy}>新增部门</button></form>}

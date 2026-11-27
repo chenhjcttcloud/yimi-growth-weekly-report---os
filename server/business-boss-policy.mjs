@@ -60,7 +60,7 @@ export function createBusinessBossPolicy({query, exec, sql, fallbackMembers = ()
   function selection(scope) {
     return `SELECT a.id AS assignment_id,a.cycle_id,substr(c.start_date,1,7) AS month,a.evaluee_user_id,a.evaluator_user_id,COALESCE(a.status,'active') AS status,
       (SELECT COUNT(*) FROM scoring360_responses r WHERE r.assignment_id=a.id) AS response_count,
-      ((SELECT COUNT(*) FROM all_monthly_weighted_results w WHERE w.month=substr(c.start_date,1,7) AND w.employee_user_id=a.evaluee_user_id)
+      ((SELECT COUNT(*) FROM all_collaboration_results w WHERE w.month=substr(c.start_date,1,7) AND w.employee_user_id=a.evaluee_user_id)
        +(SELECT COUNT(*) FROM performance_results p WHERE p.month=substr(c.start_date,1,7) AND p.employee_user_id=a.evaluee_user_id AND p.kind='collaboration')) AS published_count
       FROM scoring360_assignments a JOIN scoring360_cycles c ON c.id=a.cycle_id
       WHERE substr(c.start_date,1,7) IN (${scope.months.map(sql).join(',')}) AND a.evaluator_user_id IN (${scope.businessBossUserIds.map(sql).join(',')}) ORDER BY a.id`;
@@ -122,7 +122,7 @@ export function createBusinessBossPolicy({query, exec, sql, fallbackMembers = ()
         UPDATE scoring360_assignments SET status='inactive',updated_at=${sql(createdAt)}
         WHERE id IN (${candidateIds}) AND COALESCE(status,'active')='active' AND ${owned}
           AND NOT EXISTS(SELECT 1 FROM scoring360_responses r WHERE r.assignment_id=scoring360_assignments.id)
-          AND NOT EXISTS(SELECT 1 FROM scoring360_cycles c JOIN all_monthly_weighted_results w ON w.month=substr(c.start_date,1,7) WHERE c.id=scoring360_assignments.cycle_id AND w.employee_user_id=scoring360_assignments.evaluee_user_id)
+          AND NOT EXISTS(SELECT 1 FROM scoring360_cycles c JOIN all_collaboration_results w ON w.month=substr(c.start_date,1,7) WHERE c.id=scoring360_assignments.cycle_id AND w.employee_user_id=scoring360_assignments.evaluee_user_id)
           AND NOT EXISTS(SELECT 1 FROM scoring360_cycles c JOIN performance_results p ON p.month=substr(c.start_date,1,7) WHERE c.id=scoring360_assignments.cycle_id AND p.employee_user_id=scoring360_assignments.evaluee_user_id AND p.kind='collaboration');
         COMMIT;`);
       const applied = await previousApply(auditId);

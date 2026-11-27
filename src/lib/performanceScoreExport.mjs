@@ -26,34 +26,59 @@ function qualityValues(row) {
     countValue(quality.expectedCount), countValue(quality.analyzedCount), countValue(quality.pendingAnalysis), note, row.userId];
 }
 
-function collaborationValues(row, saved) {
+function collaborationRule(row, saved) {
+  if (scoreValue(saved?.result?.score) !== null) {
+    if (saved.scoring_rule === 'peers_100') return 'peers_100';
+    if (saved.scoring_rule === 'weighted_30_70') return 'weighted_30_70';
+    return 'legacy';
+  }
+  return row.collaborationPolicy?.rule === 'peers_100' || row.collaborationRule === 'peers_100' ? 'peers_100' : 'weighted_30_70';
+}
+
+function collaborationValues(row, saved, peerColumnsOnly) {
   const finalScore = scoreValue(saved?.result?.score), published = finalScore !== null;
-  // A legacy final is authoritative even when its original component scores
-  // were never archived. Present-day assignments cannot explain that result.
-  const legacy = published && saved.scoring_rule !== 'weighted_30_70';
+  const rule = collaborationRule(row, saved), peerOnly = rule === 'peers_100', legacy = rule === 'legacy';
   const manager = row.managerProgress || {};
-  const managerExpected = legacy ? null : countValue(manager.expected), managerSubmitted = legacy ? null : countValue(manager.submitted);
+  const managerAvailable = !legacy && !peerOnly && !['none', 'not_required'].includes(manager.kind) && manager.required !== false;
+  const managerExpected = managerAvailable ? countValue(manager.expected) : null;
+  const managerSubmitted = managerAvailable ? countValue(manager.submitted) : null;
   const peerExpected = legacy ? null : countValue(row.collaborationExpected), peerSubmitted = legacy ? null : countValue(row.collaborationSubmitted);
-  const managerScore = published ? legacy ? null : scoreValue(saved.result.managerScore) : scoreValue(manager.score);
-  const peerScore = published ? legacy ? null : scoreValue(saved.result.peerScore) : scoreValue(row.peerCandidate);
+  const managerScore = legacy || peerOnly ? null : published ? scoreValue(saved.result.managerScore) : scoreValue(manager.score);
+  const peerScore = legacy ? null : published ? scoreValue(saved.result.peerScore) : scoreValue(row.peerCandidate);
   let status = legacy ? '历史已发布' : published ? '已发布' : '待评分';
   if (!published) {
-    if (manager.handoffRequired) status = '待评分交接';
+    if (peerOnly) status = !peerExpected ? '待配评' : row.peerComplete ? '待自动发布' : '待评分';
+    else if (manager.handoffRequired) status = '待评分交接';
     else if (managerExpected === 0 && peerExpected === 0) status = '暂无评分数据';
     else if (!managerExpected || !peerExpected) status = '待配评';
     else if (manager.complete && row.peerComplete) status = '待自动发布';
   }
-  const note = legacy ? '历史原分；缺失分项留空，不按新口径重算。' : published ? '使用已保存的最终分和分项；缺失分项留空。' : manager.handoffRequired ? '30%责任待交接，最终分留空。' : '互评均分仅供参考；两部分完成后发布。';
-  return [...baseValues(row), finalScore, status, legacy ? '历史原值' : '负责人或老板30%＋同事70%', managerScore,
-    legacy ? null : manager.kind === 'boss' ? '老板' : manager.kind === 'manager' ? '负责人' : '未配置',
-    managerSubmitted, managerExpected, missing(managerExpected, managerSubmitted), peerScore, peerSubmitted, peerExpected, missing(peerExpected, peerSubmitted),
-    note, row.userId];
+  const note = legacy ? '历史原分；缺失分项留空，不按新口径重算。'
+    : peerOnly ? published ? '已保存的同事互评最终分；计分口径为100%同事互评。' : '全部必要同事互评完成后自动发布；未完成的互评均分仅供参考。'
+    : published ? '历史已保存的最终分和30%／70%分项；缺失分项留空。' : manager.handoffRequired ? '30%责任待交接，最终分留空。' : '互评均分仅供参考；两部分完成后发布。';
+  const values = [...baseValues(row), finalScore, status, legacy ? '历史原值' : peerOnly ? '同事互评100%' : '负责人或老板30%＋同事70%'];
+  if (!peerColumnsOnly) values.push(managerScore, legacy || peerOnly ? null : manager.kind === 'boss' ? '老板' : manager.kind === 'manager' ? '负责人' : manager.kind === 'none' ? null : '未配置', managerSubmitted, managerExpected, missing(managerExpected, managerSubmitted));
+  values.push(peerScore, peerSubmitted, peerExpected, missing(peerExpected, peerSubmitted), note, row.userId);
+  return values;
 }
 
 const qualityColumns = [...baseColumns, score('月度质量最终分'), score('AI质量均分'), score('已完成分析均分'), text('质量状态', 24),
   count('应交周报数'), count('已交周报数'), count('缺交周报数'), count('计入质量周报数'), count('已分析周报数'), count('待分析周报数'), text('状态说明', 54), text('员工ID', 25)];
 const collaborationColumns = [...baseColumns, score('月度综合最终分'), text('评分状态', 18), text('计分口径', 29), score('负责人或老板评分（30%）'), text('30%评分角色', 18),
   count('30%已评数'), count('30%应评数'), count('30%缺评数'), score('同事互评均分（70%）'), count('同事已评数'), count('同事应评数'), count('同事缺评数'), text('状态说明', 58), text('员工ID', 25)];
+
+
+const peerCollaborationColumns = [...baseColumns, score('月度综合最终分'), text('评分状态', 18), text('计分口径', 24),
+  score('同事互评均分（100%）'), count('同事已评数'), count('同事应评数'), count('同事缺评数'), text('状态说明', 58), text('员工ID', 25)];
+const mixedCollaborationColumns = collaborationColumns.map(column => ({...column, title: column.title === '同事互评均分（70%）' ? '同事互评均分' : column.title === '负责人或老板评分（30%）' ? '历史负责人或老板评分（30%）' : column.title.startsWith('30%') ? '历史' + column.title : column.title}));
+function collaborationSheet(selected, results, month) {
+  const saved = row => results.find(result => result.month === month && result.employee_user_id === row.userId && result.kind === 'collaboration');
+  const rules = selected.map(row => collaborationRule(row, saved(row)));
+  const allPeers = rules.every(rule => rule === 'peers_100');
+  const mixed = !allPeers && rules.includes('peers_100');
+  const columns = allPeers ? peerCollaborationColumns : mixed ? mixedCollaborationColumns : collaborationColumns;
+  return {name: titles.collaboration, columns: columns.map(column => ({...column})), rows: selected.map(row => collaborationValues(row, saved(row), allPeers))};
+}
 
 function filenamePart(value) {
   const part = String(value).replace(/[\u0000-\u001f\u007f\\/:*?"<>|]/g, '_').trim().replace(/[. ]+$/g, '');
@@ -72,6 +97,6 @@ export function buildPerformanceScoreExport({kind, month, rows, results, employe
   if (wanted.some(id => !byId.has(id))) throw Error('stale_score_export_selection');
   const selected = wanted.map(id => byId.get(id)), sheets = [];
   if (kind !== 'collaboration') sheets.push({name: titles.quality, columns: qualityColumns.map(column => ({...column})), rows: selected.map(qualityValues)});
-  if (kind !== 'quality') sheets.push({name: titles.collaboration, columns: collaborationColumns.map(column => ({...column})), rows: selected.map(row => collaborationValues(row, results.find(result => result.month === month && result.employee_user_id === row.userId && result.kind === 'collaboration')))});
+  if (kind !== 'quality') sheets.push(collaborationSheet(selected, results, month));
   return {fileName: `${titles[kind]}_${month}_${filenamePart(department || '全部部门')}${query.trim() ? '_筛选' : ''}.xlsx`, sheets, employeeCount: selected.length};
 }

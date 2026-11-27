@@ -91,14 +91,17 @@ if(baselinePerformance&&baselineWorkspace){const baseline=harness(initialDb,base
 const db=path.join(directory,'scoped.sqlite');await copyFile(initialDb,db);
 const current=harness(db);
 const full=await current.performance.overview();
+assert.deepEqual(full.collaborationPolicy,{rule:'weighted_30_70',weights:{manager:30,peers:70},effectiveMonth:'2026-11'});
+assert(full.monthly.every(row=>row.collaborationPolicy.rule==='weighted_30_70'),'every fixture month predates the peer-only cutover');
 // The historical version treated automatic quality as a final result and
 // required peer comments. Compare the unaffected fields; assert both changed
 // contracts below against real scoped and global SQL calculations.
-function unaffectedOverview({monthly,results,collaborations,...view}){
- return {...view,collaborations:collaborations.map(({submitted,pending,...cycle})=>cycle),monthly:monthly.map(({quality,qualityCandidate,collaborationSubmitted,reports,...row})=>({...row,reports:reports.map(({aiCandidate,qualityExcluded,qualityReanalysisPending,qualityReviewVersion,qualityReviews,...report})=>report)})),results:results.filter(r=>r.kind!=='quality'||r.scoring_rule==='legacy').map(({month,employee_user_id,employee_name,kind,result,scoring_rule})=>({month,employee_user_id,employee_name,kind,result,scoring_rule}))};
+function unaffectedOverview({monthly,results,collaborations,collaborationPolicy,...view}){
+ return {...view,collaborations:collaborations.map(({submitted,pending,...cycle})=>cycle),monthly:monthly.map(({quality,qualityCandidate,collaborationSubmitted,collaborationPolicy,collaborationRule,reports,...row})=>({...row,reports:reports.map(({aiCandidate,qualityExcluded,qualityReanalysisPending,qualityReviewVersion,qualityReviews,...report})=>report)})),results:results.filter(r=>r.kind!=='quality'||r.scoring_rule==='legacy').map(({month,employee_user_id,employee_name,kind,result,scoring_rule})=>({month,employee_user_id,employee_name,kind,result,scoring_rule}))};
 }
-function unaffectedWorkspace({history,rollingQuality,rollingMonths,weeks,...workspace}){
- return {...workspace,weeks:weeks.map(({qualityCandidate,...week})=>week),history:history.map(({quality,qualityStatus,monthlyQuality,...row})=>row)};
+function unaffectedWorkspace({history,rollingQuality,rollingMonths,weeks,collaborationPolicy,ratingProgress,...workspace}){
+ const {collaborationPolicy:ignored,...progress}=ratingProgress||{};
+ return {...workspace,ratingProgress:progress,weeks:weeks.map(({qualityCandidate,...week})=>week),history:history.map(({quality,qualityStatus,monthlyQuality,collaborationPolicy,...row})=>row)};
 }
 if(globalBefore)assert.deepEqual(unaffectedOverview(full),unaffectedOverview(globalBefore),'the global overview preserves fields outside quality publication and optional peer comments');
 current.reset();assert.deepEqual(await current.performance.overview(),full,'default global/full remains stable on repeated reads');
@@ -134,8 +137,8 @@ for(const entry of current.log.queries){
  if(q.startsWith('SELECT * FROM employee_employment_periods WHERE'))assert(q.includes("employee_user_id='a'"));
  if(q.startsWith('SELECT a.*,r.score'))assert(q.includes("a.evaluee_user_id='a'"));
  if(q.includes('AS scoring_rule')&&q.includes('FROM performance_results')){
-  if(q.includes('ORDER BY month DESC'))for(const alias of ['p','w','a'])assert(q.includes(`${alias}.employee_user_id='a'`));
-  else {assert.equal((q.match(/WHERE employee_user_id='a'/g)||[]).length,2);assert(q.includes("a.employee_user_id='a'"));}
+  if(q.includes('ORDER BY month DESC'))for(const alias of ['p','w','n','a'])assert(q.includes(`${alias}.employee_user_id='a'`));
+  else {assert.equal((q.match(/WHERE employee_user_id='a'/g)||[]).length,3);assert(q.includes("a.employee_user_id='a'"));}
  }
 }
 current.reset();
@@ -167,7 +170,7 @@ function assertHistoryMatchesOverview(personal,view){
    assert.equal(entry.qualityStatus,summary.status);
   }
  }
- assert.deepEqual(personal.ratingProgress,monthly.map(row=>({month:row.month,peerComplete:row.peerComplete,managerKind:row.managerProgress.kind,managerExpected:row.managerProgress.expected,managerSubmitted:row.managerProgress.submitted,managerComplete:row.managerProgress.complete})));
+ assert.deepEqual(personal.ratingProgress,monthly.map(row=>({month:row.month,collaborationPolicy:row.collaborationPolicy,peerComplete:row.peerComplete,managerKind:row.managerProgress.kind,managerExpected:row.managerProgress.expected,managerSubmitted:row.managerProgress.submitted,managerComplete:row.managerProgress.complete})));
  const scores=personal.history.map(row=>row.quality).filter(score=>score!==null).slice(0,3);
  assert.equal(personal.rollingMonths,scores.length);
  assert.equal(personal.rollingQuality,scores.length?Math.round(scores.reduce((sum,score)=>sum+score,0)/scores.length*10)/10:null);

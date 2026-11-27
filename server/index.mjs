@@ -2,6 +2,7 @@ import {createEmployeeIdentity,resolveFeishuLogin} from './employee-identity.mjs
 import {createHistoricalReportArchive} from './historical-report-archive.mjs';
 import {createLegacyReportSnapshot} from './legacy-report-snapshot.mjs';
 import {createProductManagementScoreApi,PRODUCT_MANAGEMENT_SCORE_PATH} from './product-management-score-api.mjs';
+import {collaborationPolicy} from './collaboration-policy.mjs';
 import {decodeAutomaticEvidence} from './automatic-evidence-storage.mjs';
 import {createFeishuDepartmentSync} from './feishu-department-sync.mjs';
 import {createLiveReportSync} from './live-report-sync.mjs';
@@ -527,7 +528,7 @@ async function route(req, res) {
       if(req.headers.origin&&new URL(req.headers.origin).host!==req.headers.host)return sendJson(res,403,{ok:false,error:'invalid_origin'});
       const body=await readJsonBody(req,{limitBytes:8000}),result=await managerReviews.handoff(body,userForPolicy);await systemSettings.audit(userForPolicy,'月度评分任务已交接',{month:body.month,employeeUserId:body.employeeUserId,from:body.fromUserId,to:body.toUserId,reason:body.reason});
       return sendJson(res,200,{ok:true,...result});
-    }catch(error){return sendJson(res,409,{ok:false,error:['invalid_month','employee_not_employed','handoff_reason_required','handoff_not_required','invalid_handoff_manager','result_locked'].includes(error.message)?error.message:'handoff_failed'});}
+    }catch(error){return sendJson(res,409,{ok:false,error:['collaboration_peer_only','invalid_month','employee_not_employed','handoff_reason_required','handoff_not_required','invalid_handoff_manager','result_locked'].includes(error.message)?error.message:'handoff_failed'});}
   }
   if(url.pathname==='/api/manager-reviews'){
     if(!userForPolicy||isExternalSession(sessionForPolicy))return sendJson(res,401,{ok:false,error:'unauthorized'});
@@ -541,7 +542,7 @@ async function route(req, res) {
         return sendJson(res,200,{ok:true});
       }
       return sendJson(res,405,{ok:false,error:'method_not_allowed'});
-    }catch(error){const known=['scoring_cycle_not_open','invalid_month','employee_not_employed','employee_inactive','score_and_comment_required','self_scoring_forbidden','not_your_subordinate','result_locked'];return sendJson(res,error.message==='not_your_subordinate'?403:409,{ok:false,error:error.message.includes('UNIQUE')?'result_locked':known.includes(error.message)?error.message:'manager_review_failed'});}
+    }catch(error){const known=['collaboration_peer_only','scoring_cycle_not_open','invalid_month','employee_not_employed','employee_inactive','score_and_comment_required','self_scoring_forbidden','not_your_subordinate','result_locked'];return sendJson(res,error.message==='not_your_subordinate'?403:409,{ok:false,error:error.message.includes('UNIQUE')?'result_locked':known.includes(error.message)?error.message:'manager_review_failed'});}
   }
   if(url.pathname.startsWith('/api/departments')) {
     if(!managerForPolicy)return sendJson(res,403,{ok:false,error:'manager_only'});
@@ -569,7 +570,7 @@ async function route(req, res) {
           const leaderUserId=await departments.score(body,userForPolicy);await performance.overview({clientSummary:true});await systemSettings.audit(userForPolicy,'老板负责人评分已提交',{leaderUserId,month:body.month});
         }else return sendJson(res,404,{ok:false,error:'not_found'});
         return sendJson(res,200,{ok:true});
-      }catch(error){const known=['scoring_cycle_not_open','rating_scope_frozen','rating_responsibility_changed','department_layout_conflict','department_removed','department_not_empty','department_inactive','department_sync_running','feishu_not_configured','department_permission_required','department_scope_required','department_scope_empty','department_names_permission_required','department_leader_user_id_required','department_leader_managed_by_feishu','department_ambiguous_names','department_incomplete_tree','department_invalid_pagination','department_upstream_failed','department_hierarchy_cycle','invalid_parent_department','invalid_department','leader_must_be_department_member','department_not_found','invalid_month','score_and_comment_required','department_leader_required','leader_inactive','leader_not_registered','employee_not_employed','account_inactive','self_scoring_forbidden','result_locked'];return sendJson(res,error.message==='account_inactive'?403:409,{ok:false,error:error.message.includes('UNIQUE')?'department_exists':known.includes(error.message)?error.message:'department_save_failed'});}finally{if(organizationMutation)organizationMutationRunning=false;}
+      }catch(error){const known=['collaboration_peer_only','scoring_cycle_not_open','rating_scope_frozen','rating_responsibility_changed','department_layout_conflict','department_removed','department_not_empty','department_inactive','department_sync_running','feishu_not_configured','department_permission_required','department_scope_required','department_scope_empty','department_names_permission_required','department_leader_user_id_required','department_leader_managed_by_feishu','department_ambiguous_names','department_incomplete_tree','department_invalid_pagination','department_upstream_failed','department_hierarchy_cycle','invalid_parent_department','invalid_department','leader_must_be_department_member','department_not_found','invalid_month','score_and_comment_required','department_leader_required','leader_inactive','leader_not_registered','employee_not_employed','account_inactive','self_scoring_forbidden','result_locked'];return sendJson(res,error.message==='account_inactive'?403:409,{ok:false,error:error.message.includes('UNIQUE')?'department_exists':known.includes(error.message)?error.message:'department_save_failed'});}finally{if(organizationMutation)organizationMutationRunning=false;}
     }
     return sendJson(res,405,{ok:false,error:'method_not_allowed'});
   }
@@ -695,15 +696,16 @@ async function route(req, res) {
     if (url.pathname === '/api/performance/result-evidence' && req.method === 'GET') {
       const month=url.searchParams.get('month'),employeeId=url.searchParams.get('employeeId'),kind=url.searchParams.get('kind');
       const confirmedAt=url.searchParams.get('confirmedAt'),rule=url.searchParams.get('rule');
-      if(!validMonth(month)||!validId(employeeId)||!['quality','timeliness','collaboration'].includes(kind)||confirmedAt&&confirmedAt.length>64||rule&&!['legacy','weighted_30_70','automatic_report','management_confirmed'].includes(rule))return sendJson(res,400,{ok:false,error:'invalid_result_identity'});
+      if(!validMonth(month)||!validId(employeeId)||!['quality','timeliness','collaboration'].includes(kind)||confirmedAt&&confirmedAt.length>64||rule&&!['legacy','weighted_30_70','peers_100','automatic_report','management_confirmed'].includes(rule))return sendJson(res,400,{ok:false,error:'invalid_result_identity'});
       if(!managerForPolicy&&(kind!=='quality'||!await canReviewQuality(employeeId)))return sendJson(res,403,{ok:false,error:'quality_scope_forbidden'});
       const where=`month=${sqlValue(month)} AND employee_user_id=${sqlValue(employeeId)} AND kind=${sqlValue(kind)}`;
       const fixed=confirmedAt?` AND confirmed_at=${sqlValue(confirmedAt)}`:'',automatic=confirmedAt?` AND calculated_at=${sqlValue(confirmedAt)}`:` AND a.rowid=(SELECT MAX(b.rowid) FROM automatic_performance_results b WHERE b.month=a.month AND b.employee_user_id=a.employee_user_id AND b.kind=a.kind)`;
       const manualMode=`json_extract(CASE WHEN json_valid(result_json) THEN result_json ELSE '{}' END,'$.publicationMode')`;
       const manualRule=rule==='management_confirmed'?` AND ${manualMode}='management_confirmation'`:rule==='legacy'?` AND COALESCE(${manualMode},'')<>'management_confirmation'`:rule?' AND 0':'';
+      const collaborationRule=rule==='peers_100'?` AND ${manualMode}='peers_only'`:rule==='weighted_30_70'?` AND COALESCE(${manualMode},'')<>'peers_only'`:rule?' AND 0':'';
       const records=await querySqlRows(`SELECT evidence_json FROM (
         SELECT evidence_json,0 AS priority,0 AS sequence FROM performance_results WHERE ${where}${fixed}${manualRule}
-        UNION ALL SELECT evidence_json,1 AS priority,0 AS sequence FROM all_monthly_weighted_results WHERE ${where}${fixed}${rule&&rule!=='weighted_30_70'?' AND 0':''}
+        UNION ALL SELECT evidence_json,1 AS priority,0 AS sequence FROM all_collaboration_results WHERE ${where}${fixed}${collaborationRule}
         UNION ALL SELECT evidence_json,2 AS priority,a.rowid AS sequence FROM automatic_performance_results a WHERE ${where}${automatic}${rule&&rule!=='automatic_report'?' AND 0':''}
       ) ORDER BY priority,sequence DESC LIMIT 1;`);
       return records.length?sendJson(res,200,{ok:true,detail:JSON.parse(decodeAutomaticEvidence(records[0].evidence_json))}):sendJson(res,404,{ok:false,error:'result_not_found'});
@@ -1945,7 +1947,7 @@ async function submitScoring360(req, res) {
     return;
   }
   const cycle = await loadScoring360Cycle(cycleId);
-  const published = await querySqlRows(`SELECT employee_user_id FROM performance_results WHERE kind='collaboration' AND month=${sqlValue(String(cycle?.startDate || '').slice(0,7))} UNION SELECT employee_user_id FROM all_monthly_weighted_results WHERE month=${sqlValue(String(cycle?.startDate || '').slice(0,7))};`);
+  const published = await querySqlRows(`SELECT employee_user_id FROM performance_results WHERE kind='collaboration' AND month=${sqlValue(String(cycle?.startDate || '').slice(0,7))} UNION SELECT employee_user_id FROM all_collaboration_results WHERE month=${sqlValue(String(cycle?.startDate || '').slice(0,7))};`);
   const publishedNames = new Set(published.map(row=>row.employee_user_id));
   const scoringMonth=String(cycle?.startDate||'').slice(0,7);
   const reviewWindow=scoringMonth?await monthlyScoringWindow.status(scoringMonth):null;
@@ -1981,6 +1983,7 @@ async function submitScoring360(req, res) {
       skipped.push({ assignmentId, reason: "assignment_not_found" });
       continue;
     }
+    if(assignment.evaluee_user_id===evaluatorUserId){skipped.push({assignmentId,reason:'self_scoring_forbidden'});continue;}
     if(Number(assignment.evaluee_active)===0){
       skipped.push({assignmentId,reason:'employee_inactive'});continue;
     }
@@ -1998,7 +2001,7 @@ async function submitScoring360(req, res) {
       WHERE NOT EXISTS(SELECT 1 FROM employees WHERE user_id IN (${sqlValue(assignment.evaluee_user_id)},${sqlValue(evaluatorUserId)}) AND is_active=0)
         AND (${monthlyScoringWindow.guardSql(scoringMonth,cycleId)})
         AND EXISTS(SELECT 1 FROM scoring360_cycles WHERE id=${sqlValue(cycleId)} AND status IN('open','active') AND julianday(launch_at)<=julianday(${sqlValue(new Date().toISOString())}))
-        AND EXISTS(SELECT 1 FROM scoring360_assignments WHERE id=${sqlValue(assignment.id)} AND COALESCE(status,'active')='active')
+        AND EXISTS(SELECT 1 FROM scoring360_assignments WHERE id=${sqlValue(assignment.id)} AND COALESCE(status,'active')='active' AND evaluee_user_id=${sqlValue(assignment.evaluee_user_id)} AND evaluator_user_id=${sqlValue(evaluatorUserId)} AND evaluee_user_id<>evaluator_user_id)
       ON CONFLICT(assignment_id) DO UPDATE SET
         score = excluded.score,
         comment = excluded.comment,
@@ -2390,7 +2393,8 @@ async function runScoring360Reminder({ cycleId, kind = "launch", dryRun = true, 
 }
 
 function buildScoring360ReminderMessage({ cycle, recipient, kind }) {
-  const weights = normalizeScoring360Weights(cycle);
+  const peerOnly=collaborationPolicy(String(cycle.startDate||cycle.start_date||cycle.monthKey||'').slice(0,7)).rule==='peers_100';
+  const formula=peerOnly?'月度最终分 = 本月全部必要同事互评的平均分（100%）。全部必要互评完成后自动发布，无需人工确认。':'月度最终分 = 负责人或老板评分 × 30% + 本月全部同事互评均分 × 70%。两部分都完成后自动发布，无需人工确认。';
   const pendingNames = recipient.pendingNames.slice(0, 6).join("、");
   const more = recipient.pendingNames.length > 6 ? `等 ${recipient.pendingNames.length} 位同事` : "";
   const action = kind === "followup" ? "温柔提醒一下，你还有协同 360 评分没有完成。" : "协同 360 评分周期已经启动。";
@@ -2402,7 +2406,7 @@ function buildScoring360ReminderMessage({ cycle, recipient, kind }) {
 你这轮需要评价 ${recipient.pendingCount} 个对象：${pendingNames}${more}。
 ${dueText}
 
-月度最终分 = 负责人或老板评分 × 30% + 本月全部同事互评均分 × 70%。两部分都完成后自动发布，无需人工确认。开启月末自动提醒后，每月最后两个工作日会分别提醒仍未完成的评分人员。
+${formula}开启月末自动提醒后，每月最后两个工作日会分别提醒仍未完成的评分人员。
 
 入口：${config.baseUrl}/scores?tab=my360
 
@@ -2457,7 +2461,7 @@ async function persistScoring360ReminderSend({
 }
 
 async function collaborationResultPublished(cycleId,userId) {
-  return (await querySqlRows(`SELECT 1 AS locked FROM performance_results p JOIN scoring360_cycles c ON p.month=substr(c.start_date,1,7) WHERE c.id=${sqlValue(cycleId)} AND p.employee_user_id=${sqlValue(userId)} AND p.kind='collaboration' UNION SELECT 1 AS locked FROM all_monthly_weighted_results p JOIN scoring360_cycles c ON p.month=substr(c.start_date,1,7) WHERE c.id=${sqlValue(cycleId)} AND p.employee_user_id=${sqlValue(userId)} LIMIT 1;`)).length>0;
+  return (await querySqlRows(`SELECT 1 AS locked FROM performance_results p JOIN scoring360_cycles c ON p.month=substr(c.start_date,1,7) WHERE c.id=${sqlValue(cycleId)} AND p.employee_user_id=${sqlValue(userId)} AND p.kind='collaboration' UNION SELECT 1 AS locked FROM all_collaboration_results p JOIN scoring360_cycles c ON p.month=substr(c.start_date,1,7) WHERE c.id=${sqlValue(cycleId)} AND p.employee_user_id=${sqlValue(userId)} LIMIT 1;`)).length>0;
 }
 
 async function createScoring360Assignment(req, res) {

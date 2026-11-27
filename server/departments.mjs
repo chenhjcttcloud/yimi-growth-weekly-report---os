@@ -1,6 +1,7 @@
 import {randomUUID,createHash} from 'node:crypto';
 import {employedInMonth} from './employee-lifecycle.mjs';
 import {createMonthlyScoringWindow} from './monthly-scoring-window.mjs';
+import {collaborationPolicy} from './collaboration-policy.mjs';
 export const departmentNames=value=>[...new Set(String(value||'').split(/[,，、]|\s+\/\s+/).map(x=>x.trim()).filter(Boolean))];
 export function createDepartments({query,exec,sql,employees,beforeScore,resolveScoreTarget,resolveLeaderScoreTarget,now=()=>new Date(),ratingWindow=createMonthlyScoringWindow({query,sql,now})}) {
  let layoutSaving=false;
@@ -82,6 +83,7 @@ export function createDepartments({query,exec,sql,employees,beforeScore,resolveS
  }
  async function score(body,user){
   if(!/^\d{4}-(0[1-9]|1[0-2])$/.test(body.month||'')||body.month>now().toLocaleDateString('sv-SE',{timeZone:'Asia/Shanghai'}).slice(0,7))throw Error('invalid_month');
+  if(collaborationPolicy(body.month).rule==='peers_100')throw Object.assign(Error('collaboration_peer_only'),{status:409});
   const departmentId=body.departmentId;
   if(departmentId&&await removed(departmentId))throw Error('department_removed');
   const value=Number(body.score),comment=String(body.comment||'').trim();

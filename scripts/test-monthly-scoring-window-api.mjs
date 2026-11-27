@@ -57,7 +57,7 @@ const ratingRequests=month=>[
 async function rejectAll(label){
  const before=humanState();
  for(const request of ratingRequests('2026-11')){
-  const result=await call(...request);assert.equal(result.status,409,label+': '+JSON.stringify(result));assert.equal(result.body.error,'scoring_cycle_not_open');
+  const result=await call(...request);assert.equal(result.status,409,label+': '+JSON.stringify(result));assert.equal(result.body.error,request[0]==='/api/scoring360/submit'?'scoring_cycle_not_open':'collaboration_peer_only');
  }
  assert.equal(humanState(),before,label+' must not freeze plans, save human scores or peer responses');checks.push(label);
 }
@@ -75,12 +75,12 @@ try{
  const boss=(await call('/api/departments?month=2026-11','boss')).body;
  const peer=(await call('/api/scoring360/my-tasks?month=2026-11','peer')).body;
  const preview=(await call('/api/admin/employee-preview/scoring-tasks?employeeId=peer&month=2026-11','admin')).body;
- for(const view of [manager,boss,peer,preview]){
+ for(const view of [peer,preview]){
   assert.equal(view.reviewWindow?.month,'2026-11');assert.equal(view.reviewWindow.isOpen,false);assert.equal(Date.parse(view.reviewWindow.opensAt),Date.parse('2026-11-30T00:00:00+08:00'));
  }
  assert.equal(peer.reviewWindow.reason,preview.reviewWindow.reason);
- const saved=manager.tasks.find(task=>task.employeeUserId==='saved');assert(saved?.submitted);assert.equal(Number(saved.score),78);assert.deepEqual(originalScore(),preserved);
- checks.push('all_task_views_share_window_and_existing_score_stays_visible');
+ assert.deepEqual(manager.tasks,[],'new months have no thirty-percent tasks');assert.deepEqual(originalScore(),preserved,'previously saved human score remains byte-for-byte in storage');
+ checks.push('peer_and_preview_share_window_and_existing_human_history_stays_intact');
  at=Date.parse('2026-11-30T00:00:00+08:00');await writeFile(clockFile,String(at));
  for(const status of ['draft','closed']){
   run(`UPDATE scoring360_cycles SET status='${status}' WHERE id='2026-11-360';`);
@@ -89,11 +89,11 @@ try{
  run("UPDATE scoring360_cycles SET status='open',launch_at='2026-11-30T00:00:01+08:00' WHERE id='2026-11-360';");
  await rejectAll('future_launch_timestamp_denies_all_three');
  run("UPDATE scoring360_cycles SET status='open',launch_at='2026-11-30T00:00:00+08:00' WHERE id='2026-11-360';");
- const openView=(await call('/api/manager-reviews?month=2026-11','head')).body;assert.equal(openView.reviewWindow.isOpen,true);
- for(const request of ratingRequests('2026-11')){const result=await call(...request);assert.equal(result.status,200,JSON.stringify(result));}
- assert.equal(run("SELECT count(*) AS n FROM monthly_manager_scores WHERE month='2026-11' AND employee_user_id='staff';",true)[0].n,1);
- assert.equal(run("SELECT count(*) AS n FROM all_department_leader_scores WHERE month='2026-11' AND leader_user_id='head';",true)[0].n,1);
- assert.equal(run("SELECT count(*) AS n FROM scoring360_responses WHERE cycle_id='2026-11-360';",true)[0].n,1);checks.push('exact_shanghai_open_boundary_allows_all_three');
+ const openView=(await call('/api/scoring360/my-tasks?month=2026-11','peer')).body;assert.equal(openView.reviewWindow.isOpen,true);
+ for(const request of ratingRequests('2026-11')){const result=await call(...request);assert.equal(result.status,request[0]==='/api/scoring360/submit'?200:409,JSON.stringify(result));if(result.status===409)assert.equal(result.body.error,'collaboration_peer_only');}
+ assert.equal(run("SELECT count(*) AS n FROM monthly_manager_scores WHERE month='2026-11' AND employee_user_id='staff';",true)[0].n,0);
+ assert.equal(run("SELECT count(*) AS n FROM all_department_leader_scores WHERE month='2026-11' AND leader_user_id='head';",true)[0].n,0);
+ assert.equal(run("SELECT count(*) AS n FROM scoring360_responses WHERE cycle_id='2026-11-360';",true)[0].n,1);checks.push('exact_shanghai_open_boundary_allows_peers_but_not_retired_thirty_percent');
  for(const request of ratingRequests('2026-10')){const result=await call(...request);assert.equal(result.status,200,JSON.stringify(result));}
  checks.push('already_open_historical_month_still_accepts_supplement');
  assert.deepEqual(originalScore(),preserved,'new policy must retain the exact preexisting human score');

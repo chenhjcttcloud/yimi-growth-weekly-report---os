@@ -36,6 +36,8 @@ async function fixture(label, {explicit = true} = {}) {
     CREATE TABLE monthly_weighted_results(month TEXT,employee_user_id TEXT,result_json TEXT);
     CREATE TABLE monthly_person_weighted_results(month TEXT,employee_user_id TEXT,result_json TEXT);
     CREATE VIEW all_monthly_weighted_results AS SELECT * FROM monthly_weighted_results UNION ALL SELECT * FROM monthly_person_weighted_results;
+    CREATE TABLE monthly_peer_results(month TEXT,employee_user_id TEXT,result_json TEXT);
+    CREATE VIEW all_collaboration_results AS SELECT * FROM all_monthly_weighted_results UNION ALL SELECT * FROM monthly_peer_results;
     CREATE TABLE performance_results(month TEXT,employee_user_id TEXT,kind TEXT,result_json TEXT);
     CREATE TABLE monthly_manager_scores(month TEXT,employee_user_id TEXT,score INTEGER,comment TEXT);
     CREATE TABLE monthly_review_plans(month TEXT,employee_user_id TEXT,plan_json TEXT);

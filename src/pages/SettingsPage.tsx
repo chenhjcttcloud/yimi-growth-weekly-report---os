@@ -653,7 +653,7 @@ export function SettingsPage({ access,onOpenScoringSetup }: SettingsPageProps) {
       {[
        {label:'工作空间',items:[{id:'overview',label:'运行概览',description:'服务状态与常用操作',icon:Settings2,visible:true}]},
        {label:'组织与人员',items:[{id:'organization',label:'组织与部门',description:'部门层级与负责人',icon:UsersRound,visible:canManagePersonnel},{id:'people',label:'员工管理',description:'飞书同步与在职状态',icon:UsersRound,visible:canManagePersonnel},{id:'permissions',label:'角色与权限',description:'老板、管理员与员工',icon:ShieldCheck,visible:bossView}]},
-       {label:'评分与成长',items:[{id:'rules',label:'评分规则',description:'权重与规则版本',icon:CheckCheck,visible:canManageScoring360},{id:'scoring',label:'月度配评入口',description:'前往评分工作台',icon:UsersRound,visible:canManageScoring360},{id:'handoffs',label:'月度评分交接',description:'负责人变动与待办交接',icon:UsersRound,visible:canManageScoring360},{id:'cycles',label:'周期与提醒',description:'截止时间与催评频率',icon:Settings2,visible:canManageScoring360}]},
+       {label:'评分与成长',items:[{id:'rules',label:'评分规则',description:'权重与规则版本',icon:CheckCheck,visible:canManageScoring360},{id:'scoring',label:'月度配评入口',description:'前往评分工作台',icon:UsersRound,visible:canManageScoring360},{id:'handoffs',label:'历史评分交接',description:'负责人变动与待办交接',icon:UsersRound,visible:canManageScoring360},{id:'cycles',label:'周期与提醒',description:'截止时间与催评频率',icon:Settings2,visible:canManageScoring360}]},
        {label:'服务与记录',items:[{id:'operations',label:'备份与告警',description:'服务器备份与故障提醒',icon:Database,visible:bossView},{id:'ai',label:'AI 配置',description:'模型服务与密钥',icon:Database,visible:bossView},{id:'integrations',label:'飞书与数据集成',description:'连接、同步与导入',icon:Link2,visible:bossView},{id:'logs',label:'操作日志',description:'配置变更与操作记录',icon:Activity,visible:bossView},{id:'activity',label:'访问统计',description:'团队使用情况',icon:Activity,visible:bossView}]},
       ].filter(group=>group.items.some(item=>item.visible)).map(group=><div className="settings-nav-group" key={group.label}><span className="settings-nav-group-label">{group.label}</span>{group.items.filter(item=>item.visible).map(({id,label,description,icon:Icon})=><button type="button" key={id} className={settingsTab===id?'is-active':''} aria-current={settingsTab===id?'page':undefined} onClick={()=>setSettingsTab(id)}><Icon size={17}/><span><strong>{label}</strong><small>{description}</small></span><span className="settings-nav-arrow">›</span></button>)}</div>)}
       </nav>
@@ -669,7 +669,7 @@ export function SettingsPage({ access,onOpenScoringSetup }: SettingsPageProps) {
         <section className="v2-card"><div className="v2-card-head"><div><span className="v2-eyebrow"><Database size={14}/>当前环境</span><h3 className="v2-card-title">运行状态与服务连接</h3><p className="v2-card-sub">展示真实配置状态。未接入的服务会明确标记，不会伪造连接或发送记录。</p></div><button type="button" className="secondary-button" onClick={()=>void loadRuntimeStatus()}>刷新状态</button></div>
         {runtimeError?<div className="pf-error" role="alert">{runtimeError}</div>:runtimeStatus?<><div className="settings-status-list">{runtimeStatus.services.map((service:any)=><div key={service.name}><span className={`settings-status-dot ${service.ready?'is-ready':''}`}/><div><strong>{service.name}</strong><p>{service.description}</p></div><span className={`pf-status ${service.ready?'is-confirmed':''}`}>{service.label}</span></div>)}</div><p className="settings-environment-note">{runtimeStatus.demoData?'当前为虚构开发数据，可切换老板、管理员和员工视角验证流程。':'当前使用已配置的数据源。'} 负责人或老板30%与同事互评70%全部完成后自动发布；周报及时率独立统计。</p></>:<ResultEmpty title="正在读取运行状态" description="服务连接与当前数据来源将在这里显示。"/>}
         </section>
-        <section className="v2-card settings-guide"><h3 className="v2-card-title">从这里开始</h3><div><p><strong>01 · 确认团队</strong><span>在「组织与部门」同步飞书负责人，在「员工管理」检查在职人员。</span></p><p><strong>02 · 检查评分关系</strong><span>在「协作评分关系」配置谁给谁评分，并查看未完成任务。</span></p><p><strong>03 · 查看结果</strong><span>负责人或老板30%与同事互评70%全部完成后自动发布；月结、周报收集齐且 AI 分析完成后自动生成月度质量最终分。</span></p></div></section>
+        <section className="v2-card settings-guide"><h3 className="v2-card-title">从这里开始</h3><div><p><strong>01 · 确认团队</strong><span>在「组织与部门」同步飞书负责人，在「员工管理」检查在职人员。</span></p><p><strong>02 · 检查评分关系</strong><span>在「协作评分关系」配置谁给谁评分，并查看未完成任务。</span></p><p><strong>03 · 查看结果</strong><span>新口径按同事互评100%全部完成后自动发布，旧结果保留原口径；月结、周报收集齐且 AI 分析完成后自动生成月度质量最终分。</span></p></div></section>
       </div>}
       <section className="settings-grid" data-settings-tab={settingsTab}>
       {["rules","ai","cycles","logs"].includes(settingsTab)&&<SystemConfiguration section={settingsTab as "rules"|"ai"|"cycles"|"logs"}/>}
@@ -731,7 +731,7 @@ export function SettingsPage({ access,onOpenScoringSetup }: SettingsPageProps) {
       ) : null}
       {canManageScoring360 ? (
         <>
-      <article className="panel scoring-setup-entry" hidden={settingsTab!=="scoring"}><span className="settings-quick-icon"><UsersRound size={22}/></span><h2>配评，在工作台里完成。</h2><p>按月查看员工评分关系、选择同事评分人、沿用上月配置，并在开放前集中检查。</p><p className="pf-caption">负责人／老板30%从组织关系带出；系统设置继续管理评分规则、提醒和服务连接。</p><button type="button" className="primary-button" onClick={()=>onOpenScoringSetup?onOpenScoringSetup():window.location.assign('/?page=scores&scoreTab=setup')}>进入月度配评工作台 →</button></article>
+      <article className="panel scoring-setup-entry" hidden={settingsTab!=="scoring"}><span className="settings-quick-icon"><UsersRound size={22}/></span><h2>配评，在工作台里完成。</h2><p>按月查看员工评分关系、选择同事评分人、沿用上月配置，并在开放前集中检查。</p><p className="pf-caption">新口径只配置同事互评100%；系统设置继续管理评分规则、提醒和服务连接，旧评分记录保留。</p><button type="button" className="primary-button" onClick={()=>onOpenScoringSetup?onOpenScoringSetup():window.location.assign('/?page=scores&scoreTab=setup')}>进入月度配评工作台 →</button></article>
       <article className="panel scoring360-reminder-panel" data-settings-group="cycles" hidden={settingsTab !== "cycles"}>
         <div className="panel-heading compact">
           <div>
@@ -745,7 +745,7 @@ export function SettingsPage({ access,onOpenScoringSetup }: SettingsPageProps) {
         <div className="scoring360-config-copy">
           <strong>{scoring360ReminderStatus?.cycle?.label || "当前周期"}</strong>
           <span>
-            本区用于手动预览和发送同事互评通知。每月最后两个工作日的自动提醒，请前往「周期与提醒」配置；自动提醒同时覆盖负责人月评与老板评分。
+            本区用于手动预览和发送同事互评通知。每月最后两个工作日的自动提醒，请前往「周期与提醒」配置；新口径只提醒同事互评；旧加权月份按原任务范围保留。
           </span>
         </div>
         <div className="scoring360-reminder-actions">

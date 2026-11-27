@@ -144,11 +144,11 @@ JSON
 | `matchStatus` | `matched`、`not_found` 或 `name_mismatch` |
 | `employee` | OS 中核对到的人员资料；未找到时为 `null` |
 | `weeklyQuality` | 指定月份的周报质量月分，**不是某一周的分数** |
-| `collaboration360` | 指定月份已发布的 360 协同最终分，**不是同事互评部分的均分** |
+| `collaboration360` | 指定月份已发布的360协同最终分；旧加权月份不可只取70%的互评部分，新口径为100%互评均分 |
 | `score` | 当前可使用的 0～100 数值或 `null`；0 是有效分数 |
 | `isFinal` | 是否为本接口当前可供业务采用的最终结果 |
 | `previousScore` | 兼容字段，当前返回 `null` |
-| `source` | `management_confirmed` 历史人工确认的周报质量分、`legacy` 历史人工结果、`automatic_report` 自动生成的质量结果或进度、`weighted_30_70` 月度加权结果 |
+| `source` | `management_confirmed` 历史人工确认的周报质量分、`legacy` 历史人工结果、`automatic_report` 自动生成的质量结果或进度、`weighted_30_70` 历史月度加权结果、`peers_100` 同事互评100%结果 |
 | `updatedAt` | 该结果已保存的更新时间，标准 ISO 8601 UTC 或 `null` |
 | `revision` | 评分摘要的稳定 SHA-256 版本标识，用于发现变更；不能按字符串大小判断先后 |
 
@@ -160,7 +160,7 @@ JSON
 
 ## 5. 分数与状态
 
-月份结束、周报收集和有效周报分析完成后，系统自动汇总生成月度质量最终分，无需管理人员或老板确认。已保存的自动最终结果以 `source: "automatic_report"`、`status: "published"`、`isFinal: true` 供接口同步；未完成汇总的旧候选快照不会直接充当最终分。及时率单独统计。360 协同最终分为负责人或老板部分 30% 加同事互评部分 70%，必需评分完成后自动发布。`legacy` 及 `management_confirmed` 历史最终结果保留原值。
+月份结束、周报收集和有效周报分析完成后，系统自动汇总生成月度质量最终分，无需管理人员或老板确认。已保存的自动最终结果以 `source: "automatic_report"`、`status: "published"`、`isFinal: true` 供接口同步；未完成汇总的旧候选快照不会直接充当最终分。及时率单独统计。2026-11 起，360 协同最终分为全部必要同事互评的均分，占100%，以 `source: "peers_100"` 自动发布；老板不参与互评。2026-10 及更早月份采用负责人或老板30%＋同事70%。任何月份的已发布历史结果均保留原值与原来源，不能按月份强行重标；未发布结果仍返回 `not_published`。`legacy` 及 `management_confirmed` 历史最终结果保留原值。
 
 | `status` | `score` / `isFinal` | 调用方处理 |
 | --- | --- | --- |

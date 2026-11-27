@@ -1,4 +1,5 @@
 import {createHash, randomUUID} from 'node:crypto';
+import {collaborationPolicy} from './collaboration-policy.mjs';
 
 export function shanghaiClock(date) {
  const parts=Object.fromEntries(new Intl.DateTimeFormat('en-CA',{timeZone:'Asia/Shanghai',year:'numeric',month:'2-digit',day:'2-digit',hour:'2-digit',minute:'2-digit',hourCycle:'h23'}).formatToParts(date).map(p=>[p.type,p.value]));
@@ -24,7 +25,7 @@ export function createMonthEndScoreReminders({query,exec,sql,managerReviews,rati
   if(reviewWindow&&!reviewWindow.isOpen)return [];
   const people=await query('SELECT user_id,name,is_active FROM employees;'),byId=new Map(people.map(p=>[p.user_id,p]));
   const active=id=>!!id&&Number(byId.get(id)?.is_active)===1;
-  const published=new Set((await query(`SELECT employee_user_id FROM all_monthly_weighted_results WHERE month=${sql(month)} UNION SELECT employee_user_id FROM performance_results WHERE month=${sql(month)} AND kind='collaboration';`)).map(p=>p.employee_user_id));
+  const published=new Set((await query(`SELECT employee_user_id FROM all_collaboration_results WHERE month=${sql(month)} UNION SELECT employee_user_id FROM performance_results WHERE month=${sql(month)} AND kind='collaboration';`)).map(p=>p.employee_user_id));
   const groups=new Map();
   function add(id,kind,key,name='') {
    if(!id||byId.has(id)&&!active(id))return;
@@ -32,10 +33,12 @@ export function createMonthEndScoreReminders({query,exec,sql,managerReviews,rati
    const list=groups.get(id)[kind];if(!list.includes(key))list.push(key);
   }
   const assignments=await query(`SELECT a.id,a.evaluee_user_id,a.evaluator_user_id FROM scoring360_assignments a JOIN scoring360_cycles c ON c.id=a.cycle_id LEFT JOIN scoring360_responses r ON r.assignment_id=a.id WHERE substr(c.start_date,1,7)=${sql(month)} ${reviewWindow?`AND a.cycle_id=${sql(reviewWindow.cycleId)}`:''} AND c.status IN ('open','active') AND COALESCE(c.launch_at,'')<>'' AND COALESCE(a.status,'active')='active' AND (r.id IS NULL OR r.score IS NULL OR r.score<0 OR r.score>100);`);
-  for(const a of assignments)if(active(a.evaluee_user_id)&&active(a.evaluator_user_id)&&a.evaluee_user_id!==a.evaluator_user_id&&!published.has(a.evaluee_user_id))add(a.evaluator_user_id,'peer',a.id);
-  const state=await managerReviews.snapshot();
-  const bosses=await bossMembers();
-  for(const [id,plan] of state.plans){
+  const excludedPeerRaters=collaborationPolicy(month).rule==='peers_100'?new Set((await bossMembers()).map(b=>b.userId)):new Set();
+  for(const a of assignments)if(active(a.evaluee_user_id)&&active(a.evaluator_user_id)&&a.evaluee_user_id!==a.evaluator_user_id&&!excludedPeerRaters.has(a.evaluator_user_id)&&!published.has(a.evaluee_user_id))add(a.evaluator_user_id,'peer',a.id);
+  if(collaborationPolicy(month).rule!=='peers_100'){
+   const state=await managerReviews.snapshot();
+   const bosses=await bossMembers();
+   for(const [id,plan] of state.plans){
    if(!active(id)||published.has(id))continue;
    const progress=managerReviews.progress(state,month,id);
    for(const expected of progress.expectedIds){
@@ -43,6 +46,7 @@ export function createMonthEndScoreReminders({query,exec,sql,managerReviews,rati
     if(progress.kind==='boss'){
      for(const boss of bosses)if(boss.userId!==id)add(boss.userId,'boss',`${id}:${expected}`,boss.name);
     }else if(active(expected))add(expected,'manager',id);
+   }
    }
   }
   return [...groups.values()].map(g=>({...g,counts:{peer:g.peer.length,manager:g.manager.length,boss:g.boss.length},total:g.peer.length+g.manager.length+g.boss.length})).sort((a,b)=>a.userId.localeCompare(b.userId));
@@ -54,14 +58,15 @@ export function createMonthEndScoreReminders({query,exec,sql,managerReviews,rati
   const cal=calendar(),dates=lastTwoWorkingDays(month,cal),recipients=await pending(month);
   const year=Number(month.slice(0,4)),calendarCovered=Number(cal.year)===year||(cal.years||[]).includes(year);
   const deliveries=await query(`SELECT reminder_date,recipient_user_id,recipient_name,status,attempts,message_id,last_error,sent_at,updated_at FROM monthly_score_reminder_deliveries WHERE month=${sql(month)} ORDER BY reminder_date DESC,recipient_user_id;`);
-  return {month,settings,activeInMonth:!settings.startMonth||month>=settings.startMonth,dates,timezone:'Asia/Shanghai',calendarCovered,calendarSource:cal.source||'',calendarUpdate:cal.automaticUpdate||null,calendarWarning:calendarCovered?'':cal.autoManaged?`${year} 年完整节假日与调休安排尚未取得，系统会自动重试；以下日期为周一至周五估算，取得日历前暂停当年自动评分提醒。`:`${year} 年节假日与调休表尚未维护，当前按周一至周五计算工作日。`,recipients:recipients.map(({peer,manager,boss,...rest})=>rest),deliveries};
+  return {month,collaborationPolicy:collaborationPolicy(month),settings,activeInMonth:!settings.startMonth||month>=settings.startMonth,dates,timezone:'Asia/Shanghai',calendarCovered,calendarSource:cal.source||'',calendarUpdate:cal.automaticUpdate||null,calendarWarning:calendarCovered?'':cal.autoManaged?`${year} 年完整节假日与调休安排尚未取得，系统会自动重试；以下日期为周一至周五估算，取得日历前暂停当年自动评分提醒。`:`${year} 年节假日与调休表尚未维护，当前按周一至周五计算工作日。`,recipients:recipients.map(({peer,manager,boss,...rest})=>rest),deliveries};
  }
  function message(recipient,clock,dates) {
   const lines=[`【成长 OS 月度评分提醒】${recipient.name}，你还有 ${clock.month} 月评分未完成。`];
-  if(recipient.counts.peer)lines.push(`同事互评：${recipient.counts.peer} 项待评（占最终分70%）。`);
+  const peerOnly=collaborationPolicy(clock.month).rule==='peers_100';
+  if(recipient.counts.peer)lines.push(`同事互评：${recipient.counts.peer} 项待评（占最终分${peerOnly?100:70}%）。`);
   if(recipient.counts.manager)lines.push(`下属月度评分：${recipient.counts.manager} 项待评（占最终分30%）。`);
   if(recipient.counts.boss)lines.push(`部门负责人评分：${recipient.counts.boss} 项待评（占最终分30%）。`);
-  lines.push('请完成相应评分；同事互评的协作评价选填，负责人／老板评分仍需填写评价。所有必需评分完成后，系统自动合成发布最终分。',`本月最后两个工作日为 ${dates.join('、')}，每天仅提醒仍未完成的人员。`);
+  lines.push(peerOnly?'请完成相应同事互评，协作评价选填。所有必需互评完成后，系统自动生成最终分。':'请完成相应评分；同事互评的协作评价选填，负责人／老板评分仍需填写评价。所有必需评分完成后，系统自动合成发布最终分。',`本月最后两个工作日为 ${dates.join('、')}，每天仅提醒仍未完成的人员。`);
   if(recipient.counts.peer||recipient.counts.manager)lines.push(`评分工作台：${baseUrl}/?page=scores`);
   if(recipient.counts.boss)lines.push(`部门负责人评分：${baseUrl}/?page=scores&scoreTab=leaders&scoreMonth=${clock.month}`);
   return lines.join('\n');

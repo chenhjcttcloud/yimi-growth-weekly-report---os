@@ -6,6 +6,7 @@ import path from 'node:path';
 import {fileURLToPath} from 'node:url';
 import {chromium} from 'playwright';
 
+// Both synthetic months precede the November peer-only cutover.
 // Exercise the real App and parent scoring pages with synthetic HTTP fixtures.
 // No application server, database, account, external request or score submission.
 const root = fileURLToPath(new URL('../', import.meta.url));
@@ -31,7 +32,7 @@ const server = createServer(async (request, response) => {
 });
 await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
 const base = 'http://127.0.0.1:' + server.address().port;
-const october = '2026-10', november = '2026-11';
+const october = '2026-10', september = '2026-09';
 const names = {target: '合成负责人甲', other: '合成其他被评人', empty: '合成尚未配评人', ceo: '合成老板', zero: '合成零分评价人', missing: '合成待评同事甲', third: '合成待评同事乙', outsider: '其他员工的待评人'};
 const people = [
   {userId: 'target', name: names.target, department: '合成业务组', active: true},
@@ -45,12 +46,12 @@ const octoberAssignments = [zeroAssignment,
   ...Array.from({length: 14}, (_, index) => ({...zeroAssignment, id: 'oct-done-' + index, evaluator_user_id: 'peer-' + index, evaluator_name: '合成已评同事' + index, score: '80', comment: '合成已完成评价'})),
   ...['ceo', 'missing', 'third'].map(id => ({...zeroAssignment, id: 'oct-pending-' + id, evaluator_user_id: id, evaluator_name: names[id], score: id === 'third' ? ' ' : '', comment: '', submitted_at: ''})),
 ];
-const novemberAssignments = [zeroAssignment, {...zeroAssignment, id: 'nov-ceo', evaluator_user_id: 'ceo', evaluator_name: names.ceo, score: '90'}].map(row => ({...row, id: row.id.startsWith('nov-') ? row.id : 'nov-zero', cycle_id: 'nov-cycle', submitted_at: '2026-11-25 02:00:00'}));
+const septemberAssignments = [zeroAssignment, {...zeroAssignment, id: 'nov-ceo', evaluator_user_id: 'ceo', evaluator_name: names.ceo, score: '90'}].map(row => ({...row, id: row.id.startsWith('nov-') ? row.id : 'nov-zero', cycle_id: 'nov-cycle', submitted_at: '2026-11-25 02:00:00'}));
 const otherAssignment = {...zeroAssignment, id: 'other-pending', evaluee_user_id: 'other', evaluee_name: names.other, evaluator_user_id: 'outsider', evaluator_name: names.outsider, score: '', comment: '', submitted_at: ''};
 const timeliness = {expected: 0, submitted: 0, onTime: 0, late: 0, missing: 0, pendingTimestamp: 0, pendingCalendar: 0, rate: null};
 function monthly(month, userId) {
   const target = userId === 'target', isOctober = month === october;
-  return {...people.find(row => row.userId === userId), month, reports: [], timeliness,
+  return {...people.find(row => row.userId === userId), month, reports: [], timeliness, collaborationPolicy: {rule:'weighted_30_70',weights:{manager:30,peers:70},effectiveMonth:'2026-11'},
     peerCandidate: target ? isOctober ? 74.7 : 45 : null,
     managerProgress: {kind: 'boss', expectedIds: [''], expected: 1, submitted: 1, complete: true, score: target ? isOctober ? 85 : 92 : 86, records: [{leader_user_id: userId, scorer_user_id: 'ceo', scorer_name: names.ceo, month, score: target ? isOctober ? '85' : '92' : '86'}]},
     collaborationExpected: userId === 'empty' ? 0 : target ? isOctober ? 18 : 2 : 1,
@@ -60,16 +61,16 @@ function monthly(month, userId) {
 }
 function cycle(month, userId) {
   const isOctober = month === october;
-  return {id: isOctober ? 'oct-cycle' : 'nov-cycle', label: isOctober ? '合成十月互评轮次' : '合成十一月互评轮次', month, start_date: month + '-01', end_date: month + '-30', status: 'open', launch_at: month + '-25T00:00:00+08:00',
+  return {id: isOctober ? 'oct-cycle' : 'nov-cycle', label: isOctober ? '合成十月互评轮次' : '合成九月互评轮次', month, start_date: month + '-01', end_date: month + '-30', status: 'open', launch_at: month + '-25T00:00:00+08:00',
     expected: isOctober ? 374 : 11, submitted: isOctober ? 343 : 10,
     // The actual employee-month API intentionally retains company-wide counts
     // and pending names, while its assignments only contain the chosen person.
     pending: isOctober ? [names.ceo, names.missing, names.third, names.outsider] : [names.outsider],
-    ...(userId ? {assignments: userId === 'empty' ? [] : userId === 'target' ? isOctober ? octoberAssignments : novemberAssignments : [otherAssignment]} : {detailsDeferred: true}),
+    ...(userId ? {assignments: userId === 'empty' ? [] : userId === 'target' ? isOctober ? octoberAssignments : septemberAssignments : [otherAssignment]} : {detailsDeferred: true}),
   };
 }
 function overview(month) {
-  return {scopeMonth: month, months: [november, october], employees: people.filter(row => ['target', 'other', 'empty'].includes(row.userId)), monthly: ['target', 'other', 'empty'].map(id => monthly(month, id)), collaborations: [cycle(month)], results: []};
+  return {scopeMonth: month, months: [september, october], employees: people.filter(row => ['target', 'other', 'empty'].includes(row.userId)), monthly: ['target', 'other', 'empty'].map(id => monthly(month, id)), collaborations: [cycle(month)], results: []};
 }
 function departments(month) {
   const leaders = people.filter(person => person.userId === 'target' || person.userId.startsWith('leader-'));
@@ -100,7 +101,7 @@ try {
     switch (url.pathname) {
       case '/api/me': body = {user: {userId: 'ceo', name: names.ceo}, access: {role: 'boss', currentEmployee: people[2], visibleEmployees: people, canManageScoring360: true, canManagePersonnel: true, canViewSettings: true, canViewBossDashboard: true}}; break;
       case '/api/management-data': body = {prototypeData: {meta: {periods: []}, employee_summary: [], weekly_scores: []}}; break;
-      case '/api/performance/manage': assert.equal(url.searchParams.get('view'), 'overview'); body = overview(month === 'latest' ? november : month); break;
+      case '/api/performance/manage': assert.equal(url.searchParams.get('view'), 'overview'); body = overview(month === 'latest' ? september : month); break;
       case '/api/performance/employee-month': {
         const id = url.searchParams.get('employeeId'); assert(['target', 'other', 'empty'].includes(id));
         body = {monthly: monthly(month, id), collaborations: [cycle(month, id)], results: []}; break;
@@ -131,7 +132,7 @@ try {
   assert.match(await main.innerText(), /全轮\s*343\s*\/\s*374\s*已完成/);
   assert.match(await main.innerText(), /老板评分（30%）/);
   assert.match(await main.innerText(), /同事互评（70%）/);
-  await main.getByText('老板仅负责30%，不参与70%同事互评。', {exact: false}).waitFor();
+  await main.getByText('老板不参与同事互评。', {exact: false}).waitFor();
   assert.equal(await main.getByText(names.outsider, {exact: true}).count(), 0, 'another employee\'s global pending name is absent from the selected employee detail');
   const ceoRow = main.locator('.pf-assignment').filter({has: page.getByText(names.ceo, {exact: true})});
   await ceoRow.getByText('同事互评待评分', {exact: true}).waitFor();
@@ -156,8 +157,8 @@ try {
   assert.equal(await main.getByText(names.outsider, {exact: true}).count(), 0);
 
   const picker = page.getByRole('combobox', {name: '选择绩效月份', exact: true});
-  await picker.click(); await page.getByRole('option', {name: '2026 年 11 月', exact: true}).click();
-  await picker.getByText('2026 年 11 月', {exact: true}).waitFor();
+  await picker.click(); await page.getByRole('option', {name: '2026 年 9 月', exact: true}).click();
+  await picker.getByText('2026 年 9 月', {exact: true}).waitFor();
   await page.getByRole('tab', {name: '协作明细', exact: true}).click();
   await main.getByText('该员工待评：全部完成', {exact: true}).waitFor();
   assert.match(await main.innerText(), /该员工\s*2\s*\/\s*2\s*已完成/);

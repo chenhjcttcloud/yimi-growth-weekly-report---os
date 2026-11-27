@@ -42,16 +42,16 @@ const timeliness = {expected: 4, submitted: 4, onTime: 4, late: 0, missing: 0, p
 function monthly(person, month) {
   const zero = person.userId === people[0].userId && month === october, waiting = person.userId === people[1].userId;
   const score = zero ? 0 : month === october ? 88.2 : 96.4;
-  return {...person, month, reports: [], timeliness, peerCandidate: waiting ? null : score,
+  return {...person, month, reports: [], timeliness, collaborationPolicy: {rule: month === november ? 'peers_100' : 'weighted_30_70', weights: {manager: month === november ? 0 : 30, peers: month === november ? 100 : 70}, effectiveMonth: november}, peerCandidate: waiting ? null : score,
     quality: {status: waiting ? 'pending_ai' : 'final', publicationMode: 'automatic', currentAverage: waiting ? 82 : score, candidateScore: waiting ? null : score, finalScore: waiting ? null : score, pendingAnalysis: waiting ? 1 : 0, analyzedCount: waiting ? 3 : 4, expectedCount: 4, canConfirm: false, generatedBy: waiting ? undefined : '系统自动计算', generatedAt: month + '-28T02:00:00Z', confirmedBy: waiting ? undefined : '系统自动计算', confirmedAt: month + '-28T02:00:00Z'},
-    managerProgress: {kind: 'boss', expectedIds: [''], expected: 1, submitted: waiting ? 0 : 1, complete: !waiting, score: waiting ? null : score, records: []},
-    collaborationExpected: 3, collaborationSubmitted: waiting ? 1 : 3, collaborationComplete: !waiting, collaborationCandidate: waiting ? null : score,
+    managerProgress: month === november ? {kind: 'not_required', required: false, expectedIds: [], expected: 0, submitted: 0, complete: true, score: null, records: []} : {kind: 'boss', expectedIds: [''], expected: 1, submitted: waiting ? 0 : 1, complete: !waiting, score: waiting ? null : score, records: []},
+    collaborationExpected: 3, collaborationSubmitted: waiting ? 1 : 3, peerComplete: !waiting, collaborationComplete: !waiting, collaborationCandidate: waiting ? null : score,
   };
 }
 function overview(month) {
   const rows = people.map(person => monthly(person, month));
   return {scopeMonth: month, months: [november, october], employees: people, monthly: rows, collaborations: [],
-    results: rows.filter(row => row.userId !== people[1].userId).flatMap(row => ['quality', 'collaboration'].map(kind => ({month, employee_user_id: row.userId, employee_name: row.name, kind, result: {score: row.quality.finalScore, status: 'final', publicationMode: kind === 'quality' ? 'automatic' : 'weighted_30_70', pendingAnalysis: 0, peerScore: row.peerCandidate, managerScore: row.managerProgress.score}, scoring_rule: kind === 'quality' ? 'automatic_report' : 'weighted_30_70', evidenceSummary: {}, evidenceDeferred: true, confirmed_by: '合成审核人', confirmed_at: month + '-28T02:00:00Z'}))),
+    results: rows.filter(row => row.userId !== people[1].userId).flatMap(row => ['quality', 'collaboration'].map(kind => ({month, employee_user_id: row.userId, employee_name: row.name, kind, result: {score: row.quality.finalScore, status: 'final', publicationMode: kind === 'quality' ? 'automatic' : month === november ? 'peers_only' : 'weighted_30_70', pendingAnalysis: 0, peerScore: row.peerCandidate, managerScore: row.managerProgress.score, weights: row.collaborationPolicy.weights}, scoring_rule: kind === 'quality' ? 'automatic_report' : row.collaborationPolicy.rule, evidenceSummary: {}, evidenceDeferred: true, confirmed_by: '合成审核人', confirmed_at: month + '-28T02:00:00Z'}))),
   };
 }
 const qualityHeaders = ['月份', '姓名', '部门', '月度质量最终分', 'AI质量均分', '质量状态'];
@@ -100,7 +100,8 @@ function workbook(file) {
 }
 function verifySheet(book, name, expectedPeople, month) {
   const sheet = book.sheets.find(item => item.name === name); assert(sheet, 'workbook includes ' + name);
-  const headers = name === '周报质量' ? qualityHeaders : collaborationHeaders;
+  const headers = name === '周报质量' ? qualityHeaders : month === november ? ['月份', '姓名', '部门', '月度综合最终分', '评分状态', '同事互评均分（100%）', '同事已评数', '同事应评数'] : collaborationHeaders;
+  if (name !== '周报质量' && month === november) assert(sheet.headers.every(header => !/30%|70%|负责人|老板/.test(header)), 'new month peer-only workbook has no manager/boss columns');
   for (const header of headers) assert(sheet.headers.includes(header), 'exported header: ' + header);
   assert(sheet.headers.every(header => !/确认人|确认时间|发布人|发布时间|生成方式|生成时间|结果来源/.test(header)), 'downloaded score tables omit approval metadata columns');
   assert.deepEqual(sheet.rows.map(row => row.values['姓名']).sort(), expectedPeople.map(person => person.name).sort(), 'export includes every matching employee, once, across all pages');
@@ -115,7 +116,7 @@ function verifySheet(book, name, expectedPeople, month) {
     if (name === '周报质量') {assert.equal(waiting.values['AI质量均分'] ?? null, null); assert.equal(waiting.values['已完成分析均分'], 82);}
     else {
       assert.equal(waiting.values['负责人或老板评分（30%）'] ?? null, null);
-      assert.equal(waiting.values['同事互评均分（70%）'] ?? null, null);
+      assert.equal(waiting.values[month === november ? '同事互评均分（100%）' : '同事互评均分（70%）'] ?? null, null);
       assert.equal(waiting.values['同事已评数'], 1); assert.equal(waiting.values['同事应评数'], 3);
     }
   }

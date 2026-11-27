@@ -1,3 +1,4 @@
+import {isPeersOnly,type CollaborationPolicy} from '../lib/collaborationPolicy';
 import {useEffect,useRef,useState} from 'react';
 import {ArrowRight,Building2,CheckCheck,Clock3,LockKeyhole,Search,Send,ShieldCheck,UserRoundCheck} from 'lucide-react';
 import {ReviewMonthPicker} from './ReviewMonthPicker';
@@ -10,7 +11,7 @@ type Person={userId:string;name:string};
 type SavedScore={leader_user_id:string;month:string;score:number|string;comment:string;scorer_name?:string;created_at?:string};
 type DepartmentScore=SavedScore&{department_id:string};
 type LeaderTarget={leaderUserId:string;departmentIds:string[];name:string;ratingRequired:boolean;legacyScore?:number|null;unavailableReason?:string};
-type Data={reviewWindow?:ReviewWindow;departments:Department[];archivedDepartments?:Department[];employees:Person[];scores:DepartmentScore[];personScores:SavedScore[];leaderScoreTargets:LeaderTarget[];canScore:boolean;currentUserId:string};
+type Data={collaborationPolicy?:CollaborationPolicy;reviewWindow?:ReviewWindow;departments:Department[];archivedDepartments?:Department[];employees:Person[];scores:DepartmentScore[];personScores:SavedScore[];leaderScoreTargets:LeaderTarget[];canScore:boolean;currentUserId:string};
 type Draft={score:string;comment:string;submitted?:boolean};
 type Row={key:string;leaderId:string;name:string;departments:Department[];saved?:SavedScore;legacyScore?:number|null;state:'pending'|'done'|'blocked'|'exempt';reason:string;statusLabel:string};
 type Filter=Row['state']|'all';
@@ -95,7 +96,7 @@ export function BossLeaderScoringPanel({month:sharedMonth,onBusyChange,active=tr
  function changeSearch(text:string){setSearch(text);select(visibleRows(rows,filter,text)[0]?.key||'');}
  function update(field:'score'|'comment',text:string){if(!row||busy||loading||isReviewWindowBlocked(latest?.reviewWindow))return;setDrafts(previous=>({...previous,[row.key]:{...(previous[row.key]||{score:'',comment:''}),[field]:text,submitted:false}}));setMessage('');setNextNotice('');}
  async function submit(advance:boolean){
-  if(!latest||!row||row.state!=='pending'||!latest.canScore||busy||loading||isReviewWindowBlocked(latest.reviewWindow))return;
+  if(isPeersOnly(month,latest)||!latest||!row||row.state!=='pending'||!latest.canScore||busy||loading||isReviewWindowBlocked(latest.reviewWindow))return;
   const submittedMonth=month,target=row,key=target.key,draft=draftsRef.current[key]||{score:'',comment:''};
   if(!draft.score.trim()||!Number.isFinite(Number(draft.score))||Number(draft.score)<0||Number(draft.score)>100||!draft.comment.trim()){setMessageKind('error');setMessage('请填写0–100分和具体评价。');return;}
   setBusy(true);onBusyChange?.(true);setMessage('');setNextNotice('');
@@ -128,6 +129,11 @@ export function BossLeaderScoringPanel({month:sharedMonth,onBusyChange,active=tr
  const departmentName=(id:string)=>[...(latest?.departments||[]),...(latest?.archivedDepartments||[])].find(department=>department.id===id)?.name||'历史部门';
  const windowBlocked=isReviewWindowBlocked(latest?.reviewWindow);
  const locked=loading||busy||!latest?.canScore||row?.state!=='pending'||windowBlocked;
+ if(isPeersOnly(month,latest))return <section className="boss-leader-panel v2-card" aria-label="历史负责人评分">
+  {sharedMonth===undefined&&<ReviewMonthPicker aria-label="负责人评分月份" value={month} max={current} disabled={busy} onChange={setLocalMonth}/>}
+  <p className="pf-notice">本月同事互评占100%，不再单独进行负责人或老板评分。可切换旧月份查看原口径记录。</p>
+  {[...(latest?.personScores||[]),...(latest?.scores||[])].filter(score=>score.month===month).map((score,index)=><article className="pf-evidence" key={score.leader_user_id+':'+index}><strong>{latest?.employees.find(person=>person.userId===score.leader_user_id)?.name||'历史负责人'} · {scoreText(Number(score.score))} 分</strong><p>{score.comment}</p></article>)}
+ </section>;
  return <section className="boss-leader-panel v2-card" aria-label="负责人评分" aria-busy={loading}>
   {sharedMonth===undefined&&<header className="bl-heading"><div><h3>负责人月度评分</h3><p>选择负责人，记录本月评分与评价。</p></div><ReviewMonthPicker aria-label="负责人评分月份" value={month} max={current} disabled={busy} onChange={setLocalMonth}/></header>}
   <div className="bl-overview"><div className="bl-counts" aria-label="负责人评分进度">{([{key:'pending',label:'待评分'},{key:'done',label:'已完成'},{key:'blocked',label:'待处理'},{key:'exempt',label:'无需评分'}] as const).map(item=><div className={'bl-metric is-'+item.key} key={item.key}><span><i aria-hidden="true"/>{item.label}</span><strong>{loading?'—':counts[item.key]}<small>项</small></strong></div>)}</div><div className="bl-rule"><span>月度综合分构成</span><p>老板评分 <b>30%</b><em>＋</em>同事互评 <b>70%</b></p><div className="bl-weight-bar" aria-hidden="true"><span/><span/></div><small>两部分完成后自动发布</small></div></div>

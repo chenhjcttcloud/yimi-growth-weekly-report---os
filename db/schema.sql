@@ -860,3 +860,84 @@ CREATE TABLE IF NOT EXISTS personal_reaction_states (
  target_id TEXT NOT NULL,actor_user_id TEXT NOT NULL,liked INTEGER NOT NULL CHECK(liked IN(0,1)),
  updated_at TEXT NOT NULL DEFAULT(datetime('now')),PRIMARY KEY(target_id,actor_user_id)
 );
+
+-- Additive peer-only publications. Earlier tables, views, rows and triggers stay.
+CREATE TABLE IF NOT EXISTS monthly_peer_results (
+ month TEXT NOT NULL,employee_user_id TEXT NOT NULL,employee_name TEXT NOT NULL,
+ kind TEXT NOT NULL DEFAULT 'collaboration' CHECK(kind='collaboration'),
+ result_json TEXT NOT NULL CHECK(json_valid(result_json)),evidence_json TEXT NOT NULL CHECK(json_valid(evidence_json)),
+ confirmed_by TEXT NOT NULL,confirmed_at TEXT NOT NULL,PRIMARY KEY(month,employee_user_id,kind)
+);
+CREATE VIEW IF NOT EXISTS all_collaboration_results AS
+ SELECT * FROM all_monthly_weighted_results UNION ALL SELECT * FROM monthly_peer_results;
+CREATE TRIGGER IF NOT EXISTS peer_result_no_update BEFORE UPDATE ON monthly_peer_results
+BEGIN SELECT RAISE(ABORT,'result_locked'); END;
+CREATE TRIGGER IF NOT EXISTS peer_result_no_delete BEFORE DELETE ON monthly_peer_results
+BEGIN SELECT RAISE(ABORT,'result_locked'); END;
+CREATE TRIGGER IF NOT EXISTS peer_result_existing_publication BEFORE INSERT ON monthly_peer_results
+WHEN EXISTS(SELECT 1 FROM all_collaboration_results WHERE month=NEW.month AND employee_user_id=NEW.employee_user_id)
+ OR EXISTS(SELECT 1 FROM performance_results WHERE month=NEW.month AND employee_user_id=NEW.employee_user_id AND kind='collaboration')
+BEGIN SELECT RAISE(ABORT,'result_locked'); END;
+CREATE TRIGGER IF NOT EXISTS peer_result_validation BEFORE INSERT ON monthly_peer_results
+WHEN NOT EXISTS(SELECT 1 FROM all_collaboration_results WHERE month=NEW.month AND employee_user_id=NEW.employee_user_id)
+ AND NOT EXISTS(SELECT 1 FROM performance_results WHERE month=NEW.month AND employee_user_id=NEW.employee_user_id AND kind='collaboration')
+ AND (
+ NOT EXISTS(SELECT 1 FROM scoring360_assignments a JOIN scoring360_cycles c ON c.id=a.cycle_id LEFT JOIN scoring360_responses r ON r.assignment_id=a.id WHERE substr(c.start_date,1,7)=NEW.month AND a.evaluee_user_id=NEW.employee_user_id AND (COALESCE(a.status,'active')='active' OR r.id IS NOT NULL))
+ OR EXISTS(SELECT 1 FROM scoring360_assignments a JOIN scoring360_cycles c ON c.id=a.cycle_id LEFT JOIN scoring360_responses r ON r.assignment_id=a.id WHERE substr(c.start_date,1,7)=NEW.month AND a.evaluee_user_id=NEW.employee_user_id AND (COALESCE(a.status,'active')='active' OR r.id IS NOT NULL) AND (r.id IS NULL OR r.score IS NULL OR r.score<0 OR r.score>100 OR typeof(r.score) NOT IN('integer','real') OR r.cycle_id<>a.cycle_id OR a.evaluator_user_id=a.evaluee_user_id))
+ OR EXISTS(SELECT 1 FROM scoring360_assignments a JOIN scoring360_cycles c ON c.id=a.cycle_id LEFT JOIN scoring360_responses r ON r.assignment_id=a.id WHERE substr(c.start_date,1,7)=NEW.month AND a.evaluee_user_id=NEW.employee_user_id AND (COALESCE(a.status,'active')='active' OR r.id IS NOT NULL) AND a.evaluator_user_id IN(
+  SELECT json_extract(value,'$.userId') FROM json_each(COALESCE((SELECT json_extract(value_json,'$.members') FROM app_settings WHERE key='business_boss_members'),(SELECT json_extract(value_json,'$.members') FROM app_settings WHERE key='boss_view_members'),'[]'))))
+ OR json_type(NEW.result_json,'$.score') NOT IN('integer','real') OR json_extract(NEW.result_json,'$.score') IS NULL
+ OR json_type(NEW.result_json,'$.peerScore') NOT IN('integer','real') OR json_extract(NEW.result_json,'$.peerScore') IS NULL
+ OR json_extract(NEW.result_json,'$.score')<0 OR json_extract(NEW.result_json,'$.score')>100
+ OR json_extract(NEW.result_json,'$.peerScore')<0 OR json_extract(NEW.result_json,'$.peerScore')>100
+ OR json_type(NEW.result_json,'$.weights.manager') NOT IN('integer','real') OR json_type(NEW.result_json,'$.weights.peers') NOT IN('integer','real')
+ OR json_extract(NEW.result_json,'$.weights.manager') IS NOT 0 OR json_extract(NEW.result_json,'$.weights.peers') IS NOT 100
+ OR json_extract(NEW.result_json,'$.publicationMode') IS NOT 'peers_only' OR json_extract(NEW.result_json,'$.scoring_rule') IS NOT 'peers_100'
+ OR ABS(json_extract(NEW.result_json,'$.peerScore')-(SELECT ROUND(AVG(r.score),1) FROM scoring360_assignments a JOIN scoring360_cycles c ON c.id=a.cycle_id JOIN scoring360_responses r ON r.assignment_id=a.id WHERE substr(c.start_date,1,7)=NEW.month AND a.evaluee_user_id=NEW.employee_user_id))>0.001
+ OR ABS(json_extract(NEW.result_json,'$.score')-json_extract(NEW.result_json,'$.peerScore'))>0.001)
+BEGIN SELECT RAISE(ABORT,'peer_scoring_incomplete_or_changed'); END;
+CREATE TRIGGER IF NOT EXISTS peer_prevents_old_weighted_insert BEFORE INSERT ON monthly_weighted_results
+WHEN EXISTS(SELECT 1 FROM monthly_peer_results WHERE month=NEW.month AND employee_user_id=NEW.employee_user_id)
+BEGIN SELECT RAISE(ABORT,'result_locked'); END;
+CREATE TRIGGER IF NOT EXISTS peer_prevents_person_weighted_insert BEFORE INSERT ON monthly_person_weighted_results
+WHEN EXISTS(SELECT 1 FROM monthly_peer_results WHERE month=NEW.month AND employee_user_id=NEW.employee_user_id)
+BEGIN SELECT RAISE(ABORT,'result_locked'); END;
+CREATE TRIGGER IF NOT EXISTS peer_prevents_manual_insert BEFORE INSERT ON performance_results
+WHEN NEW.kind='collaboration' AND EXISTS(SELECT 1 FROM monthly_peer_results WHERE month=NEW.month AND employee_user_id=NEW.employee_user_id)
+BEGIN SELECT RAISE(ABORT,'result_locked'); END;
+CREATE TRIGGER IF NOT EXISTS peer_response_insert_lock BEFORE INSERT ON scoring360_responses
+WHEN EXISTS(SELECT 1 FROM monthly_peer_results p JOIN scoring360_assignments a ON a.evaluee_user_id=p.employee_user_id JOIN scoring360_cycles c ON c.id=a.cycle_id AND substr(c.start_date,1,7)=p.month WHERE a.id=NEW.assignment_id)
+BEGIN SELECT RAISE(ABORT,'result_locked'); END;
+CREATE TRIGGER IF NOT EXISTS peer_response_update_lock BEFORE UPDATE ON scoring360_responses
+WHEN EXISTS(SELECT 1 FROM monthly_peer_results p JOIN scoring360_assignments a ON a.evaluee_user_id=p.employee_user_id JOIN scoring360_cycles c ON c.id=a.cycle_id AND substr(c.start_date,1,7)=p.month WHERE a.id IN(OLD.assignment_id,NEW.assignment_id))
+BEGIN SELECT RAISE(ABORT,'result_locked'); END;
+CREATE TRIGGER IF NOT EXISTS peer_response_delete_lock BEFORE DELETE ON scoring360_responses
+WHEN EXISTS(SELECT 1 FROM monthly_peer_results p JOIN scoring360_assignments a ON a.evaluee_user_id=p.employee_user_id JOIN scoring360_cycles c ON c.id=a.cycle_id AND substr(c.start_date,1,7)=p.month WHERE a.id=OLD.assignment_id)
+BEGIN SELECT RAISE(ABORT,'result_locked'); END;
+CREATE TRIGGER IF NOT EXISTS peer_assignment_insert_lock BEFORE INSERT ON scoring360_assignments
+WHEN EXISTS(SELECT 1 FROM monthly_peer_results p JOIN scoring360_cycles c ON substr(c.start_date,1,7)=p.month WHERE c.id=NEW.cycle_id AND p.employee_user_id=NEW.evaluee_user_id)
+BEGIN SELECT RAISE(ABORT,'result_locked'); END;
+CREATE TRIGGER IF NOT EXISTS peer_assignment_update_lock BEFORE UPDATE ON scoring360_assignments
+WHEN EXISTS(SELECT 1 FROM monthly_peer_results p JOIN scoring360_cycles c ON substr(c.start_date,1,7)=p.month WHERE (c.id=NEW.cycle_id AND p.employee_user_id=NEW.evaluee_user_id) OR (c.id=OLD.cycle_id AND p.employee_user_id=OLD.evaluee_user_id))
+BEGIN SELECT RAISE(ABORT,'result_locked'); END;
+CREATE TRIGGER IF NOT EXISTS peer_assignment_delete_lock BEFORE DELETE ON scoring360_assignments
+WHEN EXISTS(SELECT 1 FROM monthly_peer_results p JOIN scoring360_cycles c ON substr(c.start_date,1,7)=p.month WHERE c.id=OLD.cycle_id AND p.employee_user_id=OLD.evaluee_user_id)
+BEGIN SELECT RAISE(ABORT,'result_locked'); END;
+CREATE TRIGGER IF NOT EXISTS peer_cycle_update_lock BEFORE UPDATE OF id,start_date,end_date ON scoring360_cycles
+WHEN EXISTS(SELECT 1 FROM monthly_peer_results WHERE month=substr(OLD.start_date,1,7))
+BEGIN SELECT RAISE(ABORT,'result_locked'); END;
+CREATE TRIGGER IF NOT EXISTS peer_cycle_delete_lock BEFORE DELETE ON scoring360_cycles
+WHEN EXISTS(SELECT 1 FROM monthly_peer_results WHERE month=substr(OLD.start_date,1,7))
+BEGIN SELECT RAISE(ABORT,'result_locked'); END;
+CREATE TRIGGER IF NOT EXISTS peer_manager_score_insert_lock BEFORE INSERT ON monthly_manager_scores
+WHEN EXISTS(SELECT 1 FROM monthly_peer_results WHERE month=NEW.month AND employee_user_id=NEW.employee_user_id)
+BEGIN SELECT RAISE(ABORT,'result_locked'); END;
+CREATE TRIGGER IF NOT EXISTS peer_boss_score_insert_lock BEFORE INSERT ON department_leader_scores
+WHEN EXISTS(SELECT 1 FROM monthly_peer_results WHERE month=NEW.month AND employee_user_id=NEW.leader_user_id)
+BEGIN SELECT RAISE(ABORT,'result_locked'); END;
+CREATE TRIGGER IF NOT EXISTS peer_boss_person_insert_lock BEFORE INSERT ON department_person_scores
+WHEN EXISTS(SELECT 1 FROM monthly_peer_results WHERE month=NEW.month AND employee_user_id=NEW.leader_user_id)
+BEGIN SELECT RAISE(ABORT,'result_locked'); END;
+CREATE TRIGGER IF NOT EXISTS peer_handoff_insert_lock BEFORE INSERT ON monthly_manager_handoffs
+WHEN EXISTS(SELECT 1 FROM monthly_peer_results WHERE month=NEW.month AND employee_user_id=NEW.employee_user_id)
+BEGIN SELECT RAISE(ABORT,'result_locked'); END;

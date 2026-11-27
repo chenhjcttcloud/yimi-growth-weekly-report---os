@@ -1,6 +1,7 @@
 import {randomUUID} from 'node:crypto';
 import {employedInMonth} from './employee-lifecycle.mjs';
 import {createMonthlyScoringWindow} from './monthly-scoring-window.mjs';
+import {collaborationPolicy} from './collaboration-policy.mjs';
 const round=value=>Math.round(value*10)/10;
 const average=values=>values.length?round(values.reduce((sum,value)=>sum+Number(value),0)/values.length):null;
 const key=(month,id)=>JSON.stringify([month,id]);
@@ -52,6 +53,8 @@ export function createManagerReviews({query,exec,sql,organization,reports,isBoss
   return {...original,employee,expectedIds:[...new Set(expectedIds)],taskStartById,taskStartedAt:(start&&start>month+'-01'?start:month+'-01')+'T00:00:00+08:00'};
  }
  function progress(state,month,userId){
+  const policy=collaborationPolicy(month);
+  if(policy.rule==='peers_100')return {kind:'not_required',expectedIds:[],expected:0,submitted:0,complete:true,score:null,records:[],blockedIds:[],handoffRequired:false,disabled:true,collaborationPolicy:policy};
   const plan=planFor(state,month,userId);if(!plan)return {kind:'unassigned',expectedIds:[],expected:0,submitted:0,complete:false,score:null,records:[],blockedIds:[],handoffRequired:false};
   let expectedIds=plan.expectedIds,records;
   if(plan.kind==='boss'){
@@ -69,19 +72,24 @@ export function createManagerReviews({query,exec,sql,organization,reports,isBoss
   return {kind:plan.kind,expectedIds,expected:expectedIds.length,submitted:records.length,complete,score:complete?average(records.map(r=>r.score)):null,records,blockedIds,...(blockedDepartmentIds.length?{blockedDepartmentIds,departmentReviewBlocked:true}:{}),handoffRequired:blockedIds.length>0,taskStartedAt:plan.taskStartedAt,taskStartById:plan.taskStartById,frozen:Boolean(plan.frozenAt)};
  }
  async function freeze(month,userId,kind){
+  if(collaborationPolicy(month).rule==='peers_100')throw Object.assign(Error('collaboration_peer_only'),{status:409});
   const state=await snapshot(),plan=planFor(state,month,userId);if(!plan)throw Error('employee_not_employed');if(kind&&plan.kind!==kind)throw Error('not_your_subordinate');
   await exec(`INSERT OR IGNORE INTO monthly_review_plans(month,employee_user_id,plan_json) VALUES(${sql(month)},${sql(userId)},${sql(JSON.stringify(plan))});`);
  }
  const frozenIds=(state,month)=>[...state.frozen.keys()].map(k=>JSON.parse(k)).filter(([m])=>m===month).map(([,id])=>id);
  async function tasks(user,month){
-  month=validMonth(month||monthNow());const state=await snapshot(),mine=[...new Set([...state.plans.keys(),...frozenIds(state,month)])].map(id=>planFor(state,month,id)).filter(p=>p?.kind==='manager'&&p.expectedIds.includes(user.userId)&&state.people.get(user.userId)?.active&&(p.employee.active||state.scores.some(s=>s.month===month&&s.employee_user_id===p.employee.userId&&s.evaluator_user_id===user.userId)));
+  month=validMonth(month||monthNow());
+  const policy=collaborationPolicy(month);
+  if(policy.rule==='peers_100')return {month,reviewWindow:await ratingWindow.status(month),canReview:false,hasResponsibilities:false,weights:policy.weights,collaborationPolicy:policy,disabled:true,tasks:[]};
+  const state=await snapshot(),mine=[...new Set([...state.plans.keys(),...frozenIds(state,month)])].map(id=>planFor(state,month,id)).filter(p=>p?.kind==='manager'&&p.expectedIds.includes(user.userId)&&state.people.get(user.userId)?.active&&(p.employee.active||state.scores.some(s=>s.month===month&&s.employee_user_id===p.employee.userId&&s.evaluator_user_id===user.userId)));
   const evidence=mine.length&&reports?await reports({month}):[];
-  const published=await query(`SELECT employee_user_id FROM all_monthly_weighted_results WHERE month=${sql(month)} UNION SELECT employee_user_id FROM performance_results WHERE month=${sql(month)} AND kind='collaboration';`);
+  const published=await query(`SELECT employee_user_id FROM all_collaboration_results WHERE month=${sql(month)} UNION SELECT employee_user_id FROM performance_results WHERE month=${sql(month)} AND kind='collaboration';`);
   const reviewWindow=await ratingWindow.status(month);
-  return {month,reviewWindow,canReview:mine.length>0,hasResponsibilities:state.handoffs.some(h=>h.to_user_id===user.userId)||[...state.plans.values(),...state.frozen.values()].some(p=>p.kind==='manager'&&p.expectedIds.includes(user.userId)),weights:{manager:30,peers:70},tasks:mine.map(p=>{const saved=state.scores.find(s=>s.month===month&&s.employee_user_id===p.employee.userId&&s.evaluator_user_id===user.userId);return {employeeUserId:p.employee.userId,name:p.employee.name,department:p.employee.department,score:saved?.score??null,comment:saved?.comment||'',submitted:Boolean(saved),locked:Boolean(saved)||published.some(r=>r.employee_user_id===p.employee.userId),blocked:!saved&&!reviewWindow.isOpen,frozen:Boolean(p.frozenAt),reports:evidence.filter(r=>r.employeeUserId===p.employee.userId&&r.month===month).map(r=>({id:r.id,start:r.start,end:r.end,facts:r.evidence,aiReference:r.candidate,status:r.status}))};})};
+  return {month,collaborationPolicy:policy,reviewWindow,canReview:mine.length>0,hasResponsibilities:state.handoffs.some(h=>h.to_user_id===user.userId)||[...state.plans.values(),...state.frozen.values()].some(p=>p.kind==='manager'&&p.expectedIds.includes(user.userId)),weights:{manager:30,peers:70},tasks:mine.map(p=>{const saved=state.scores.find(s=>s.month===month&&s.employee_user_id===p.employee.userId&&s.evaluator_user_id===user.userId);return {employeeUserId:p.employee.userId,name:p.employee.name,department:p.employee.department,score:saved?.score??null,comment:saved?.comment||'',submitted:Boolean(saved),locked:Boolean(saved)||published.some(r=>r.employee_user_id===p.employee.userId),blocked:!saved&&!reviewWindow.isOpen,frozen:Boolean(p.frozenAt),reports:evidence.filter(r=>r.employeeUserId===p.employee.userId&&r.month===month).map(r=>({id:r.id,start:r.start,end:r.end,facts:r.evidence,aiReference:r.candidate,status:r.status}))};})};
  }
  async function submit(user,body){
   const month=validMonth(body.month),value=Number(body.score),comment=String(body.comment||'').trim();
+  if(collaborationPolicy(month).rule==='peers_100')throw Object.assign(Error('collaboration_peer_only'),{status:409});
   if(body.score==null||body.score===''||!Number.isFinite(value)||value<0||value>100||!comment||comment.length>4000)throw Error('score_and_comment_required');
   if(body.employeeUserId===user.userId)throw Error('self_scoring_forbidden');
   await ratingWindow.assertOpen(month);
@@ -93,7 +101,7 @@ export function createManagerReviews({query,exec,sql,organization,reports,isBoss
   if(!state.people.get(body.employeeUserId)?.active)throw Error('employee_inactive');
   if(!plan)throw Error('employee_not_employed');
   if(!state.people.get(user.userId)?.active||!plan.expectedIds.includes(user.userId))throw Error('not_your_subordinate');
-  const locked=await query(`SELECT 1 FROM monthly_manager_scores WHERE month=${sql(month)} AND employee_user_id=${sql(body.employeeUserId)} AND evaluator_user_id=${sql(user.userId)} UNION SELECT 1 FROM all_monthly_weighted_results WHERE month=${sql(month)} AND employee_user_id=${sql(body.employeeUserId)} UNION SELECT 1 FROM performance_results WHERE month=${sql(month)} AND employee_user_id=${sql(body.employeeUserId)} AND kind='collaboration';`);if(locked.length)throw Error('result_locked');
+  const locked=await query(`SELECT 1 FROM monthly_manager_scores WHERE month=${sql(month)} AND employee_user_id=${sql(body.employeeUserId)} AND evaluator_user_id=${sql(user.userId)} UNION SELECT 1 FROM all_collaboration_results WHERE month=${sql(month)} AND employee_user_id=${sql(body.employeeUserId)} UNION SELECT 1 FROM performance_results WHERE month=${sql(month)} AND employee_user_id=${sql(body.employeeUserId)} AND kind='collaboration';`);if(locked.length)throw Error('result_locked');
   const evidence={employee:plan.employee,evaluatorUserId:user.userId,evaluatorName:user.name,expectedIds:plan.expectedIds,weights:{manager:30,peers:70}};
   await ratingWindow.assertOpen(month);
   // Preserve frozen scopes and submitted history, but an account stopped while
@@ -106,11 +114,12 @@ export function createManagerReviews({query,exec,sql,organization,reports,isBoss
   }
  }
  async function handoffOverview(month=monthNow()){
-  validMonth(month);const state=await snapshot(),published=new Set((await query(`SELECT employee_user_id FROM all_monthly_weighted_results WHERE month=${sql(month)} UNION SELECT employee_user_id FROM performance_results WHERE month=${sql(month)} AND kind='collaboration';`)).map(r=>r.employee_user_id));
+  validMonth(month);const state=await snapshot(),published=new Set((await query(`SELECT employee_user_id FROM all_collaboration_results WHERE month=${sql(month)} UNION SELECT employee_user_id FROM performance_results WHERE month=${sql(month)} AND kind='collaboration';`)).map(r=>r.employee_user_id));
   const tasks=[...new Set([...state.plans.keys(),...frozenIds(state,month)])].map(id=>{const plan=planFor(state,month,id),p=progress(state,month,id);if(!plan||published.has(id)||!p.handoffRequired)return null;return {employeeUserId:id,name:plan.employee.name,department:plan.employee.department,pending:p.blockedIds.map(userId=>({userId,name:state.people.get(userId)?.name||state.departments.find(d=>d.leader_user_id===userId)?.leaderName||'身份待同步'})),submitted:p.submitted};}).filter(Boolean);
-  return {month,tasks,candidates:state.eligibleManagers.map(e=>({userId:e.userId,name:e.name,department:e.department})),history:state.handoffs.filter(h=>h.month===month).slice(-50).reverse().map(h=>({...h,employeeName:state.people.get(h.employee_user_id)?.name||'姓名待同步',fromName:state.people.get(h.from_user_id)?.name||'姓名待同步',toName:state.people.get(h.to_user_id)?.name||'姓名待同步'}))};
+  return {month,collaborationPolicy:collaborationPolicy(month),disabled:collaborationPolicy(month).rule==='peers_100',tasks,candidates:collaborationPolicy(month).rule==='peers_100'?[]:state.eligibleManagers.map(e=>({userId:e.userId,name:e.name,department:e.department})),history:state.handoffs.filter(h=>h.month===month).slice(-50).reverse().map(h=>({...h,employeeName:state.people.get(h.employee_user_id)?.name||'姓名待同步',fromName:state.people.get(h.from_user_id)?.name||'姓名待同步',toName:state.people.get(h.to_user_id)?.name||'姓名待同步'}))};
  }
  async function handoff(body,actor){
+  if(collaborationPolicy(validMonth(body.month)).rule==='peers_100')throw Object.assign(Error('collaboration_peer_only'),{status:409});
   const month=validMonth(body.month),id=String(body.employeeUserId||''),from=String(body.fromUserId||''),to=String(body.toUserId||''),reason=String(body.reason||'').trim();
   if(!reason||reason.length>1000)throw Error('handoff_reason_required');
   const state=await snapshot(),plan=planFor(state,month,id),p=progress(state,month,id);
@@ -121,7 +130,7 @@ export function createManagerReviews({query,exec,sql,organization,reports,isBoss
   return handoffOverview(month);
  }
  async function freezeBossPlan(month,userId){validMonth(month);await freeze(month,userId,'boss');}
- const publishedForMonth=async month=>new Set((await query(`SELECT employee_user_id FROM all_monthly_weighted_results WHERE month=${sql(month)} UNION SELECT employee_user_id FROM performance_results WHERE month=${sql(month)} AND kind='collaboration';`)).map(row=>row.employee_user_id));
+ const publishedForMonth=async month=>new Set((await query(`SELECT employee_user_id FROM all_collaboration_results WHERE month=${sql(month)} UNION SELECT employee_user_id FROM performance_results WHERE month=${sql(month)} AND kind='collaboration';`)).map(row=>row.employee_user_id));
  function leaderTargetFor(state,month,leaderUserId,published){
   const current=state.departments.filter(d=>d.leader_user_id===leaderUserId),person=state.people.get(leaderUserId);
   const inactive=state.inactiveDepartments.filter(d=>d.leader_user_id===leaderUserId);
@@ -132,6 +141,7 @@ export function createManagerReviews({query,exec,sql,organization,reports,isBoss
   const legacyScore=!saved&&p.kind==='boss'&&p.complete?p.score:undefined;
   let unavailableReason='';
   if(saved||legacyScore!==undefined||published.has(leaderUserId))unavailableReason='result_locked';
+  else if(collaborationPolicy(month).rule==='peers_100')unavailableReason='collaboration_peer_only';
   else if(!current.length&&inactive.length)unavailableReason='department_inactive';
   else if(!person)unavailableReason='leader_not_registered';
   else if(!person.active)unavailableReason='leader_inactive';
@@ -152,7 +162,7 @@ export function createManagerReviews({query,exec,sql,organization,reports,isBoss
   const leaderScoreTargets=[...ids].filter(Boolean).map(id=>leaderTargetFor(state,month,id,published));
   const leaderById=new Map(leaderScoreTargets.map(target=>[target.leaderUserId,target]));
   const savedIds=new Set(state.bossPersonScores.filter(score=>score.month===month).map(score=>score.leader_user_id));
-  return {month,reviewWindow:await ratingWindow.status(month),leaderScoreTargets,scoreTargets:state.departments.map(d=>{
+  return {month,collaborationPolicy:collaborationPolicy(month),disabled:collaborationPolicy(month).rule==='peers_100',reviewWindow:await ratingWindow.status(month),leaderScoreTargets,scoreTargets:state.departments.map(d=>{
    const leaderUserId=d.leader_user_id,person=state.people.get(leaderUserId),saved=state.bossScores.find(s=>s.month===month&&s.department_id===d.id&&s.leader_user_id===leaderUserId),plan=planFor(state,month,leaderUserId);
    const target=leaderById.get(leaderUserId),ratingRequired=target?.ratingRequired===true&&plan?.kind==='boss'&&plan.expectedIds.includes(d.id);
    const unavailableReason=!leaderUserId?'missing_leader':target?.unavailableReason||(!ratingRequired?(state.frozen.has(key(month,leaderUserId))?'rating_scope_frozen':'not_required'):'');
@@ -184,5 +194,5 @@ export function createManagerReviews({query,exec,sql,organization,reports,isBoss
    });
   }).map(({userId,name,department})=>({userId,name,department}));
  }
- return {snapshot,progress,tasks,submit,handoffOverview,handoff,freezeBossPlan,bossTargets,bossTarget,leaderScoreTarget,qualityReviewEmployees};
+ return {snapshot,progress,tasks,submit,handoffOverview,handoff,freezeBossPlan,bossTargets,bossTarget,leaderScoreTarget,qualityReviewEmployees,isBusinessBossUserId:isBossUserId};
 }

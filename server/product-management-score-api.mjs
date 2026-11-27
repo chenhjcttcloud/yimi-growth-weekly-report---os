@@ -102,7 +102,9 @@ export function createProductManagementScoreApi({query,sql,sendJson,token='',isC
  FROM monthly_person_weighted_results p JOIN selected e ON e.user_id=p.employee_user_id WHERE p.month=${sql(month)} AND p.kind='collaboration'
  UNION ALL SELECT p.employee_user_id,p.kind,p.result_json,p.confirmed_at,'weighted_30_70',p.confirmed_at,2
  FROM monthly_weighted_results p JOIN selected e ON e.user_id=p.employee_user_id WHERE p.month=${sql(month)} AND p.kind='collaboration'
- UNION ALL SELECT a.employee_user_id,a.kind,a.result_json,a.calculated_at,'automatic_report',a.id,3
+ UNION ALL SELECT p.employee_user_id,p.kind,p.result_json,p.confirmed_at,'peers_100',p.confirmed_at,3
+ FROM monthly_peer_results p JOIN selected e ON e.user_id=p.employee_user_id WHERE p.month=${sql(month)} AND p.kind='collaboration'
+ UNION ALL SELECT a.employee_user_id,a.kind,a.result_json,a.calculated_at,'automatic_report',a.id,4
  FROM automatic_performance_results a JOIN selected e ON e.user_id=a.employee_user_id
  WHERE a.month=${sql(month)} AND a.kind='quality' AND a.rowid=(SELECT MAX(b.rowid) FROM automatic_performance_results b WHERE b.month=a.month AND b.employee_user_id=a.employee_user_id AND b.kind=a.kind)
 )

@@ -24,6 +24,7 @@ const employees=[
  ['fixture-old-weighted','测试旧加权',1],['fixture-boss','测试老板',1],['fixture-peer','测试同事',1],
  ['fixture-auto','测试自动生成',1],['fixture-auto-zero','测试自动零分',1],
  ['fixture-auto-pending','测试自动未完整',1],['fixture-auto-unmarked','测试未标记自动',1],
+ ['fixture-peer-only','测试同事百分制',1],['fixture-peer-only-zero','测试同事百分制零分',1],['fixture-peer-only-pending','测试同事未完成',1],
 ];
 const names=new Map(employees.map(([id,name])=>[id,name]));
 const quote=value=>value==null?'NULL':"'"+String(value).replaceAll("'","''")+"'";
@@ -108,6 +109,15 @@ async function startServer(label,apiToken){
  // The complete weighted fixture also satisfies the old peer-only publication gate.
  weighted('monthly_person_weighted_results','fixture-legacy',69,90,60);
  statements.push(`INSERT INTO performance_results(month,employee_user_id,employee_name,kind,result_json,evidence_json,confirmed_by,confirmed_at) VALUES(${quote(month)},'fixture-legacy','测试改名前','collaboration',${json({score:60})},${quote(confidentialEvidence)},'fixture-legacy-publisher','2026-10-20T12:00:00Z');`);
+ const peerMonth='2026-11';
+ statements.push(`INSERT INTO scoring360_cycles(id,label,start_date,end_date,status,launch_at) VALUES('fixture-peer-cycle','合成新互评周期','2026-11-01','2026-11-30','open','2026-11-23T00:00:00+08:00');`);
+ for(const [id,value] of [['fixture-peer-only',95],['fixture-peer-only-zero',0],['fixture-peer-only-pending',81]]){
+  const assignment='peer-only-'+id;
+  statements.push(`INSERT INTO scoring360_assignments(id,cycle_id,evaluee_name,evaluator_name,evaluee_user_id,evaluator_user_id) VALUES(${quote(assignment)},'fixture-peer-cycle',${quote(names.get(id))},'测试同事',${quote(id)},'fixture-peer');`);
+  if(id.endsWith('pending'))continue;
+  statements.push(`INSERT INTO scoring360_responses(id,assignment_id,cycle_id,evaluee_name,evaluator_name,score,comment) VALUES(${quote('response-'+assignment)},${quote(assignment)},'fixture-peer-cycle',${quote(names.get(id))},'测试同事',${value},${quote(privateMarker)});`);
+  statements.push(`INSERT INTO monthly_peer_results(month,employee_user_id,employee_name,kind,result_json,evidence_json,confirmed_by,confirmed_at) VALUES(${quote(peerMonth)},${quote(id)},${quote(names.get(id))},'collaboration',${json({score:value,peerScore:value,managerScore:null,weights:{manager:0,peers:100},publicationMode:'peers_only',scoring_rule:'peers_100'})},${quote(confidentialEvidence)},'系统自动发布','2026-11-27T10:00:00Z');`);
+ }
  database(db,statements.join('\n'));
  const externalLog=dir+'/external-fetches.jsonl',guard=dir+'/network-guard.mjs';
  await writeFile(guard,`import {appendFileSync} from 'node:fs';globalThis.fetch=async()=>{appendFileSync(${JSON.stringify(externalLog)},'blocked\\n');throw Error('fixture_external_network_disabled');};`);
@@ -163,6 +173,11 @@ try{
  for(const [id,status] of [['fixture-rescoring','rescoring'],['fixture-failed','rescore_failed']]){const score=byId.get(id).weeklyQuality;unavailable(score,status);assert.equal(score.previousScore,null);}
  unavailable(byId.get('fixture-pending').weeklyQuality,'pending_ai');unavailable(byId.get('fixture-none').weeklyQuality,'no_reports');unavailable(byId.get('fixture-empty').weeklyQuality,'not_published');unavailable(byId.get('fixture-empty').collaboration360,'not_published');unavailable(byId.get('fixture-invalid-json').weeklyQuality,'invalid_result');unavailable(byId.get('fixture-invalid-score').weeklyQuality,'invalid_result');
  published(byId.get('fixture-legacy').weeklyQuality,64);published(byId.get('fixture-legacy').collaboration360,60);assert.equal(byId.get('fixture-legacy').weeklyQuality.source,'legacy');assert.equal(byId.get('fixture-legacy').collaboration360.source,'legacy');assert.equal(byId.get('fixture-legacy').employee.name,'测试改名后');published(byId.get('fixture-old-weighted').collaboration360,84);assert.equal(byId.get('fixture-inactive').employee.active,false);published(byId.get('fixture-inactive').weeklyQuality,76);
+ const peers=await request(configured,{method:'POST',body:{month:'2026-11',employees:['fixture-peer-only','fixture-peer-only-zero','fixture-peer-only-pending'].map(id=>identity(id))}});assert.equal(peers.status,200);
+ const peerResults=new Map(peers.body.data.map(row=>[row.employee.feishuUserId,row]));
+ published(peerResults.get('fixture-peer-only').collaboration360,95);published(peerResults.get('fixture-peer-only-zero').collaboration360,0);
+ assert.equal(peerResults.get('fixture-peer-only').collaboration360.source,'peers_100');assert.equal(peerResults.get('fixture-peer-only-zero').collaboration360.source,'peers_100');
+ unavailable(peerResults.get('fixture-peer-only-pending').collaboration360,'not_published');
  const unknown=await request(configured,{params:single('fixture-does-not-exist','测试甲')});assert.equal(unknown.status,200);assert.equal(unknown.body.data[0].matchStatus,'not_found');assert.equal(unknown.body.data[0].employee,null);unavailable(unknown.body.data[0].weeklyQuality,'identity_mismatch');unavailable(unknown.body.data[0].collaboration360,'identity_mismatch');
  const mismatch=await request(configured,{params:single('fixture-a','测试其他姓名')});assert.equal(mismatch.body.data[0].matchStatus,'name_mismatch');unavailable(mismatch.body.data[0].weeklyQuality,'identity_mismatch');unavailable(mismatch.body.data[0].collaboration360,'identity_mismatch');
  const sqlIdentity=await request(configured,{params:single("'OR'1'='1",'测试甲')});assert.equal(sqlIdentity.status,200);assert.equal(sqlIdentity.body.data.length,1);assert.equal(sqlIdentity.body.data[0].matchStatus,'not_found');assert.equal(sqlIdentity.body.data[0].employee,null);assert.deepEqual(sqlIdentity.body.totals,{requested:1,matched:0,unmatched:1});unavailable(sqlIdentity.body.data[0].weeklyQuality,'identity_mismatch');unavailable(sqlIdentity.body.data[0].collaboration360,'identity_mismatch');

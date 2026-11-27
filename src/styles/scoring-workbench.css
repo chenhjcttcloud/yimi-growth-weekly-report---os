@@ -10,3 +10,6 @@
 .wb-drawer-body:has(.wb-rater-list){display:flex;flex-direction:column;overflow:hidden}.wb-drawer-body>.wb-selection-summary,.wb-drawer-body>.wb-search,.wb-drawer-body>.wb-rater-scope,.wb-drawer-body>.pf-error{flex-shrink:0}.wb-rater-list{flex:1;min-height:0;overflow-y:auto;overscroll-behavior:contain;scrollbar-width:thin;display:block}.wb-rater-list>label{margin-bottom:5px}
 
 .wb-rater-list{scroll-padding-block:12px}.wb-selected-chips>span.is-unavailable{border-color:#ecdcb7;background:#fffaf0;color:#896c35}.wb-selected-chips>span>small{font-size:9px;color:#9a834c}
+
+/* Keep the history entry and scoring tabs inside narrow screens. */
+.scoring-management-shell .scoring-workbench-tabs{flex-wrap:wrap}

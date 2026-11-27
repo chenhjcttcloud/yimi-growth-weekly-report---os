@@ -25,7 +25,7 @@ const query=async statement=>{
  if(statement.startsWith('SELECT rowid AS review_rowid,* FROM weekly_quality_reviews'))return [];
  if(statement.startsWith('SELECT key FROM app_settings WHERE key GLOB'))return [];
  if(statement==='SELECT employee_user_id,week_start,week_end FROM weekly_reports;')return [];
- if(statement==='SELECT month FROM performance_results UNION SELECT month FROM all_monthly_weighted_results UNION SELECT month FROM automatic_performance_results;')return published.map(({month})=>({month}));
+ if(statement==='SELECT month FROM performance_results UNION SELECT month FROM all_collaboration_results UNION SELECT month FROM automatic_performance_results;')return published.map(({month})=>({month}));
  if(statement.includes('NULL AS calculation_hash FROM performance_results p'))return [...own(published).map(({month,employee_user_id,kind,scoring_rule})=>({month,employee_user_id,kind,scoring_rule})),...own([...automaticKeys.values()])];
  if(statement.includes('ORDER BY month DESC, employee_name;')){confirmedReads++;return own(published);}
  if(statement==='SELECT * FROM scoring360_cycles ORDER BY start_date DESC;')return [];
@@ -51,7 +51,7 @@ assert(fixtureQueries.includes("SELECT rowid AS review_rowid,* FROM weekly_repor
 assert(!fixtureQueries.some(q=>/^SELECT (?:rowid AS review_rowid,)?\* FROM weekly_reports;$/.test(q)),'personal must not load global report bodies');
 assert(fixtureQueries.includes("SELECT user_id,name,department,is_active FROM employees WHERE user_id='a';"));
 assert(fixtureQueries.includes("SELECT * FROM employee_employment_periods WHERE employee_user_id='a';"));
-for(const statement of fixtureQueries.filter(q=>q.includes('ORDER BY month DESC')))for(const alias of ['p','w','a'])assert(statement.includes(`${alias}.employee_user_id='a'`),'final publication union arms must remain scoped');
+for(const statement of fixtureQueries.filter(q=>q.includes('ORDER BY month DESC')))for(const alias of ['p','w','n','a'])assert(statement.includes(`${alias}.employee_user_id='a'`),'final publication union arms must remain scoped');
 // Exercise SQLite's JSON projection itself, including explicit null/missing
 // fields, false/zero, composite values and pre-existing malformed evidence.
 const db=directory+'/projection.sqlite',quoted=value=>value==null?'NULL':"'"+String(value).replaceAll("'","''")+"'";

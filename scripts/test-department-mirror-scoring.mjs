@@ -83,7 +83,9 @@ assert.equal((await performance.personal('已完成负责人','published')).hist
 assert.equal(run("SELECT * FROM department_person_scores WHERE department_id<>'' ORDER BY department_id;"),scoresBefore);
 
 now=new Date('2026-11-02T02:00:00Z');state=await reviews.snapshot();progress=reviews.progress(state,'2026-11','head');
-assert.deepEqual(progress.expectedIds,['']);assert.equal(progress.frozen,false);assert.equal(progress.expected,1);
+assert.deepEqual(progress.expectedIds,[]);assert.equal(progress.kind,'not_required');assert.equal(progress.expected,0);
+assert.equal(progress.complete,true);assert.equal(progress.score,null);assert.equal(progress.disabled,true);
+assert.equal(progress.collaborationPolicy.rule,'peers_100','new months no longer require a separate manager or boss score');
 assert(!(await reviews.bossTargets('2026-11')).scoreTargets.some(row=>['b','d'].includes(row.departmentId)));
 assert.equal(reviews.progress(state,'2026-10','head').score,86,'the prior month retains its person rating');
 assert.equal(run('SELECT count(*) FROM organization_departments;'),'4','all department identity rows are retained');

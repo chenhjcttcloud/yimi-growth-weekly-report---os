@@ -7,6 +7,7 @@ import {reportQualityAssessment,fixedQualityWeightsFor,isStructuredQualityVersio
 import {legacyReportScore,usableQuality} from './report-rescore-state.mjs';
 import {encodeAutomaticEvidence,decodeAutomaticEvidence} from './automatic-evidence-storage.mjs';
 import {databaseCollaborationScores} from './collaboration-score-rounding.mjs';
+import {collaborationPolicy} from './collaboration-policy.mjs';
 import {applyQualityReviews,qualityAnalysisVersion,qualityReviewDetails,qualityVersion,summarizeMonthlyQuality} from './weekly-quality-review.mjs';
 
 const selected=(value,keys)=>value&&typeof value==='object'?Object.fromEntries(keys.filter(key=>value[key]!==undefined).map(key=>[key,value[key]])):null;
@@ -92,6 +93,7 @@ export function createPerformance({ query, exec, sql, readData, policyFor, manag
     const scope=where(resultScope(userId,month)),automaticScope=resultScope(userId,month,'a.');
     return query(`SELECT month,employee_user_id,kind,${manualRule('p')} AS scoring_rule,NULL AS calculation_hash FROM performance_results p${scope}
 UNION ALL SELECT month,employee_user_id,kind,'weighted_30_70' AS scoring_rule,NULL AS calculation_hash FROM all_monthly_weighted_results${scope}
+UNION ALL SELECT month,employee_user_id,kind,'peers_100' AS scoring_rule,NULL AS calculation_hash FROM monthly_peer_results${scope}
 UNION ALL SELECT a.month,a.employee_user_id,a.kind,'automatic_report' AS scoring_rule,a.calculation_hash FROM automatic_performance_results a
 WHERE ${automaticScope.length?automaticScope.join(' AND ')+' AND ':''}a.rowid=(SELECT MAX(b.rowid) FROM automatic_performance_results b WHERE b.month=a.month AND b.employee_user_id=a.employee_user_id AND b.kind=a.kind)
 AND NOT EXISTS(SELECT 1 FROM performance_results p WHERE p.month=a.month AND p.employee_user_id=a.employee_user_id AND p.kind=a.kind);`);
@@ -120,6 +122,7 @@ WHERE key IN ('reviewNote','qualityCandidate','legitimateReason','deduction'))`;
     const publishedQuality=`a.kind='quality' AND json_extract(${automaticQuality},'$.publicationMode')='automatic' AND json_extract(${automaticQuality},'$.status') IN ('final','revised_final') AND json_type(${automaticQuality},'$.score') IN ('integer','real') AND json_extract(${automaticQuality},'$.score') BETWEEN 0 AND 100 AND json_extract(${automaticQuality},'$.pendingAnalysis')=0 AND json_extract(${automaticQuality},'$.confirmationBlockedReason') IS NULL`;
     return (await query(`SELECT ${clientSummary?columns('p'):'*'}, ${manualRule('p')} AS scoring_rule FROM performance_results p${where(scope('p'))}
 UNION ALL SELECT ${clientSummary?columns('w'):'*'}, 'weighted_30_70' AS scoring_rule FROM all_monthly_weighted_results w${where(scope('w'))}
+UNION ALL SELECT ${clientSummary?columns('n'):'*'}, 'peers_100' AS scoring_rule FROM monthly_peer_results n${where(scope('n'))}
 UNION ALL SELECT a.month,a.employee_user_id,a.employee_name,a.kind,a.result_json,${evidence('a')} AS evidence_json,'系统自动计算' AS confirmed_by,a.calculated_at AS confirmed_at,'automatic_report' AS scoring_rule FROM automatic_performance_results a
 WHERE (a.kind='timeliness' OR (${publishedQuality})) AND ${automaticScope.length?automaticScope.join(' AND ')+' AND ':''}a.rowid=(SELECT MAX(b.rowid) FROM automatic_performance_results b WHERE b.month=a.month AND b.employee_user_id=a.employee_user_id AND b.kind=a.kind)
 AND NOT EXISTS(SELECT 1 FROM performance_results p WHERE p.month=a.month AND p.employee_user_id=a.employee_user_id AND p.kind=a.kind)
@@ -298,7 +301,7 @@ WHERE COALESCE((SELECT calculation_hash FROM automatic_performance_results WHERE
       const boundaryQuery=scoped?'SELECT employee_user_id,week_start,week_end FROM weekly_reports ORDER BY rowid;':'SELECT employee_user_id,week_start,week_end FROM weekly_reports;';
       for(const r of await query(boundaryQuery))boundaries.set(`${r.employee_user_id}|${r.week_end}`,{employeeUserId:r.employee_user_id,end:r.week_end,start:r.week_start});
       reportPeriods=[...boundaries.values()];
-      publicationMonths=await query('SELECT month FROM performance_results UNION SELECT month FROM all_monthly_weighted_results UNION SELECT month FROM automatic_performance_results;');
+      publicationMonths=await query('SELECT month FROM performance_results UNION SELECT month FROM all_collaboration_results UNION SELECT month FROM automatic_performance_results;');
     }
     for(const r of reportPeriods) if(r.end&&!periodMap.has(r.end)) periodMap.set(r.end,{end:r.end,start:r.start});
     const asOf=now();
@@ -325,7 +328,7 @@ WHERE COALESCE((SELECT calculation_hash FROM automatic_performance_results WHERE
     }
     const collaborations=[];
     for(const c of selectedCycles){
-      const assignments=await query(`SELECT a.*,r.score,r.comment,r.submitted_at FROM scoring360_assignments a LEFT JOIN scoring360_responses r ON r.assignment_id=a.id WHERE a.cycle_id=${sql(c.id)}${userId?` AND a.evaluee_user_id=${sql(userId)}`:''} AND (COALESCE(a.status,'active')='active' OR r.id IS NOT NULL);`);
+      const assignments=await query(`SELECT a.*,r.score,r.comment,r.submitted_at,r.cycle_id AS response_cycle_id FROM scoring360_assignments a LEFT JOIN scoring360_responses r ON r.assignment_id=a.id WHERE a.cycle_id=${sql(c.id)}${userId?` AND a.evaluee_user_id=${sql(userId)}`:''} AND (COALESCE(a.status,'active')='active' OR r.id IS NOT NULL);`);
       const totals=cycleTotals.find(t=>t.cycle_id===c.id);
       collaborations.push({...c,month:monthOf(c.start_date),assignments,expected:userId?Number(totals?.expected||0):assignments.length,submitted:userId?Number(totals?.submitted||0):assignments.filter(hasPeerScore).length,pending:userId?JSON.parse(totals?.pending_json||'[]'):assignments.filter(a=>!hasPeerScore(a)).map(a=>a.evaluator_name)});
     }
@@ -341,6 +344,7 @@ WHERE COALESCE((SELECT calculation_hash FROM automatic_performance_results WHERE
     const employees=[...directory.values()];
     const monthly=[];
     const selectedMonths=scoped?months.filter(m=>m===scopeMonth):months;
+    const businessBossIds=new Set(selectedMonths.some(month=>collaborationPolicy(month).rule==='peers_100')?(await query(`SELECT json_extract(value,'$.userId') AS user_id FROM json_each(COALESCE((SELECT json_extract(value_json,'$.members') FROM app_settings WHERE key='business_boss_members'),(SELECT json_extract(value_json,'$.members') FROM app_settings WHERE key='boss_view_members'),'[]'));`)).map(row=>row.user_id):[]);
     const confirmationBlocks=new Map();
     for(const month of selectedMonths){
       const monthPolicy=await readPolicy(month);
@@ -357,11 +361,13 @@ WHERE COALESCE((SELECT calculation_hash FROM automatic_performance_results WHERE
       const cyclesForMonth=collaborations.filter(c=>c.month===month);
       const assignments=cyclesForMonth.flatMap(c=>c.assignments.filter(a=>a.evaluee_user_id===employee.userId));
       const managerProgress=managerReviews.progress(managerState,month,employee.userId);
-      const peerCandidate=average(assignments.filter(hasPeerScore).map(a=>Number(a.score)));
-      const peerComplete=cyclesForMonth.length>0&&assignments.length>0&&assignments.some(a=>a.status==='active')&&assignments.every(hasPeerScore);
-      const complete=peerComplete&&managerProgress.complete;
+      const policy=collaborationPolicy(month);
+      const peerIdentityValid=policy.rule!=='peers_100'||assignments.every(a=>a.evaluee_user_id!==a.evaluator_user_id&&(!hasPeerScore(a)||a.response_cycle_id===a.cycle_id)&&!businessBossIds.has(a.evaluator_user_id)&&managerReviews.isBusinessBossUserId?.(a.evaluator_user_id)!==true);
+      const peerCandidate=peerIdentityValid?average(assignments.filter(hasPeerScore).map(a=>Number(a.score))):null;
+      const peerComplete=cyclesForMonth.length>0&&assignments.length>0&&(policy.rule==='peers_100'||assignments.some(a=>a.status==='active'))&&assignments.every(hasPeerScore)&&peerIdentityValid;
+      const complete=peerComplete&&(policy.rule==='peers_100'||managerProgress.complete);
       const quality=summarizeMonthlyQuality(employeeReports,confirmationBlocks.get(month));
-      monthly.push({...employee,month,reports:employeeReports,quality,qualityCandidate:quality.candidateScore,timeliness:{expected,submitted,onTime,late:counted.filter(r=>r.late).length,pendingTimestamp:counted.filter(r=>r.timestampUnknown).length,pendingCalendar:new Set([...weeks.filter(p=>readSchedule(p.end,monthPolicy.deadlineTime).calendarPending).map(p=>p.end),...counted.filter(r=>r.schedule.calendarPending).map(r=>r.end)]).size,missing:Math.max(0,expected-submitted),rate:expected?round(onTime/expected*100):null},peerCandidate,peerComplete,managerProgress,collaborationCandidate:complete?round(peerCandidate*.7+managerProgress.score*.3):null,collaborationComplete:complete,collaborationExpected:assignments.length,collaborationSubmitted:assignments.filter(hasPeerScore).length});
+      monthly.push({...employee,month,collaborationPolicy:policy,reports:employeeReports,quality,qualityCandidate:quality.candidateScore,timeliness:{expected,submitted,onTime,late:counted.filter(r=>r.late).length,pendingTimestamp:counted.filter(r=>r.timestampUnknown).length,pendingCalendar:new Set([...weeks.filter(p=>readSchedule(p.end,monthPolicy.deadlineTime).calendarPending).map(p=>p.end),...counted.filter(r=>r.schedule.calendarPending).map(r=>r.end)]).size,missing:Math.max(0,expected-submitted),rate:expected?round(onTime/expected*100):null},peerCandidate,peerComplete,managerProgress,collaborationCandidate:complete?(policy.rule==='peers_100'?peerCandidate:round(peerCandidate*.7+managerProgress.score*.3)):null,collaborationComplete:complete,collaborationExpected:assignments.length,collaborationSubmitted:assignments.filter(hasPeerScore).length});
     }
     // Existing publications retain their original values. Pending publications
     // use the database's own AVG/ROUND semantics, just like its validation trigger.
@@ -386,6 +392,15 @@ WHERE COALESCE((SELECT calculation_hash FROM automatic_performance_results WHERE
     }
     for(const row of monthly.filter(r=>r.collaborationComplete)) {
       if(results.some(r=>r.month===row.month&&r.employee_user_id===row.userId&&r.kind==='collaboration'))continue;
+      if(row.collaborationPolicy.rule==='peers_100'){
+        const result={score:row.collaborationCandidate,peerScore:row.peerCandidate,managerScore:null,weights:row.collaborationPolicy.weights,publicationMode:'peers_only',scoring_rule:'peers_100'};
+        const snapshot={...row,publicationMode:'peers_only',reviewNote:'当月全部必要同事互评完成后，按同事评分均分100%自动发布',reviewer:'系统自动发布'};
+        await exec(`INSERT OR IGNORE INTO monthly_peer_results(month,employee_user_id,employee_name,kind,result_json,evidence_json,confirmed_by,confirmed_at)
+SELECT ${sql(row.month)},${sql(row.userId)},${sql(row.name)},'collaboration',${sql(JSON.stringify(result))},${sql(JSON.stringify(snapshot))},'系统自动发布',datetime('now')
+WHERE NOT EXISTS(SELECT 1 FROM all_collaboration_results WHERE month=${sql(row.month)} AND employee_user_id=${sql(row.userId)})
+ AND NOT EXISTS(SELECT 1 FROM performance_results WHERE month=${sql(row.month)} AND employee_user_id=${sql(row.userId)} AND kind='collaboration');`);
+        continue;
+      }
       const snapshot={...row,publicationMode:'weighted_30_70',reviewNote:'负责人或老板评分30%＋同事互评70%，两部分完成后自动发布',reviewer:'系统自动发布'};
       const match=`month=${sql(row.month)} AND employee_user_id=${sql(row.userId)}`;
       const {kind,expectedIds}=row.managerProgress;
@@ -393,13 +408,21 @@ WHERE COALESCE((SELECT calculation_hash FROM automatic_performance_results WHERE
       const personScoreGuard=usesPersonScore?'':`AND NOT EXISTS(SELECT 1 FROM boss_person_scores WHERE month=${sql(row.month)} AND leader_user_id=${sql(row.userId)})`;
       await exec(`INSERT OR IGNORE INTO monthly_person_weighted_results(month,employee_user_id,employee_name,kind,result_json,evidence_json,confirmed_by,confirmed_at)
 SELECT ${sql(row.month)},${sql(row.userId)},${sql(row.name)},'collaboration',${sql(JSON.stringify({score:row.collaborationCandidate,peerScore:row.peerCandidate,managerScore:row.managerProgress.score,weights:{manager:30,peers:70}}))},${sql(JSON.stringify(snapshot))},'系统自动发布',datetime('now')
-WHERE NOT EXISTS(SELECT 1 FROM all_monthly_weighted_results WHERE ${match})
+WHERE NOT EXISTS(SELECT 1 FROM all_collaboration_results WHERE ${match})
  AND NOT EXISTS(SELECT 1 FROM performance_results WHERE ${match} AND kind='collaboration')
  ${personScoreGuard};`);
     }
     const published=await confirmed(clientSummary,userId,scopeMonth,includeTrendResults);
     const finals=new Map(published.filter(row=>row.kind==='quality').map(row=>[`${row.month}|${row.employee_user_id}`,row]));
+    const savedCollaborations=new Map(published.filter(row=>row.kind==='collaboration').map(row=>[`${row.month}|${row.employee_user_id}`,row]));
     for(const row of monthly){
+      const savedCollaboration=savedCollaborations.get(`${row.month}|${row.userId}`);
+      if(savedCollaboration){
+        row.collaborationCandidate=savedCollaboration.result.score??null;
+        row.peerCandidate=savedCollaboration.result.peerScore??null;
+        row.collaborationComplete=true;
+        row.collaborationRule=savedCollaboration.scoring_rule;
+      }
       const final=finals.get(`${row.month}|${row.userId}`);
       if(final){
         const {version,confirmationBlockedReason,...quality}=row.quality;
@@ -411,7 +434,8 @@ WHERE NOT EXISTS(SELECT 1 FROM all_monthly_weighted_results WHERE ${match})
         row.qualityCandidate=row.quality.candidateScore;
       }
     }
-    return {months,employees,monthly,collaborations,results:published,...(scoped?{scopeMonth}:{})};
+    const visibleCollaborations=collaborations.map(cycle=>({...cycle,assignments:cycle.assignments.map(({response_cycle_id,...assignment})=>assignment)}));
+    return {months,employees,monthly,collaborations:visibleCollaborations,results:published,collaborationPolicy:collaborationPolicy(scopeMonth||monthOf(today)),...(scoped?{scopeMonth}:{})};
   }
   async function personal(name, userId,{reportContext}={}) {
     employeeScope(userId);
@@ -426,12 +450,12 @@ WHERE NOT EXISTS(SELECT 1 FROM all_monthly_weighted_results WHERE ${match})
       const {version,...monthlyQuality}=row?.quality||summarizeMonthlyQuality([]);
       const refreshing=(row?.reports||[]).filter(report=>report.submitted&&!report.qualityExcluded&&report.candidate===null&&(report.qualityRefresh||report.qualityReanalysisPending));
       const failedAnalysis=refreshing.filter(report=>report.qualityRefresh?.state==='failed').length;
-      return {month,quality:get('quality')?.score??null,qualityStatus:monthlyQuality.status,monthlyQuality:{...monthlyQuality,canConfirm:false},
+      return {month,collaborationPolicy:collaborationPolicy(month),quality:get('quality')?.score??null,qualityStatus:monthlyQuality.status,monthlyQuality:{...monthlyQuality,canConfirm:false},
         ...(refreshing.length&&monthlyQuality.status==='pending_ai'?{qualityRefresh:{status:failedAnalysis?'rescore_failed':'rescoring',pendingAnalysis:monthlyQuality.pendingAnalysis,failedAnalysis,targetVersion:ACTIVE_REPORT_QUALITY_VERSION}}:{}),
         timeliness:get('timeliness')??null,collaboration:get('collaboration')?.score??null,collaborationRule:rows.find(r=>r.month===month&&r.kind==='collaboration')?.scoring_rule||null};
     });
     const scores=history.filter(r=>r.quality!==null).slice(0,3).map(r=>r.quality);
-    return {history,ratingProgress:view.monthly.filter(r=>r.userId===userId).map(r=>({month:r.month,peerComplete:r.peerComplete,managerKind:r.managerProgress.kind,managerExpected:r.managerProgress.expected,managerSubmitted:r.managerProgress.submitted,managerComplete:r.managerProgress.complete})),rollingQuality:average(scores),rollingMonths:scores.length};
+    return {history,collaborationPolicy:collaborationPolicy(shanghaiDate.format(now()).slice(0,7)),ratingProgress:view.monthly.filter(r=>r.userId===userId).map(r=>({month:r.month,collaborationPolicy:r.collaborationPolicy,peerComplete:r.peerComplete,managerKind:r.managerProgress.kind,managerExpected:r.managerProgress.expected,managerSubmitted:r.managerProgress.submitted,managerComplete:r.managerProgress.complete})),rollingQuality:average(scores),rollingMonths:scores.length};
   }
   function qualityWriteIdentity(body,user) {
     const {userId,month,version}=body||{};

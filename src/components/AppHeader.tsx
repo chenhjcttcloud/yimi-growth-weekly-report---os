@@ -172,7 +172,7 @@ export function AppHeader({
               </option>
             ))}
           </AppSelect>
-        </div> : <p className="header-meta">{activePage==="quality-scores"?"月度质量分 · 四模块评分 · 周报证据":activePage==="collaboration-scores"?"月度协同得分 · 评分进度 · 历史结果":activePage==="scores"?(["boss","system_admin"].includes(managementRole||"")?"负责人评分 · 得分结果 · 月度配评":"我的评分任务 · 同事互评"):activePage==="departments"?"部门层级 · 团队成员 · 月度表现":"月度结果 · 每周周报 · AI 教练 · 行动闭环"}</p>}
+        </div> : <p className="header-meta">{activePage==="quality-scores"?"月度质量分 · 四模块评分 · 周报证据":activePage==="collaboration-scores"?"月度协同得分 · 评分进度 · 历史结果":activePage==="scores"?(["boss","system_admin"].includes(managementRole||"")?"同事互评 · 得分结果 · 月度配评":"我的评分任务 · 同事互评"):activePage==="departments"?"部门层级 · 团队成员 · 月度表现":"月度结果 · 每周周报 · AI 教练 · 行动闭环"}</p>}
       </div>
 
       <div className="header-actions">

@@ -61,16 +61,14 @@ checks.push('november_27_is_due_workday_but_unopened_window_sends_and_reserves_n
 at('2026-11-30T00:00:00+08:00');
 assert.equal((await ratingWindow.status('2026-11')).isOpen,true);
 let pending=await monthly.pending('2026-11');
-assert.deepEqual(pending.map(row=>row.userId),['boss','head','peer']);
-assert.deepEqual(pending.find(row=>row.userId==='boss').counts,{peer:0,manager:0,boss:1});
-assert.deepEqual(pending.find(row=>row.userId==='head').counts,{peer:0,manager:1,boss:0});
+assert.deepEqual(pending.map(row=>row.userId),['peer']);
 assert.deepEqual(pending.find(row=>row.userId==='peer').counts,{peer:1,manager:0,boss:0});
 assert(!pending.some(row=>row.userId==='alt-peer'),'alternate-cycle tasks cannot generate a reminder');
 assert.equal((await personal.status(user,'2026-11')).canRemind,false,'old manager responsibility timestamps must not allow immediate personal reminders');
 assert.equal((await peerOnlyPersonal.status(user,'2026-11')).canRemind,false,'old peer launch/creation timestamps must not bypass the opening-based wait');
 await assert.rejects(personal.send(user,'2026-11'),/reminder_not_due/);
 assert.equal(count('personal_scoring_reminders'),0);
-checks.push('exact_opening_exposes_all_three_roles_but_personal_wait_starts_at_opening');
+checks.push('exact_opening_exposes_only_peer_tasks_and_personal_wait_starts_at_opening');
 
 at('2026-11-30T10:00:00+08:00');
 for(const status of ['draft','closed']){
@@ -86,12 +84,13 @@ for(const status of ['draft','closed']){
 }
 checks.push('draft_or_closed_canonical_cycle_blocks_every_reminder_even_with_open_alternate');
 run("UPDATE scoring360_cycles SET status='open' WHERE id='2026-11-360';");
-assert.deepEqual(await monthly.tick(),{sent:3,failed:0});
-assert.deepEqual(monthEndCalls.map(call=>call.userId),['boss','head','peer']);
+assert.deepEqual(await monthly.tick(),{sent:1,failed:0});
+assert.deepEqual(monthEndCalls.map(call=>call.userId),['peer']);
+assert(monthEndCalls.every(call=>call.message.includes('100%')&&!/30%|70%|下属月度评分|部门负责人评分/.test(call.message)));
 assert(!monthEndCalls.some(call=>call.userId==='alt-peer'));
-assert.deepEqual(run('SELECT DISTINCT recipient_user_id FROM monthly_score_reminder_deliveries ORDER BY recipient_user_id;',true).map(row=>row.recipient_user_id),['boss','head','peer']);
-assert.equal(run("SELECT count(*) AS n FROM monthly_score_reminder_deliveries WHERE reminder_date='2026-11-30' AND status='sent';",true)[0].n,3);
-checks.push('opened_due_day_delivers_only_actionable_canonical_peer_and_manager_boss_tasks');
+assert.deepEqual(run('SELECT DISTINCT recipient_user_id FROM monthly_score_reminder_deliveries ORDER BY recipient_user_id;',true).map(row=>row.recipient_user_id),['peer']);
+assert.equal(run("SELECT count(*) AS n FROM monthly_score_reminder_deliveries WHERE reminder_date='2026-11-30' AND status='sent';",true)[0].n,1);
+checks.push('opened_due_day_delivers_only_actionable_canonical_peer_tasks');
 
 // The 24-hour personal wait uses the latest applicable start, including when a
 // new launch or an assignment is later than the calendar's opening Monday.

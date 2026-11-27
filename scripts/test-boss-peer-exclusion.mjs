@@ -185,7 +185,8 @@ try {
   await recurring.recurrence.tick();
   assert.deepEqual(generatedPairs('2026-11'), expectedPairs);
   assert.deepEqual(template(), originalTemplate, 'automatic projection never rewrites the immutable template');
-  assert.deepEqual([...recurring.reviews.progress(await recurring.reviews.snapshot(), '2026-11', 'multi').expectedIds].sort(), ['head', 'other-head']);
+  assert.deepEqual([...recurring.reviews.progress(await recurring.reviews.snapshot(), '2026-10', 'multi').expectedIds].sort(), ['head', 'other-head'],'old months retain every thirty-percent responsibility');
+  assert.deepEqual(recurring.reviews.progress(await recurring.reviews.snapshot(), '2026-11', 'multi').expectedIds,[],'new months do not create thirty-percent tasks');
   assert.equal(recurring.prior(), recurringPrior);
   assert.equal(recurring.preserved(), recurringScores);
   assert.deepEqual(recurring.roles(), recurringRoles);

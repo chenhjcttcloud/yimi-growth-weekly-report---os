@@ -209,6 +209,37 @@ try {
     assert(isBlank(cell(sheet, 'weighted-missing-parts', '同事互评均分（70%）')));
   });
 
+  check('peer-only month exports the full peer score and progress without 30% fields or a manager handoff', () => {
+    const nextMonth = '2026-11', policy = {rule: 'peers_100', weights: {manager: 0, peers: 100}, effectiveMonth: nextMonth};
+    const peerZero = person('peer-zero', {month: nextMonth, collaborationPolicy: policy, managerProgress: {kind: 'none', required: false, expected: 0, submitted: 0, complete: true}, peerCandidate: 0});
+    const peerPending = person('peer-pending', {month: nextMonth, collaborationPolicy: policy, managerProgress: {kind: 'none', required: false, expected: 0, submitted: 0, complete: false, handoffRequired: true}, collaborationExpected: 3, collaborationSubmitted: 1, peerComplete: false});
+    const saved = {...result('peer-zero', 'collaboration', 'peers_100', 0, {peerScore: 0, weights: {manager: 0, peers: 100}, publicationMode: 'peers_only'}), month: nextMonth};
+    const sheet = sheetFor(build({kind: 'collaboration', month: nextMonth, rows: [peerZero, peerPending], results: [saved], employeeUserIds: ['peer-zero', 'peer-pending']}), '月度综合最终分');
+    assert(sheet.columns.every(column => !/30%|70%|负责人|老板/.test(column.title)));
+    assert.equal(cell(sheet, 'peer-zero', '月度综合最终分'), 0);
+    assert.equal(cell(sheet, 'peer-zero', '同事互评均分（100%）'), 0);
+    assert.equal(cell(sheet, 'peer-zero', '计分口径'), '同事互评100%');
+    assert.equal(cell(sheet, 'peer-pending', '月度综合最终分'), null);
+    assert.equal(cell(sheet, 'peer-pending', '评分状态'), '待评分');
+    assert.equal(cell(sheet, 'peer-pending', '同事已评数'), 1);
+    assert.equal(cell(sheet, 'peer-pending', '同事应评数'), 3);
+    assert.equal(cell(sheet, 'peer-pending', '同事缺评数'), 2);
+  });
+
+  check('mixed transition exports preserve an existing November weighted final without assigning its 30% to new peer rows', () => {
+    const nextMonth = '2026-11', policy = {rule: 'peers_100', weights: {manager: 0, peers: 100}, effectiveMonth: nextMonth};
+    const old = person('old-november', {month: nextMonth, collaborationPolicy: policy, managerProgress: {kind: 'none', required: false, expected: 0, submitted: 0}});
+    const peer = person('new-november', {month: nextMonth, collaborationPolicy: policy, managerProgress: {kind: 'none', required: false, expected: 0, submitted: 0}});
+    const saved = {...result('old-november', 'collaboration', 'weighted_30_70', 87, {managerScore: 80, peerScore: 90}), month: nextMonth};
+    const sheet = sheetFor(build({kind: 'collaboration', month: nextMonth, rows: [old, peer], results: [saved], employeeUserIds: ['old-november', 'new-november']}), '月度综合最终分');
+    assert.equal(cell(sheet, 'old-november', '月度综合最终分'), 87);
+    assert.equal(cell(sheet, 'old-november', '历史负责人或老板评分（30%）'), 80);
+    assert.equal(cell(sheet, 'old-november', '同事互评均分'), 90);
+    assert.equal(cell(sheet, 'old-november', '历史30%应评数'), null);
+    assert.equal(cell(sheet, 'new-november', '历史负责人或老板评分（30%）'), null);
+    assert.equal(cell(sheet, 'new-november', '计分口径'), '同事互评100%');
+  });
+
   check('null and whitespace are not zero or completion', () => {
     const model = build(), quality = sheetFor(model, '月度质量最终分'), sheet = sheetFor(model, '月度综合最终分');
     for (const title of ['月度质量最终分', 'AI质量均分', '已完成分析均分']) assert(isBlank(cell(quality, 'blank', title)));

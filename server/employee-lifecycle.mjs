@@ -79,7 +79,7 @@ export function createEmployeeLifecycle({query,exec,sql,now=()=>new Date()}){
       AND NOT EXISTS(SELECT 1 FROM monthly_manager_scores p JOIN scoring360_cycles c ON p.month=substr(c.start_date,1,7) WHERE c.id=scoring360_assignments.cycle_id AND p.employee_user_id=scoring360_assignments.evaluee_user_id)
       AND NOT EXISTS(SELECT 1 FROM all_department_leader_scores p JOIN scoring360_cycles c ON p.month=substr(c.start_date,1,7) WHERE c.id=scoring360_assignments.cycle_id AND p.leader_user_id=scoring360_assignments.evaluee_user_id)
       AND NOT EXISTS(SELECT 1 FROM performance_results p JOIN scoring360_cycles c ON p.month=substr(c.start_date,1,7) WHERE c.id=scoring360_assignments.cycle_id AND p.kind='collaboration' AND p.employee_user_id=scoring360_assignments.evaluee_user_id)
-      AND NOT EXISTS(SELECT 1 FROM all_monthly_weighted_results p JOIN scoring360_cycles c ON p.month=substr(c.start_date,1,7) WHERE c.id=scoring360_assignments.cycle_id AND p.employee_user_id=scoring360_assignments.evaluee_user_id);`;
+      AND NOT EXISTS(SELECT 1 FROM all_collaboration_results p JOIN scoring360_cycles c ON p.month=substr(c.start_date,1,7) WHERE c.id=scoring360_assignments.cycle_id AND p.employee_user_id=scoring360_assignments.evaluee_user_id);`;
   // Keep state, employment dates, pending assignments and the audit in one
   // transaction. The in-transaction guard prevents concurrent restores from
   // creating multiple open periods; closed history is never reopened. Only
